@@ -58,8 +58,13 @@ import numpy as np
 DEFAULT_PROFILES_DIR = Path("data/voice_profiles")
 
 # Empirically validated thresholds (see test_segment_matching.py results)
-STRONG_THRESHOLD = 0.7
-WEAK_THRESHOLD = 0.5
+STRONG_THRESHOLD = 0.75
+WEAK_THRESHOLD = 0.50
+
+# Minimum speech time (in seconds) required for a strong match.
+# Even with high similarity, a speaker with <30s of speech is treated as weak —
+# this catches pyannote artifact-labels that accidentally hit a real profile.
+MIN_STRONG_SPEECH_SECONDS = 30
 
 # Minimum L2 norm for an embedding to be considered "real"
 MIN_EMBEDDING_NORM = 0.01
@@ -241,8 +246,19 @@ def match_one_speaker(
     profiles: dict[str, np.ndarray],
     strong_threshold: float,
     weak_threshold: float,
+    speech_seconds: float,
+    min_strong_speech: float = MIN_STRONG_SPEECH_SECONDS,
 ) -> MatchOutcome:
-    """Match a single SPEAKER_XX label to a canonical name (or no match)."""
+    """Match a single SPEAKER_XX label to a canonical name (or no match).
+
+    A strong match requires BOTH:
+        - cosine similarity >= strong_threshold
+        - speech time >= min_strong_speech seconds
+
+    This dual criterion prevents pyannote artifact labels (typically with
+    short speech) from being assigned as strong matches even when their
+    similarity happens to be high.
+    """
     if not is_valid_embedding(embedding):
         return MatchOutcome(
             speaker_label=label,
@@ -258,7 +274,7 @@ def match_one_speaker(
     best_name, best_sim = sims[0]
     runner_name, runner_sim = sims[1] if len(sims) > 1 else (None, None)
 
-    if best_sim >= strong_threshold:
+    if best_sim >= strong_threshold and speech_seconds >= min_strong_speech:
         return MatchOutcome(
             speaker_label=label,
             assigned_name=best_name,
@@ -269,6 +285,7 @@ def match_one_speaker(
             runner_up_sim=runner_sim,
         )
     elif best_sim >= weak_threshold:
+        # High sim but short speech → also weak (likely an artifact)
         return MatchOutcome(
             speaker_label=label,
             assigned_name=best_name,
@@ -295,15 +312,17 @@ def build_speakers_json(
     audio_path: Path,
     strong_threshold: float,
     weak_threshold: float,
+    min_strong_speech: float,
 ) -> dict:
     """Build the JSON document for speakers mapping with metadata."""
     result: dict = {}
 
-    # Meta header (sorted to come first when serialized)
+    # Meta header
     result["_meta"] = {
         "audio_file": str(audio_path),
         "strong_threshold": strong_threshold,
         "weak_threshold": weak_threshold,
+        "min_strong_speech_seconds": min_strong_speech,
         "needs_review": [
             o.speaker_label for o in outcomes if o.status == "weak"
         ],
@@ -424,6 +443,14 @@ def main() -> None:
         help=f"Cosine sim threshold for weak match (default: {WEAK_THRESHOLD})",
     )
     parser.add_argument(
+        "--min-strong-speech",
+        type=float,
+        default=MIN_STRONG_SPEECH_SECONDS,
+        help=f"Min speech seconds for strong match (default: {MIN_STRONG_SPEECH_SECONDS}). "
+             f"Even with high similarity, speakers with less speech are flagged as weak — "
+             f"this catches pyannote artifact labels.",
+    )
+    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Force re-running pyannote (slow!)",
@@ -498,6 +525,8 @@ def main() -> None:
             profiles=profiles,
             strong_threshold=args.strong_threshold,
             weak_threshold=args.weak_threshold,
+            speech_seconds=speech_seconds.get(label, 0.0),
+            min_strong_speech=args.min_strong_speech,
         )
         outcomes.append(outcome)
 
@@ -510,6 +539,7 @@ def main() -> None:
         audio_path=args.audio,
         strong_threshold=args.strong_threshold,
         weak_threshold=args.weak_threshold,
+        min_strong_speech=args.min_strong_speech,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
