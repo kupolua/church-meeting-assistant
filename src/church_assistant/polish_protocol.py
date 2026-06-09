@@ -37,8 +37,10 @@ DEFAULT_RTTM = Path("data/test_baseline.rttm")
 DEFAULT_SPEAKERS_MAP = Path("data/speakers.json")
 
 # Attendee detection params
-MIN_SPEECH_SECONDS = 60.0   # 1 minute — filters out crosstalk artifacts
-EXCLUDE_SPEAKER_LABELS = frozenset({"SPEAKER_05"})  # known artifact label
+# 30s minimum — captures short-but-real participants like Веніамін
+# (who consistently speaks 40-50s per meeting). Artifact filtering is
+# now done via speakers.json _meta.invalid_embedding, not by hard-coded label.
+MIN_SPEECH_SECONDS = 30.0
 
 GROUP_KEYWORDS = (
     "Команда", "Проповідники", "Брати", "Сестри",
@@ -294,28 +296,44 @@ def detect_attendees(
     speakers_map_path: Path,
     aliases: dict[str, str],
     min_speech_seconds: float = MIN_SPEECH_SECONDS,
-    exclude_labels: frozenset[str] = EXCLUDE_SPEAKER_LABELS,
 ) -> list[str]:
     """Detect who attended the meeting, in order of first appearance.
 
+    Excluded labels are read from speakers.json _meta.invalid_embedding
+    (i.e. labels pyannote produced but whose embedding was rejected as
+    a zero/artifact). This replaces the previous hard-coded SPEAKER_05
+    exclusion, which broke when SPEAKER_05 turned out to be a real
+    participant on a different meeting.
+
     Steps:
-        1. Load RTTM, find all (speaker_label, start, duration) turns
-        2. Sum speech time per speaker, exclude labels below min_speech_seconds
-        3. Exclude known artifact labels (SPEAKER_05)
-        4. Order speakers by their FIRST appearance in audio
-        5. Map SPEAKER_XX → name via speakers.json
-        6. Map raw name → canonical via aliases
+        1. Read speakers.json _meta.invalid_embedding (list of bad labels)
+        2. Load RTTM, sum speech time per label (skipping invalid ones)
+        3. Filter labels below min_speech_seconds
+        4. Sort by first appearance in audio
+        5. Map SPEAKER_XX → name via speakers.json, then canonical via aliases
     """
     if not rttm_path.exists():
         return []
 
-    # Lazy import — avoid hard dep on pyannote at module top level
-    from pyannote.database.util import load_rttm
+    # Step 1: read excluded labels from speakers.json metadata
+    exclude_labels: set[str] = set()
+    speakers_map: dict[str, str] = {}
+    if speakers_map_path.exists():
+        with speakers_map_path.open("r", encoding="utf-8") as f:
+            speakers_data = json.load(f)
+        # Extract meta-driven exclusions
+        meta = speakers_data.get("_meta", {})
+        exclude_labels = set(meta.get("invalid_embedding", []))
+        # Speaker-XX → name (without _meta)
+        speakers_map = {
+            k: v for k, v in speakers_data.items() if not k.startswith("_")
+        }
 
+    # Step 2: load RTTM and accumulate stats
+    from pyannote.database.util import load_rttm
     rttm_dict = load_rttm(str(rttm_path))
     diarization = next(iter(rttm_dict.values()))
 
-    # Pass 1: total speech time per speaker label
     speech_total: dict[str, float] = defaultdict(float)
     first_seen: dict[str, float] = {}
 
@@ -323,28 +341,22 @@ def detect_attendees(
         if speaker in exclude_labels:
             continue
         speech_total[speaker] += turn.duration
-        # Record earliest appearance
         if speaker not in first_seen or turn.start < first_seen[speaker]:
             first_seen[speaker] = turn.start
 
-    # Filter by min_speech threshold
+    # Step 3: filter by min speech
     qualified = [
         speaker for speaker, total in speech_total.items()
         if total >= min_speech_seconds
     ]
 
-    # Sort by first appearance
+    # Step 4: sort by first appearance
     qualified.sort(key=lambda s: first_seen[s])
 
-    # Load SPEAKER_XX → name mapping
-    if not speakers_map_path.exists():
-        # Fallback: use raw SPEAKER_XX labels
+    # Step 5: map through speakers.json + aliases
+    if not speakers_map:
         return qualified
 
-    with speakers_map_path.open("r", encoding="utf-8") as f:
-        speakers_map = json.load(f)
-
-    # Map each qualified speaker through speakers.json, then through aliases
     attendees: list[str] = []
     seen_canonical: set[str] = set()
 
