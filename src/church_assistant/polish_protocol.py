@@ -24,8 +24,9 @@ import argparse
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 
@@ -46,6 +47,10 @@ GROUP_KEYWORDS = (
 
 COMPOSITE_SEPARATORS = (" та ", " і ", " / ", ", ")
 
+# Topic deduplication
+TOPIC_SIMILARITY_THRESHOLD = 0.65  # fuzzy ratio for "same topic" detection
+TOPIC_HEADING_RE = re.compile(r"^###\s+(.+?)\s*$")
+
 
 @dataclass
 class ActionItem:
@@ -64,6 +69,24 @@ class ChunkContent:
     chunk_id: str
     topics_section: str
     actions_by_person: dict[str, list[ActionItem]]
+
+
+@dataclass
+class Topic:
+    """A single ### topic from a chunk's topics section.
+
+    title: the ### heading text (without the '### ' prefix)
+    body: all the lines AFTER the heading until next ### or end
+    source_chunks: which chunks this topic appeared in
+    """
+    title: str
+    body: str
+    source_chunks: list[str] = field(default_factory=list)
+
+    @property
+    def normalized_title(self) -> str:
+        """Lowercased title for fuzzy comparison."""
+        return re.sub(r"\s+", " ", self.title.lower()).strip()
 
 
 CHUNK_FILENAME_RE = re.compile(r"^chunk_(\d+[a-z]?)_(\d+)m-(\d+)m\.md$")
@@ -174,8 +197,8 @@ def expand_and_normalize(raw_name: str, aliases: dict[str, str]) -> list[str]:
 
 
 def collect_normalized_actions(
-        chunks: list[ChunkContent],
-        aliases: dict[str, str],
+    chunks: list[ChunkContent],
+    aliases: dict[str, str],
 ) -> tuple[dict[str, list[ActionItem]], list[str]]:
     actions_map: dict[str, list[ActionItem]] = defaultdict(list)
     seen_order: list[str] = []
@@ -267,11 +290,11 @@ def load_aliases(path: Path) -> dict[str, str]:
 
 
 def detect_attendees(
-        rttm_path: Path,
-        speakers_map_path: Path,
-        aliases: dict[str, str],
-        min_speech_seconds: float = MIN_SPEECH_SECONDS,
-        exclude_labels: frozenset[str] = EXCLUDE_SPEAKER_LABELS,
+    rttm_path: Path,
+    speakers_map_path: Path,
+    aliases: dict[str, str],
+    min_speech_seconds: float = MIN_SPEECH_SECONDS,
+    exclude_labels: frozenset[str] = EXCLUDE_SPEAKER_LABELS,
 ) -> list[str]:
     """Detect who attended the meeting, in order of first appearance.
 
@@ -336,12 +359,130 @@ def detect_attendees(
     return attendees
 
 
+def parse_topics_from_chunk(chunk: ChunkContent) -> list[Topic]:
+    """Parse a chunk's topics_section into individual Topic objects.
+
+    Splits on ### headings. Body of each topic = everything between this
+    ### and the next ###. Strips the chunk's "## Розглянуті питання" header.
+    """
+    if not chunk.topics_section.strip():
+        return []
+
+    # Strip the section header
+    text = re.sub(
+        r"^##\s+Розглянуті\s+питання\s*\n?",
+        "",
+        chunk.topics_section,
+        count=1,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+
+    topics: list[Topic] = []
+    current_title: str | None = None
+    current_body_lines: list[str] = []
+
+    for line in text.split("\n"):
+        m = TOPIC_HEADING_RE.match(line)
+        if m:
+            # Flush the previous topic
+            if current_title is not None:
+                topics.append(
+                    Topic(
+                        title=current_title,
+                        body="\n".join(current_body_lines).rstrip(),
+                        source_chunks=[chunk.chunk_id],
+                    )
+                )
+            current_title = m.group(1).strip()
+            current_body_lines = []
+        else:
+            if current_title is not None:
+                current_body_lines.append(line)
+            # else: lines before any ### (typically blank or stray text) — skip
+
+    # Flush the last topic
+    if current_title is not None:
+        topics.append(
+            Topic(
+                title=current_title,
+                body="\n".join(current_body_lines).rstrip(),
+                source_chunks=[chunk.chunk_id],
+            )
+        )
+
+    return topics
+
+
+def title_similarity(a: str, b: str) -> float:
+    """Fuzzy similarity ratio between two topic titles, in [0, 1]."""
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def deduplicate_topics(
+    all_topics: list[Topic],
+    threshold: float = TOPIC_SIMILARITY_THRESHOLD,
+) -> tuple[list[Topic], list[tuple[str, str, float]]]:
+    """Group topics by title similarity and merge similar ones.
+
+    Greedy O(n^2) algorithm:
+        For each new topic, compare to all already-kept groups.
+        If similarity to any kept topic >= threshold → merge into that group.
+        Otherwise → start a new group.
+
+    The first occurrence's title is kept as canonical. Bodies are concatenated
+    in order of appearance.
+
+    Returns:
+        merged_topics: deduplicated list of Topic objects
+        merge_log: list of (kept_title, merged_title, similarity) tuples
+                   for diagnostic printing
+    """
+    merged: list[Topic] = []
+    merge_log: list[tuple[str, str, float]] = []
+
+    for topic in all_topics:
+        best_match_idx: int | None = None
+        best_sim = 0.0
+
+        for i, kept in enumerate(merged):
+            sim = title_similarity(topic.normalized_title, kept.normalized_title)
+            if sim >= threshold and sim > best_sim:
+                best_sim = sim
+                best_match_idx = i
+
+        if best_match_idx is not None:
+            # Merge into existing group
+            kept = merged[best_match_idx]
+            # Append body with chunk marker
+            chunk_marker = f"\n\n<!-- continued in chunk {topic.source_chunks[0]} -->\n"
+            kept.body = kept.body + chunk_marker + topic.body
+            kept.source_chunks.extend(topic.source_chunks)
+            merge_log.append((kept.title, topic.title, best_sim))
+        else:
+            # Start new group (make a copy to avoid mutating input)
+            merged.append(
+                Topic(
+                    title=topic.title,
+                    body=topic.body,
+                    source_chunks=list(topic.source_chunks),
+                )
+            )
+
+    return merged, merge_log
+
+
 def build_polished_protocol(
-        chunks: list[ChunkContent],
-        date_str: str,
-        aliases: dict[str, str],
-        attendees: list[str],
-) -> tuple[str, dict[str, int], dict[str, int]]:
+    chunks: list[ChunkContent],
+    date_str: str,
+    aliases: dict[str, str],
+    attendees: list[str],
+    topic_similarity_threshold: float = TOPIC_SIMILARITY_THRESHOLD,
+) -> tuple[str, dict[str, int], dict[str, int], list[tuple[str, str, float]]]:
+    """Build the final polished markdown.
+
+    Returns:
+        (markdown_text, pre_dedup_counts, post_dedup_counts, topic_merge_log)
+    """
     lines: list[str] = []
     lines.append(f"# Протокол зустрічі від {date_str}")
     lines.append("")
@@ -355,20 +496,26 @@ def build_polished_protocol(
     lines.append("## Розглянуті питання")
     lines.append("")
 
+    # Collect topics from all chunks and dedup
+    all_topics: list[Topic] = []
     for chunk in chunks:
-        if not chunk.topics_section.strip():
-            lines.append(f"<!-- Chunk {chunk.chunk_id}: (empty) -->")
-            lines.append("")
-            continue
-        lines.append(f"<!-- Chunk {chunk.chunk_id} -->")
-        cleaned = re.sub(
-            r"^##\s+Розглянуті питання\s*\n?",
-            "",
-            chunk.topics_section,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        lines.append(cleaned.rstrip())
+        all_topics.extend(parse_topics_from_chunk(chunk))
+
+    merged_topics, topic_merge_log = deduplicate_topics(
+        all_topics, threshold=topic_similarity_threshold
+    )
+
+    # Render merged topics
+    for topic in merged_topics:
+        # Source chunks marker for transparency
+        if len(topic.source_chunks) == 1:
+            chunks_str = topic.source_chunks[0]
+        else:
+            chunks_str = ", ".join(topic.source_chunks)
+        lines.append(f"<!-- topic from chunks: {chunks_str} -->")
+        lines.append(f"### {topic.title}")
+        if topic.body.strip():
+            lines.append(topic.body.rstrip())
         lines.append("")
 
     lines.append("## Наступні кроки")
@@ -405,15 +552,16 @@ def build_polished_protocol(
         for canonical in group_names:
             render_section(canonical)
 
-    return "\n".join(lines), pre_dedup, post_dedup
+    return "\n".join(lines), pre_dedup, post_dedup, topic_merge_log
 
 
 def print_summary(
-        chunks: list[ChunkContent],
-        pre_dedup: dict[str, int],
-        post_dedup: dict[str, int],
-        polished: str,
-        aliases: dict[str, str],
+    chunks: list[ChunkContent],
+    pre_dedup: dict[str, int],
+    post_dedup: dict[str, int],
+    polished: str,
+    aliases: dict[str, str],
+    topic_merge_log: list[tuple[str, str, float]] | None = None,
 ) -> None:
     n_chunks = len(chunks)
     n_empty = sum(1 for c in chunks if not c.topics_section.strip())
@@ -431,6 +579,20 @@ def print_summary(
     print(f"Chunks processed:           {n_chunks} (empty: {n_empty})")
     print(f"Name aliases loaded:        {len(aliases)}")
     print(f"")
+
+    if topic_merge_log is not None:
+        print(f"Topic deduplication:")
+        print(f"  topics merged (similar titles): {len(topic_merge_log)}")
+        if topic_merge_log:
+            print(f"  merged pairs (kept ← merged, sim):")
+            for kept, merged, sim in topic_merge_log:
+                # Truncate long titles for display
+                kept_disp = kept if len(kept) <= 50 else kept[:47] + "..."
+                merged_disp = merged if len(merged) <= 50 else merged[:47] + "..."
+                print(f"    '{kept_disp}'")
+                print(f"      ← '{merged_disp}' (sim={sim:.3f})")
+        print(f"")
+
     print(f"Action items:")
     print(f"  total (after composite split): {total_pre}")
     print(f"  after dedup:                   {total_post}")
@@ -468,6 +630,14 @@ def main() -> None:
         type=float,
         default=MIN_SPEECH_SECONDS,
         help=f"Min speech seconds to count as attendee (default: {MIN_SPEECH_SECONDS})",
+    )
+    parser.add_argument(
+        "--topic-similarity",
+        type=float,
+        default=TOPIC_SIMILARITY_THRESHOLD,
+        help=f"Fuzzy ratio threshold for merging similar topics "
+             f"(default: {TOPIC_SIMILARITY_THRESHOLD}). "
+             f"Lower = more aggressive merging.",
     )
     parser.add_argument("--date", type=str, default=None)
     parser.add_argument("--audio-file", type=Path, default=None)
@@ -511,15 +681,19 @@ def main() -> None:
     else:
         print(f"\n⚠ No attendees detected (RTTM or speakers.json missing?)")
 
-    polished, pre_dedup, post_dedup = build_polished_protocol(
+    polished, pre_dedup, post_dedup, topic_merge_log = build_polished_protocol(
         chunks, date_str, aliases, attendees,
+        topic_similarity_threshold=args.topic_similarity,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(polished, encoding="utf-8")
     print(f"\n✓ Saved polished protocol: {args.output}")
 
-    print_summary(chunks, pre_dedup, post_dedup, polished, aliases)
+    print_summary(
+        chunks, pre_dedup, post_dedup, polished, aliases,
+        topic_merge_log=topic_merge_log,
+    )
 
 
 if __name__ == "__main__":
