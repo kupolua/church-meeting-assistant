@@ -1,0 +1,40 @@
+# Python build artifacts
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# IDE
+.idea/
+
+# Secrets
+.env
+
+# macOS junk
+.DS_Store
+
+# Data (recordings, transcripts, voice profiles — confidential)
+# Default: ignore everything in data/, then make targeted exceptions.
+data/*
+!data/meetings/
+!data/voice_profiles/
+
+# Inside data/meetings/, ignore all meeting content BUT show that
+# subfolders exist (so the global README can document them).
+# Commit only the global meetings README.
+data/meetings/*
+!data/meetings/README.md
+!data/meetings/*/
+
+# Inside per-meeting folders, ignore everything (audio, transcripts,
+# protocols are private).
+data/meetings/*/*
+
+# Inside voice_profiles/, ignore the .npy files (each is a person's
+# biometric voice signature — confidential).
+data/voice_profiles/*
