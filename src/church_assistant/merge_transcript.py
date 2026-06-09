@@ -7,10 +7,15 @@ speakers.json mapping, and produces an annotated transcript like:
     [00:04 Роман]: Так, так, оце ви тільки що чули...
     [01:10:36 [нерозбірливо]]: ...crosstalk segment...
 
-Architectural rules (decided in conversation):
-- A2: SPEAKER_05 segments → "[нерозбірливо]" prefix (we keep the text but drop the name)
-- B1: Take dominant speaker (max overlap) when a Whisper segment overlaps multiple speakers
-- C:  Speaker mapping comes from data/speakers.json (NOT hardcoded)
+Architectural rules:
+- A2: Invalid-embedding labels (per speakers.json _meta.invalid_embedding)
+      are flagged separately in stats. They still get whatever name is
+      in speakers.json (typically "[нерозбірливо]" for known artifacts).
+- B1: Take dominant speaker (max overlap) when a Whisper segment overlaps
+      multiple speakers.
+- C:  Speaker mapping comes from data/speakers.json (NOT hardcoded). The
+      _meta.invalid_embedding list within speakers.json (produced by
+      match_speakers.py) drives artifact detection — no SPEAKER_05 hard-code.
 
 Usage:
     uv run python -m church_assistant.merge_transcript
@@ -43,9 +48,6 @@ DEFAULT_RTTM = Path("data/test_baseline.rttm")
 DEFAULT_SPEAKERS = Path("data/speakers.json")
 DEFAULT_OUTPUT = Path("data/test_baseline_annotated.md")
 
-# Label that signals "uncertain / crosstalk / bad audio" (rule A2)
-UNCERTAIN_LABEL = "SPEAKER_05"
-
 
 @dataclass
 class WhisperSegment:
@@ -63,10 +65,10 @@ class AnnotatedSegment:
     start: float
     end: float
     text: str
-    speaker_label: str       # raw pyannote label, e.g. "SPEAKER_06"
-    speaker_name: str        # resolved name, e.g. "Роман" or "[нерозбірливо]"
-    overlap_seconds: float   # how much this speaker overlapped with the segment
-    is_uncertain: bool       # True if speaker is SPEAKER_05
+    speaker_label: str               # raw pyannote label, e.g. "SPEAKER_06"
+    speaker_name: str                # resolved name, e.g. "Роман" or "[нерозбірливо]"
+    overlap_seconds: float           # how much this speaker overlapped with the segment
+    is_invalid_embedding: bool       # True if label is in speakers.json _meta.invalid_embedding
 
 
 def load_whisper_transcript(path: Path) -> list[WhisperSegment]:
@@ -85,10 +87,25 @@ def load_diarization(path: Path) -> Annotation:
     return next(iter(rttm_dict.values()))
 
 
-def load_speaker_map(path: Path) -> dict[str, str]:
-    """Load SPEAKER_XX → name mapping from JSON file."""
+def load_speaker_map(path: Path) -> tuple[dict[str, str], set[str]]:
+    """Load SPEAKER_XX → name mapping from JSON file.
+
+    Returns:
+        (label → name map, set of invalid_embedding labels from _meta)
+
+    The label map excludes any keys starting with '_' (e.g. _meta).
+    """
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    # Extract _meta.invalid_embedding (artifact labels from match_speakers.py)
+    meta = data.get("_meta", {})
+    invalid_labels = set(meta.get("invalid_embedding", []))
+
+    # Strip _-prefixed keys (the metadata) — leave only SPEAKER_XX → name
+    label_map = {k: v for k, v in data.items() if not k.startswith("_")}
+
+    return label_map, invalid_labels
 
 
 def find_dominant_speaker(
@@ -125,10 +142,15 @@ def merge_transcript_with_diarization(
         transcript: list[WhisperSegment],
         diarization: Annotation,
         speaker_map: dict[str, str],
+        invalid_labels: set[str],
 ) -> list[AnnotatedSegment]:
     """Annotate each Whisper segment with the dominant speaker.
 
-    Rule A2: SPEAKER_05 → "[нерозбірливо]" (keep text, drop name attribution).
+    Rule A2: Labels listed in speakers.json _meta.invalid_embedding are
+             flagged with is_invalid_embedding=True. Their name comes from
+             speakers.json like any other (typically "[нерозбірливо]" for
+             known artifacts, or a regular name if the user manually
+             reassigned an invalid-embedding label).
     Rule B1: dominant speaker by max overlap.
     Rule C:  resolve labels via speaker_map.
     """
@@ -149,14 +171,14 @@ def merge_transcript_with_diarization(
                     speaker_label="UNKNOWN",
                     speaker_name="[немає мовця]",
                     overlap_seconds=0.0,
-                    is_uncertain=True,
+                    is_invalid_embedding=False,
                 )
             )
             continue
 
         # Resolve label → name via mapping
         speaker_name = speaker_map.get(speaker_label, speaker_label)
-        is_uncertain = speaker_label == UNCERTAIN_LABEL
+        is_invalid = speaker_label in invalid_labels
 
         annotated.append(
             AnnotatedSegment(
@@ -166,7 +188,7 @@ def merge_transcript_with_diarization(
                 speaker_label=speaker_label,
                 speaker_name=speaker_name,
                 overlap_seconds=overlap,
-                is_uncertain=is_uncertain,
+                is_invalid_embedding=is_invalid,
             )
         )
 
@@ -204,7 +226,7 @@ def save_annotated_transcript(
 def print_statistics(segments: list[AnnotatedSegment]) -> None:
     """Print summary statistics about the merge result."""
     total = len(segments)
-    uncertain = sum(1 for s in segments if s.is_uncertain)
+    invalid_embedding = sum(1 for s in segments if s.is_invalid_embedding)
     no_speaker = sum(1 for s in segments if s.speaker_label == "UNKNOWN")
 
     # Per-speaker statistics
@@ -220,7 +242,10 @@ def print_statistics(segments: list[AnnotatedSegment]) -> None:
     print(f"  Merge statistics")
     print(f"{'=' * 70}")
     print(f"Total segments:              {total}")
-    print(f"Uncertain (SPEAKER_05):      {uncertain} ({uncertain/total*100:.1f}%)")
+    print(
+        f"Invalid-embedding segments:  {invalid_embedding} "
+        f"({invalid_embedding/total*100:.1f}%)"
+    )
     print(f"No speaker detected:         {no_speaker} ({no_speaker/total*100:.1f}%)")
     print(f"\nPer-speaker breakdown (by segment count):")
     print(f"{'Speaker':<30} {'Segments':>10} {'Time':>10} {'%':>8}")
@@ -288,13 +313,16 @@ def main() -> None:
     print(f"  ✓ {n_turns} diarization turns")
 
     print(f"Loading speaker map: {args.speakers}")
-    speaker_map = load_speaker_map(args.speakers)
+    speaker_map, invalid_labels = load_speaker_map(args.speakers)
     print(f"  ✓ {len(speaker_map)} speakers mapped")
+    if invalid_labels:
+        print(f"  ⚠ {len(invalid_labels)} invalid-embedding labels: "
+              f"{sorted(invalid_labels)}")
 
     # Merge
     print(f"\nMerging...")
     annotated = merge_transcript_with_diarization(
-        transcript, diarization, speaker_map
+        transcript, diarization, speaker_map, invalid_labels,
     )
 
     # Save before showing anything — same crash-safety principle as earlier scripts
