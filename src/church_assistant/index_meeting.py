@@ -385,6 +385,7 @@ def build_protocol_points(
         payload = {
             "meeting_date": meeting_date,
             "topic_title": topic_title,
+            "body": body,                  # stored for retrieval, not embedding
             "source_chunks": source_chunks,
             "attendees": attendees,
             "collection": COLLECTION_PROTOCOLS,
@@ -407,6 +408,7 @@ def build_analysis_points(
             "chunk_id": e["chunk_id"],
             "time_range": e["time_range"],
             "topic_title": e["topic_title"],
+            "body": e["body"],             # stored for retrieval
             "collection": COLLECTION_ANALYSES,
         }
         points.append(IndexPoint(text=text, payload=payload))
