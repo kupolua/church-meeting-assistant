@@ -1,16 +1,15 @@
-"""Basic RAG over indexed meeting protocols.
+"""RAG over indexed meeting protocols (Phase 2B.2 + rerank).
 
 Searches the Qdrant `cma_*` collections for content relevant to a question,
 then asks Gemma to synthesize an answer with citations to source meetings.
 
-Architecture (basic — Phase 2B.2):
+Architecture:
     1. Embed the question (Voyage voyage-multilingual-2, input_type=query)
-    2. Vector search top K in cma_protocols (topic-level decisions)
-    3. Optionally also search cma_turns (literal phrases, "who said X")
-    4. Pass results as context to Gemma; generate answer with citations
+    2. Vector search top K*4 in chosen collection (broad recall)
+    3. Voyage rerank-2 → top K (precise ordering via cross-attention)
+    4. Pass to Gemma; generate answer with citations
 
-This is the simplest useful version — no multi-query expansion, no hybrid
-BM25, no rerank. Those come later (Phase 2B.2+).
+Disable rerank via --no-rerank to fall back to raw vector ordering.
 
 Usage:
     uv run python -m church_assistant.query "Що ми вирішили про Великдень?"
@@ -23,6 +22,9 @@ Usage:
 
     # More hits
     uv run python -m church_assistant.query "тема" --limit 10
+
+    # Compare without rerank
+    uv run python -m church_assistant.query "тема" --no-rerank --no-synth
 """
 
 from __future__ import annotations
@@ -42,7 +44,9 @@ COLLECTION_TURNS = "cma_turns"
 COLLECTION_PROTOCOL_FULL = "cma_protocol_full"
 
 EMBEDDING_MODEL = "voyage-multilingual-2"
+RERANK_MODEL = "rerank-2"
 DEFAULT_LIMIT = 5
+RERANK_POOL_MULTIPLIER = 4   # retrieve 4×limit, rerank to limit
 
 GEMMA_MODEL = "gemma4:26b"  # match installed Ollama model
 GEMMA_HOST = "http://localhost:11434"
@@ -50,6 +54,10 @@ GEMMA_HOST = "http://localhost:11434"
 # Score thresholds for relevance commentary (calibrated from smoke tests)
 SCORE_GOOD = 0.55
 SCORE_OK = 0.40
+
+# Rerank scores have different distribution (0-1 generally)
+RERANK_SCORE_GOOD = 0.50
+RERANK_SCORE_OK = 0.20
 
 
 # ----- Logging -----
@@ -111,6 +119,53 @@ class Hit:
     score: float
     payload: dict[str, Any]
     collection: str
+    vector_score: float = 0.0   # original vector score (preserved after rerank)
+    reranked: bool = False
+
+
+def hit_text_for_rerank(hit: Hit) -> str:
+    """Build the candidate text rerank-2 will score against the query."""
+    p = hit.payload
+    if hit.collection == COLLECTION_TURNS:
+        speaker = p.get("speaker", "?")
+        return f"{speaker}: {p.get('text', '')}"
+    # protocols / analyses
+    title = p.get("topic_title", "")
+    body = p.get("body", "")
+    return f"{title}\n{body}".strip() if body else title
+
+
+def rerank_hits(
+    question: str,
+    hits: list[Hit],
+    top_k: int,
+    api_key: str,
+) -> list[Hit]:
+    """Re-score hits with Voyage rerank-2 and return the new top-k."""
+    if not hits:
+        return hits
+    import voyageai
+    client = voyageai.Client(api_key=api_key)
+
+    documents = [hit_text_for_rerank(h) for h in hits]
+    result = client.rerank(
+        query=question,
+        documents=documents,
+        model=RERANK_MODEL,
+        top_k=min(top_k, len(hits)),
+    )
+
+    reranked: list[Hit] = []
+    for item in result.results:
+        original = hits[item.index]
+        reranked.append(Hit(
+            score=item.relevance_score,
+            payload=original.payload,
+            collection=original.collection,
+            vector_score=original.score,
+            reranked=True,
+        ))
+    return reranked
 
 
 def search_collection(
@@ -127,7 +182,12 @@ def search_collection(
         with_payload=True,
     ).points
     return [
-        Hit(score=h.score, payload=h.payload, collection=collection)
+        Hit(
+            score=h.score,
+            payload=h.payload,
+            collection=collection,
+            vector_score=h.score,
+        )
         for h in hits
     ]
 
@@ -138,33 +198,44 @@ def search_collection(
 def format_hit_short(hit: Hit, idx: int) -> str:
     """Compact human-readable hit summary."""
     p = hit.payload
+
+    # Score display: show rerank + vector if reranked
+    if hit.reranked:
+        good = hit.score >= RERANK_SCORE_GOOD
+        ok = hit.score >= RERANK_SCORE_OK
+        score_str = f"rerank {hit.score:.3f} ← vec {hit.vector_score:.3f}"
+    else:
+        good = hit.score >= SCORE_GOOD
+        ok = hit.score >= SCORE_OK
+        score_str = f"score {hit.score:.3f}"
+
     score_color = (
-        "green" if hit.score >= SCORE_GOOD
-        else "yellow" if hit.score >= SCORE_OK
+        "green" if good
+        else "yellow" if ok
         else "dim"
     )
     date = p.get("meeting_date", "?")
 
     if hit.collection == COLLECTION_PROTOCOLS:
         topic = p.get("topic_title", "?")
-        return f"[{idx}] [{date}] '{topic}'  (score {hit.score:.3f})"
+        return f"[{idx}] [{date}] '{topic}'  ({score_str})"
 
     if hit.collection == COLLECTION_ANALYSES:
         topic = p.get("topic_title", "?")
         tr = p.get("time_range", "?")
-        return f"[{idx}] [{date} chunk {tr}] '{topic}'  (score {hit.score:.3f})"
+        return f"[{idx}] [{date} chunk {tr}] '{topic}'  ({score_str})"
 
     if hit.collection == COLLECTION_TURNS:
         speaker = p.get("speaker", "?")
         ts = p.get("start_timestamp", "?")
         text = p.get("text", "")[:100].replace("\n", " ")
         return (f"[{idx}] [{date} {ts}] {speaker}: \"{text}...\"  "
-                f"(score {hit.score:.3f})")
+                f"({score_str})")
 
     if hit.collection == COLLECTION_PROTOCOL_FULL:
-        return f"[{idx}] [{date}] meeting summary  (score {hit.score:.3f})"
+        return f"[{idx}] [{date}] meeting summary  ({score_str})"
 
-    return f"[{idx}] [{date}] unknown  (score {hit.score:.3f})"
+    return f"[{idx}] [{date}] unknown  ({score_str})"
 
 
 def format_hit_for_context(hit: Hit, idx: int) -> str:
@@ -271,7 +342,7 @@ def call_gemma(question: str, hits: list[Hit]) -> str:
                     "num_ctx": 16384,
                 },
             },
-            timeout=120,
+            timeout=600,
         )
         response.raise_for_status()
         data = response.json()
@@ -288,6 +359,7 @@ def run_query(
     collection: str,
     limit: int,
     synthesize: bool,
+    rerank: bool,
 ) -> None:
     """Run the full RAG pipeline for one question."""
     log(f"\n{'=' * 70}", "blue")
@@ -295,6 +367,7 @@ def run_query(
     log(f"{'=' * 70}", "blue")
     log(f"  Collection: {collection}")
     log(f"  Limit:      {limit}")
+    log(f"  Rerank:     {rerank}")
     log(f"  Synthesize: {synthesize}")
 
     # 1. Embed
@@ -307,7 +380,9 @@ def run_query(
     vec = embed_query(question, api_key)
 
     # 2. Search Qdrant
-    log("  Searching Qdrant...", "dim")
+    # If reranking, pull a wider candidate pool (4×limit) then narrow.
+    pool_size = limit * RERANK_POOL_MULTIPLIER if rerank else limit
+    log(f"  Searching Qdrant (pool {pool_size})...", "dim")
     from qdrant_client import QdrantClient
     client = QdrantClient(host="localhost", port=6333)
 
@@ -316,9 +391,17 @@ def run_query(
         if collection.startswith("cma_")
         else f"cma_{collection}"
     )
-    hits = search_collection(client, full_collection, vec, limit)
+    hits = search_collection(client, full_collection, vec, pool_size)
 
-    # 3. Show hits
+    # 3. Rerank if requested
+    if rerank and hits:
+        log(f"  Reranking {len(hits)} candidates with {RERANK_MODEL}...",
+            "dim")
+        hits = rerank_hits(question, hits, top_k=limit, api_key=api_key)
+    elif not rerank:
+        hits = hits[:limit]   # truncate; otherwise pool == limit already
+
+    # 4. Show hits
     log(f"\n{'─' * 70}")
     log(f"  Top {len(hits)} hits in '{full_collection}':", "bold")
     log(f"{'─' * 70}")
@@ -330,7 +413,7 @@ def run_query(
             "yellow")
         return
 
-    # 4. Synthesize answer with Gemma (optional)
+    # 5. Synthesize answer with Gemma (optional)
     if synthesize:
         answer = call_gemma(question, hits)
         log(f"\n{'─' * 70}")
@@ -372,6 +455,11 @@ def main() -> None:
         action="store_true",
         help="Don't call Gemma — just show retrieval hits",
     )
+    parser.add_argument(
+        "--no-rerank",
+        action="store_true",
+        help="Skip Voyage rerank-2 (use raw vector scores only)",
+    )
     args = parser.parse_args()
 
     load_env()
@@ -380,6 +468,7 @@ def main() -> None:
         collection=args.collection,
         limit=args.limit,
         synthesize=not args.no_synth,
+        rerank=not args.no_rerank,
     )
 
 
