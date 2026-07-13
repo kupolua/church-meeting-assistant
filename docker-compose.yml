@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cma-postgres
+    environment:
+      POSTGRES_DB: cma
+      POSTGRES_USER: cma
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "127.0.0.1:5433:5432"  # localhost only, не accessible from network
+    volumes:
+      - cma_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cma -d cma"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Optional: log slow queries (>1s)
+    command: ["postgres", "-c", "log_min_duration_statement=1000"]
+
+volumes:
+  cma_postgres_data:
+    name: cma_postgres_data
