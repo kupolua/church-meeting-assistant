@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}{{ detail.date }} — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="meeting-detail">
+    <header>
+        <h1>{{ detail.date }}</h1>
+
+        <div class="meeting-quick-stats">
+            <span title="Учасники">👥 {{ detail.attendees | length }}</span>
+            <span title="Теми">📋 {{ detail.topics | length }}</span>
+            {% if detail.indexed %}
+            <span class="badge indexed" title="Індексовано в Qdrant">✓ indexed</span>
+            {% else %}
+            <span class="badge warn" title="Не індексовано в Qdrant">⚠ not indexed</span>
+            {% endif %}
+        </div>
+    </header>
+
+    {# ─── Attendees ─── #}
+    <section class="attendees-block">
+        <h4>Учасники</h4>
+        {% if detail.attendees %}
+        <ul class="attendees-list">
+            {% for name in detail.attendees %}
+            <li>{{ name }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p><em>Учасники не розпізнані з polished.md</em></p>
+        {% endif %}
+    </section>
+
+    {# ─── Topics ─── #}
+    <section class="topics-block">
+        <h4>Теми ({{ detail.topics | length }})</h4>
+
+        {% if detail.topics %}
+        <div class="topics-list">
+            {% for topic in detail.topics %}
+            <details class="topic-item">
+                <summary>
+                    <span class="topic-number">#{{ loop.index }}</span>
+                    <span class="topic-title">{{ topic.title }}</span>
+                </summary>
+                <div class="topic-body">
+                    {% if topic.body %}
+                    <pre class="topic-body-content">{{ topic.body }}</pre>
+                    {% else %}
+                    <p><em>(порожній опис)</em></p>
+                    {% endif %}
+                </div>
+            </details>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p><em>У polished.md не знайдено ### заголовків тем.</em></p>
+        {% endif %}
+    </section>
+
+    <footer class="meeting-detail-footer">
+        <p>
+            <small>
+                <a href="/">← Повернутись на головну</a>
+            </small>
+        </p>
+    </footer>
+</article>
+{% endblock %}

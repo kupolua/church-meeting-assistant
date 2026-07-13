@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="uk" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Church Meeting Assistant{% endblock %}</title>
+
+    <!-- Pico.css: semantic, classless, ~50KB -->
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <!-- Our small overrides -->
+    <link rel="stylesheet" href="/static/app.css">
+
+    <!-- HTMX (will use in query form later) -->
+    <script src="https://unpkg.com/htmx.org@1.9.10" defer></script>
+
+    <!-- Prevent auto dark mode from OS preference -->
+    <style>
+        :root { color-scheme: light; }
+    </style>
+</head>
+<body>
+
+<div class="app-layout">
+
+    {# ─── SIDEBAR ─── #}
+    <aside class="app-sidebar">
+        <header class="sidebar-header">
+            <h3><a href="/" class="sidebar-title">📖 CMA</a></h3>
+        </header>
+
+        {% include "partials/sidebar.html" %}
+    </aside>
+
+    {# ─── MAIN PANEL ─── #}
+    <main class="app-main">
+        {% block main %}{% endblock %}
+    </main>
+
+</div>
+
+</body>
+</html>

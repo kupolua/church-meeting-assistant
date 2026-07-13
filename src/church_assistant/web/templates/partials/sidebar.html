@@ -1,0 +1,24 @@
+<nav class="meetings-nav">
+    <h6 class="sidebar-section-label">Meetings ({{ meetings | length }})</h6>
+
+    <ul class="meetings-list">
+        {% for meeting in meetings %}
+        {% set is_current = current_date is defined and current_date == meeting.date %}
+        <li class="meeting-item {{ 'is-current' if is_current else '' }}">
+            <a href="/meetings/{{ meeting.date }}" class="meeting-link">
+                <div class="meeting-date">{{ meeting.date }}</div>
+                <div class="meeting-meta">
+                    <span title="Учасники">👥 {{ meeting.attendees | length }}</span>
+                    <span title="Теми">📋 {{ meeting.topic_count }}</span>
+                    {% if meeting.action_item_count > 0 %}
+                    <span title="Дії">✓ {{ meeting.action_item_count }}</span>
+                    {% endif %}
+                    {% if not meeting.indexed %}
+                    <span class="warn" title="Не індексовано в Qdrant">⚠</span>
+                    {% endif %}
+                </div>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+</nav>
