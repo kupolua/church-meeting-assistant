@@ -10,6 +10,13 @@
     --meeting-hover: #ececec;
     --meeting-current-bg: #e8f4ff;
     --meeting-current-border: #4a90e2;
+
+    --hit-green-bg: #d4edda;
+    --hit-green-border: #28a745;
+    --hit-yellow-bg: #fff3cd;
+    --hit-yellow-border: #ffc107;
+    --hit-dim-bg: #f0f0f0;
+    --hit-dim-border: #999;
 }
 
 
@@ -62,6 +69,85 @@ body {
     font-size: 0.7rem;
     color: #666;
     margin: 0.5rem 0;
+}
+
+
+/* ─── Sidebar search bar ─── */
+
+.sidebar-search {
+    margin-bottom: 1rem;
+}
+
+.sidebar-search input[type="search"] {
+    width: 100%;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.85rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: white;
+}
+
+.search-output {
+    margin-top: 0.5rem;
+}
+
+.search-hint {
+    padding: 0.5rem;
+    color: #888;
+}
+
+.search-results-count {
+    padding: 0.25rem 0.5rem;
+    color: #666;
+    margin-bottom: 0.25rem;
+}
+
+.search-results-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 350px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: white;
+}
+
+.search-result-item {
+    border-bottom: 1px solid #eee;
+}
+
+.search-result-item:last-child {
+    border-bottom: none;
+}
+
+.search-result-link {
+    display: block;
+    padding: 0.5rem;
+    text-decoration: none;
+    color: inherit;
+    font-size: 0.8rem;
+}
+
+.search-result-link:hover {
+    background: #f0f8ff;
+}
+
+.search-result-date {
+    color: #666;
+    font-size: 0.7rem;
+    margin-bottom: 0.15rem;
+}
+
+.search-result-title {
+    font-weight: 500;
+    margin-bottom: 0.15rem;
+}
+
+.search-result-snippet {
+    color: #666;
+    font-size: 0.75rem;
+    font-style: italic;
 }
 
 
@@ -119,6 +205,28 @@ body {
 }
 
 
+/* ─── Sidebar bottom nav ─── */
+
+.sidebar-bottom-nav {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--sidebar-border);
+}
+
+.sidebar-nav-link {
+    display: block;
+    padding: 0.5rem;
+    text-decoration: none;
+    color: inherit;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.sidebar-nav-link:hover {
+    background: var(--meeting-hover);
+}
+
+
 /* ─── Main panel ─── */
 
 .app-main {
@@ -128,32 +236,289 @@ body {
 }
 
 
-/* ─── Home placeholder ─── */
+/* ─── Home page ─── */
 
-.main-empty {
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding-top: 3rem;
+.home-page {
+    max-width: 900px;
+    margin: 0 auto;
 }
 
-.main-empty-content {
-    max-width: 640px;
+.home-header {
     text-align: center;
+    margin-bottom: 2rem;
+}
+
+.home-header h1 {
+    margin-bottom: 0.5rem;
 }
 
 .tagline {
     color: #666;
-    font-size: 1rem;
-    margin-bottom: 1rem;
+}
+
+.home-footer {
+    margin-top: 3rem;
+    text-align: center;
+    color: #999;
 }
 
 .stats-summary {
-    margin-top: 2rem;
-    padding: 1rem;
-    background: #f0f0f0;
+    margin: 0;
+}
+
+
+/* ─── Query form ─── */
+
+.query-section {
+    margin-bottom: 2rem;
+}
+
+#query-form textarea {
+    width: 100%;
+    padding: 0.75rem;
+    font-size: 1rem;
+    border: 2px solid #ccc;
     border-radius: 6px;
+    resize: vertical;
+    font-family: inherit;
+}
+
+#query-form textarea:focus {
+    border-color: #4a90e2;
+    outline: none;
+}
+
+.query-form-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.query-form-controls button {
+    padding: 0.5rem 1.5rem;
+    font-size: 1rem;
+    background: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.query-form-controls button:hover {
+    background: #3a7bc8;
+}
+
+.query-form-controls button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* HTMX indicator: visible only when request in flight */
+.htmx-indicator {
+    opacity: 0;
+    transition: opacity 200ms ease-in;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.htmx-request .htmx-indicator {
+    opacity: 1;
+}
+
+.htmx-request.htmx-indicator {
+    opacity: 1;
+}
+
+
+/* ─── Query output ─── */
+
+.query-output {
+    margin-top: 1.5rem;
+}
+
+.query-result {
+    background: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-top: 1rem;
+}
+
+.query-result-header h5 {
+    margin: 0 0 0.25rem 0;
+    color: #666;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.question-text {
+    font-size: 1.05rem;
+    margin: 0 0 1rem 0;
+    font-style: italic;
+}
+
+
+/* ─── Hits list ─── */
+
+.hits-block {
+    margin-bottom: 1.5rem;
+}
+
+.hits-block h5 {
+    margin-bottom: 0.5rem;
+}
+
+.hits-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: hit;
+}
+
+.hit-item {
+    counter-increment: hit;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.35rem;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    background: #f0f0f0;
+    position: relative;
+}
+
+.hit-item::before {
+    content: "[" counter(hit) "]";
+    position: absolute;
+    left: -2.5rem;
+    top: 0.5rem;
+    color: #999;
+    font-family: monospace;
+    font-weight: bold;
+}
+
+.hits-list {
+    padding-left: 2.5rem;
+}
+
+.hit-green {
+    background: var(--hit-green-bg);
+    border-left-color: var(--hit-green-border);
+}
+
+.hit-yellow {
+    background: var(--hit-yellow-bg);
+    border-left-color: var(--hit-yellow-border);
+}
+
+.hit-dim {
+    background: var(--hit-dim-bg);
+    border-left-color: var(--hit-dim-border);
+    opacity: 0.75;
+}
+
+.hit-header {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+
+.hit-meeting-date {
+    font-family: monospace;
+    color: #4a90e2;
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.hit-meeting-date:hover {
+    text-decoration: underline;
+}
+
+.hit-title {
     font-size: 0.95rem;
+}
+
+.hit-score {
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 0.15rem;
+    font-family: monospace;
+}
+
+
+/* ─── Synthesis ─── */
+
+.synthesis-block {
+    margin-bottom: 1.5rem;
+    background: white;
+    padding: 1rem;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+}
+
+.synthesis-text {
+    white-space: pre-wrap;
+    line-height: 1.6;
+}
+
+
+/* ─── Sources ─── */
+
+.sources-block {
+    margin-bottom: 1rem;
+}
+
+.sources-block p {
+    margin: 0;
+}
+
+.source-link {
+    font-family: monospace;
+    text-decoration: none;
+    color: #4a90e2;
+    padding: 0.15rem 0.35rem;
+    background: #e8f4ff;
+    border-radius: 3px;
+    font-size: 0.85rem;
+}
+
+.source-link:hover {
+    text-decoration: underline;
+}
+
+
+/* ─── Timings ─── */
+
+.query-result-footer {
+    padding-top: 0.75rem;
+    border-top: 1px solid #e0e0e0;
+    color: #999;
+}
+
+.timings {
+    font-family: monospace;
+}
+
+
+/* ─── Query error ─── */
+
+.query-error {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.query-error h5 {
+    margin: 0 0 0.5rem 0;
+    color: #856404;
+}
+
+.query-error p {
+    margin: 0;
 }
 
 
@@ -287,4 +652,65 @@ body {
     margin-top: 2rem;
     padding-top: 1rem;
     border-top: 1px solid #e0e0e0;
+}
+
+
+/* ─── History page ─── */
+
+.history-page {
+    max-width: 900px;
+    margin: 0 auto;
+}
+
+.history-list {
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0;
+}
+
+.history-item {
+    background: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.history-item.history-status-failed {
+    background: #fff5f5;
+    border-color: #ffcccc;
+}
+
+.history-item.history-status-pending,
+.history-item.history-status-processing {
+    background: #fffde7;
+    border-color: #ffecb3;
+}
+
+.history-header {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    color: #666;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.history-source {
+    font-family: monospace;
+}
+
+.history-date {
+    font-family: monospace;
+}
+
+.history-question {
+    font-size: 0.95rem;
+    margin-bottom: 0.35rem;
+}
+
+.history-sources,
+.history-error {
+    color: #666;
 }

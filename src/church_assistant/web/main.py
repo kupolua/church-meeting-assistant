@@ -5,8 +5,6 @@ Serves at http://localhost:8000/ (localhost-only, single user).
 
 Run with:
     uv run uvicorn church_assistant.web.main:app --host 127.0.0.1 --port 8000
-
-Or via the helper script (later).
 """
 
 from __future__ import annotations
@@ -31,22 +29,20 @@ STATIC_DIR = WEB_DIR / "static"
 
 
 # ─────────────────────────────────────────────────────────────
-# Templates (importable from routes)
+# Templates
 # ─────────────────────────────────────────────────────────────
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 # ─────────────────────────────────────────────────────────────
-# Lifespan (startup / shutdown)
+# Lifespan
 # ─────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: warm the DB pool
     await get_pool()
     yield
-    # Shutdown: cleanly close DB pool
     await close_pool()
 
 
@@ -61,15 +57,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ─────────────────────────────────────────────────────────────
-# Routes registration
+# Routes
 # ─────────────────────────────────────────────────────────────
 
-from church_assistant.web.routes import home, meetings  # noqa: E402
+from church_assistant.web.routes import (  # noqa: E402
+    home,
+    meetings,
+    query,
+    search,
+    history,
+)
 
 app.include_router(home.router)
 app.include_router(meetings.router)
+app.include_router(query.router)
+app.include_router(search.router)
+app.include_router(history.router)

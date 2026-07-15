@@ -1,0 +1,34 @@
+<section class="query-section">
+    <h4>Запит до архіву</h4>
+
+    <form
+        id="query-form"
+        hx-post="/api/query"
+        hx-target="#query-output"
+        hx-swap="innerHTML"
+        hx-indicator="#query-loading"
+        hx-disabled-elt="find button, find textarea"
+    >
+        <textarea
+            name="question"
+            placeholder="Напишіть питання українською… (наприклад: «Що вирішили щодо членства Леоніда?»)"
+            rows="3"
+            required
+            minlength="3"
+            maxlength="500"
+            autofocus
+        ></textarea>
+
+        <div class="query-form-controls">
+            <button type="submit">
+                Запитати
+            </button>
+
+            <span id="query-loading" class="htmx-indicator">
+                🔍 Шукаю та аналізую... (10-70 сек)
+            </span>
+        </div>
+    </form>
+
+    <div id="query-output" class="query-output"></div>
+</section>

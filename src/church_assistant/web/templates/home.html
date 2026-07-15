@@ -3,30 +3,27 @@
 {% block title %}Home — Church Meeting Assistant{% endblock %}
 
 {% block main %}
-<div class="main-empty">
-    <div class="main-empty-content">
+<div class="home-page">
+    <header class="home-header">
         <h1>📖 Church Meeting Assistant</h1>
-        <p class="tagline">RAG-інтерфейс до архіву протоколів пасторської ради</p>
-
-        <hr>
-
-        <p>
-            Оберіть зустріч зі списку зліва, щоб переглянути її протокол.
-        </p>
-
-        <p>
-            <small><em>
-                Запити RAG (Retrieval-Augmented Generation) з'являться в
-                наступній версії — це поки що skeleton інтерфейсу.
-            </em></small>
-        </p>
-
-        <div class="stats-summary">
-            <strong>{{ meetings | length }}</strong> зустрічей у корпусі
+        <p class="tagline">
+            RAG-інтерфейс до архіву протоколів пасторської ради
             &middot;
-            <strong>{{ meetings | selectattr("indexed") | list | length }}</strong>
-            індексовано в Qdrant
-        </div>
-    </div>
+            <a href="/history">Історія</a>
+        </p>
+    </header>
+
+    {% include "partials/query_form.html" %}
+
+    <footer class="home-footer">
+        <p class="stats-summary">
+            <small>
+                <strong>{{ meetings | length }}</strong> зустрічей у корпусі
+                &middot;
+                <strong>{{ meetings | selectattr("indexed") | list | length }}</strong>
+                індексовано в Qdrant
+            </small>
+        </p>
+    </footer>
 </div>
 {% endblock %}

@@ -1,0 +1,67 @@
+<article class="query-result">
+    <header class="query-result-header">
+        <h5>Питання:</h5>
+        <p class="question-text">{{ question }}</p>
+    </header>
+
+    {# ─── Retrieved hits ─── #}
+    {% if result.hits %}
+    <section class="hits-block">
+        <h5>🔍 Знайдено {{ result.hits | length }} фрагментів:</h5>
+        <ol class="hits-list">
+            {% for hit in result.hits %}
+            {% set color = score_color_hint(hit) %}
+            <li class="hit-item hit-{{ color }}">
+                <div class="hit-header">
+                    <a href="/meetings/{{ hit.payload.meeting_date }}"
+                       class="hit-meeting-date">
+                        [{{ hit.payload.meeting_date }}]
+                    </a>
+                    <span class="hit-title">
+                        {{ hit.payload.topic_title or hit.payload.get('speaker', '') or '(без заголовка)' }}
+                    </span>
+                </div>
+                <div class="hit-score">
+                    {% if hit.reranked %}
+                    rerank <strong>{{ "%.3f"|format(hit.score) }}</strong>
+                    ← vec {{ "%.3f"|format(hit.vector_score) }}
+                    {% else %}
+                    score <strong>{{ "%.3f"|format(hit.score) }}</strong>
+                    {% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ol>
+    </section>
+    {% endif %}
+
+    {# ─── Synthesis ─── #}
+    <section class="synthesis-block">
+        <h5>📝 Відповідь:</h5>
+        <div class="synthesis-text">{{ result.synthesis }}</div>
+    </section>
+
+    {# ─── Sources ─── #}
+    {% if result.sources %}
+    <section class="sources-block">
+        <h5>📅 Джерела:</h5>
+        <p>
+            {% for date in result.sources %}
+            <a href="/meetings/{{ date }}" class="source-link">{{ date }}</a>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </p>
+    </section>
+    {% endif %}
+
+    {# ─── Timings (small, dim) ─── #}
+    <footer class="query-result-footer">
+        <small class="timings">
+            embed: {{ result.timings.embed_ms }}ms
+            &middot; qdrant: {{ result.timings.qdrant_ms }}ms
+            &middot; rerank: {{ result.timings.rerank_ms }}ms
+            &middot; gemma: {{ result.timings.gemma_ms }}ms
+            &middot; <strong>total: {{ (result.timings.total_ms / 1000) | round(1) }}s</strong>
+            &middot; query #{{ query_id }}
+        </small>
+    </footer>
+</article>

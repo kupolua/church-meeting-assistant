@@ -1,3 +1,19 @@
+{# ─── Search bar (HTMX) ─── #}
+<div class="sidebar-search">
+    <input
+        type="search"
+        name="q"
+        placeholder="🔍 Пошук тем..."
+        autocomplete="off"
+        hx-get="/api/search"
+        hx-trigger="keyup changed delay:300ms, search"
+        hx-target="#search-output"
+        hx-swap="innerHTML"
+    >
+    <div id="search-output" class="search-output"></div>
+</div>
+
+{# ─── Meetings list ─── #}
 <nav class="meetings-nav">
     <h6 class="sidebar-section-label">Meetings ({{ meetings | length }})</h6>
 
@@ -21,4 +37,9 @@
         </li>
         {% endfor %}
     </ul>
+</nav>
+
+{# ─── Bottom nav ─── #}
+<nav class="sidebar-bottom-nav">
+    <a href="/history" class="sidebar-nav-link">📜 Історія запитів</a>
 </nav>

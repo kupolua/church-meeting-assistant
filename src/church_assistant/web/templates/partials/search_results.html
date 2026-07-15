@@ -1,0 +1,22 @@
+{% if empty_prompt %}
+<p class="search-hint"><small>Введіть ключове слово…</small></p>
+{% elif not matches %}
+<p class="search-hint"><small>Нічого не знайдено за запитом «{{ query }}»</small></p>
+{% else %}
+<div class="search-results-count">
+    <small>Знайдено {{ matches | length }} результатів</small>
+</div>
+<ul class="search-results-list">
+    {% for match in matches %}
+    <li class="search-result-item">
+        <a href="/meetings/{{ match.meeting_date }}" class="search-result-link">
+            <div class="search-result-date">{{ match.meeting_date }}</div>
+            <div class="search-result-title">{{ match.topic_title }}</div>
+            {% if match.snippet and match.snippet != match.topic_title %}
+            <div class="search-result-snippet">{{ match.snippet }}</div>
+            {% endif %}
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% endif %}

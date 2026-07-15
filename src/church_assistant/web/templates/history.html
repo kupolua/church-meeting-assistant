@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Історія — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="history-page">
+    <header>
+        <h1>📜 Історія запитів</h1>
+        <p><small>{{ queries | length }} останніх запитів</small></p>
+    </header>
+
+    {% if not queries %}
+    <p><em>Історія порожня. Задайте перше питання на <a href="/">головній</a>.</em></p>
+    {% else %}
+    <ul class="history-list">
+        {% for q in queries %}
+        <li class="history-item history-status-{{ q.status }}">
+            <div class="history-header">
+                <span class="history-source">
+                    {% if q.source == 'web' %}💻 web{% else %}📱 tg{% endif %}
+                </span>
+                <span class="history-date">
+                    {{ q.asked_at.strftime('%Y-%m-%d %H:%M') }}
+                </span>
+                <span class="history-status">
+                    {% if q.status == 'completed' %}✓{% elif q.status == 'pending' %}⏳{% elif q.status == 'processing' %}🔄{% elif q.status == 'failed' %}✗{% else %}⊘{% endif %}
+                    {{ q.status }}
+                </span>
+                {% if q.total_time_ms %}
+                <span class="history-time"><small>{{ (q.total_time_ms / 1000) | round(1) }}s</small></span>
+                {% endif %}
+            </div>
+
+            <div class="history-question">{{ q.question }}</div>
+
+            {% if q.status == 'completed' and q.sources %}
+            <div class="history-sources">
+                <small>📅
+                {% for date in q.sources %}<a href="/meetings/{{ date }}">{{ date }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+                </small>
+            </div>
+            {% elif q.status == 'failed' and q.error_message %}
+            <div class="history-error">
+                <small>⚠ {{ q.error_message[:200] }}</small>
+            </div>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    <footer>
+        <p><small><a href="/">← Повернутись на головну</a></small></p>
+    </footer>
+</article>
+{% endblock %}
