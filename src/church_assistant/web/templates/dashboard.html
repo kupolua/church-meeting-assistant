@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Моніторинг — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="dashboard-page">
+    <header class="dashboard-header">
+        <h1>📊 Моніторинг</h1>
+        <p><small>Автооновлення кожні 5с • черга, статистика, здоров'я сервісів</small></p>
+    </header>
+
+    {# ─── Refreshable panel: polls itself every 5s ─── #}
+    <div
+        id="dashboard-panel"
+        hx-get="/dashboard/panel"
+        hx-trigger="every 5s"
+        hx-swap="innerHTML"
+    >
+        {% include "partials/dashboard_panel.html" %}
+    </div>
+
+    <footer class="dashboard-footer">
+        <p><small><a href="/">← Повернутись на головну</a></small></p>
+    </footer>
+</article>
+{% endblock %}

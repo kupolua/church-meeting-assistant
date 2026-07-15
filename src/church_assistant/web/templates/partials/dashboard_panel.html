@@ -1,0 +1,167 @@
+{# ─────────────────────────────────────────────────────────────
+   Dashboard panel — the auto-refreshing / action-response fragment.
+   Rendered both by GET /dashboard/panel (poll) and by every action
+   endpoint. Action buttons re-target #dashboard-panel so the whole
+   panel repaints with fresh data after a mutation.
+   ───────────────────────────────────────────────────────────── #}
+
+{# ─── Dependency health ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Здоров'я сервісів</h5>
+    {% if health %}
+    <div class="health-pills">
+        <span class="health-pill {{ 'is-up' if health.ollama_up else 'is-down' }}">
+            {{ '🟢' if health.ollama_up else '🔴' }} Ollama
+            {% if health.ollama_response_time_ms is not none %}<small>{{ health.ollama_response_time_ms }}ms</small>{% endif %}
+        </span>
+        <span class="health-pill {{ 'is-up' if health.qdrant_up else 'is-down' }}">
+            {{ '🟢' if health.qdrant_up else '🔴' }} Qdrant
+            {% if health.qdrant_response_time_ms is not none %}<small>{{ health.qdrant_response_time_ms }}ms</small>{% endif %}
+        </span>
+        <span class="health-pill {{ 'is-up' if health.postgres_up else 'is-down' }}">
+            {{ '🟢' if health.postgres_up else '🔴' }} Postgres
+        </span>
+        <span class="health-stamp"><small>оновлено {{ health.timestamp.strftime('%H:%M:%S') }}</small></span>
+    </div>
+    {% if health.notes %}<p class="health-notes"><small>{{ health.notes }}</small></p>{% endif %}
+    {% else %}
+    <p><em>Немає health-snapshot. Запусти worker, щоб він почав писати health_checks.</em></p>
+    {% endif %}
+</section>
+
+{# ─── Queue depth + today stats tiles ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Черга та статистика (сьогодні)</h5>
+    <div class="stat-tiles">
+        <div class="stat-tile {{ 'is-warn' if queue.pending else '' }}">
+            <div class="stat-value">{{ queue.pending }}</div>
+            <div class="stat-label">⏳ pending</div>
+        </div>
+        <div class="stat-tile {{ 'is-active' if queue.processing else '' }}">
+            <div class="stat-value">{{ queue.processing }}</div>
+            <div class="stat-label">🔄 processing</div>
+        </div>
+        <div class="stat-tile {{ 'is-error' if queue.failed else '' }}">
+            <div class="stat-value">{{ queue.failed }}</div>
+            <div class="stat-label">✗ failed</div>
+        </div>
+        <div class="stat-tile">
+            <div class="stat-value">{{ stats.total }}</div>
+            <div class="stat-label">📥 всього</div>
+        </div>
+        <div class="stat-tile">
+            <div class="stat-value">{{ stats.completed }}</div>
+            <div class="stat-label">✓ completed</div>
+        </div>
+        <div class="stat-tile">
+            <div class="stat-value">
+                {% if stats.avg_time_ms is not none %}{{ (stats.avg_time_ms / 1000) | round(1) }}s{% else %}—{% endif %}
+            </div>
+            <div class="stat-label">⏱ avg</div>
+        </div>
+    </div>
+    <p class="stat-breakdown"><small>💻 web: {{ stats.from_web }} • 📱 telegram: {{ stats.from_telegram }} • ✗ failed: {{ stats.failed }}</small></p>
+</section>
+
+{# ─── Active queries with actions ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Активні запити ({{ active | length }})</h5>
+    {% if not active %}
+    <p><em>Немає активних запитів — черга чиста.</em></p>
+    {% else %}
+    <table class="dash-table">
+        <thead>
+            <tr><th>#</th><th>дж.</th><th>статус</th><th>питання</th><th>час</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for q in active %}
+            <tr class="dash-row-{{ q.status }}">
+                <td><small>{{ q.id }}</small></td>
+                <td>{% if q.source == 'web' %}💻{% else %}📱{% endif %}</td>
+                <td>
+                    {% if q.status == 'pending' %}⏳{% elif q.status == 'processing' %}🔄{% else %}✗{% endif %}
+                    {{ q.status }}
+                </td>
+                <td class="dash-question">{{ q.question[:70] }}{% if q.question|length > 70 %}…{% endif %}</td>
+                <td><small>{{ q.asked_at.strftime('%H:%M') }}</small></td>
+                <td class="dash-actions">
+                    {% if q.status == 'failed' %}
+                    <button class="dash-btn is-requeue"
+                            hx-post="/dashboard/queries/{{ q.id }}/requeue"
+                            hx-target="#dashboard-panel" hx-swap="innerHTML">
+                        ↻ requeue
+                    </button>
+                    {% endif %}
+                    {% if q.status in ('pending', 'processing') %}
+                    <button class="dash-btn is-cancel"
+                            hx-post="/dashboard/queries/{{ q.id }}/cancel"
+                            hx-target="#dashboard-panel" hx-swap="innerHTML"
+                            hx-confirm="Скасувати запит #{{ q.id }}?">
+                        ⊘ cancel
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+
+{# ─── Open errors with resolve action ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Відкриті помилки ({{ errors | length }})</h5>
+    {% if not errors %}
+    <p><em>Немає невирішених помилок. 🎉</em></p>
+    {% else %}
+    <ul class="dash-error-list">
+        {% for e in errors %}
+        <li class="dash-error-item">
+            <div class="dash-error-head">
+                <span class="dash-error-type">{{ e.error_type }}</span>
+                <span class="dash-error-proc"><small>{{ e.process }}</small></span>
+                <span class="dash-error-time"><small>{{ e.timestamp.strftime('%m-%d %H:%M') }}</small></span>
+                <button class="dash-btn is-resolve"
+                        hx-post="/dashboard/errors/{{ e.id }}/resolve"
+                        hx-target="#dashboard-panel" hx-swap="innerHTML">
+                    ✓ resolve
+                </button>
+            </div>
+            <div class="dash-error-msg"><small>{{ e.error_message[:200] }}</small></div>
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</section>
+
+{# ─── Whitelist users with deactivate action ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Whitelist ({{ users | length }})</h5>
+    <table class="dash-table">
+        <thead>
+            <tr><th>ім'я</th><th>роль</th><th>@username</th><th>tg id</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for u in users %}
+            <tr>
+                <td>{{ u.full_name }}</td>
+                <td>{% if u.role == 'admin' %}⭐ admin{% else %}pastor{% endif %}</td>
+                <td><small>{% if u.telegram_username %}@{{ u.telegram_username }}{% else %}—{% endif %}</small></td>
+                <td><small>{{ u.telegram_user_id }}</small></td>
+                <td class="dash-actions">
+                    {% if u.role != 'admin' %}
+                    <button class="dash-btn is-cancel"
+                            hx-post="/dashboard/users/{{ u.telegram_user_id }}/deactivate"
+                            hx-target="#dashboard-panel" hx-swap="innerHTML"
+                            hx-confirm="Деактивувати {{ u.full_name }}? Втратить доступ до бота.">
+                        ⊘ deactivate
+                    </button>
+                    {% else %}
+                    <small class="dash-admin-lock" title="admin захищений від деактивації">🔒</small>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
