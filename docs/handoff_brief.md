@@ -1,7 +1,7 @@
 # Church Meeting Assistant — Handoff Brief
 
 **Дата:** 22 липня 2026
-**Стан:** MVP-A (foundation + web + bot + worker), MVP-B (dashboard), **MVP-C (ingestion: upload audio → protocol)** і **meeting-detail: стенограма + аудіоплеєр із клікабельними таймкодами** — код готовий, **закомічено й запушено на GitHub** (`main`). MVP-A/B провалідовані end-to-end; MVP-C провалідований покроково (unit + web-роути через curl + браузер), але **ще не прогнаний на реальному аудіо** (повний ~2-год pipeline через worker).
+**Стан:** MVP-A (foundation + web + bot + worker), MVP-B (dashboard), **MVP-C (ingestion: upload audio → protocol)**, **meeting-detail (стенограма + аудіоплеєр із клікабельними таймкодами)** і **перебудова UI-навігації (топ-меню, дашборд-landing, сайдбар лише в «Зустрічі»)** — код готовий, **закомічено й запушено на GitHub** (`main`). MVP-A/B провалідовані end-to-end; MVP-C провалідований покроково (unit + web-роути через curl + браузер), але **ще не прогнаний на реальному аудіо** (повний ~2-год pipeline через worker).
 **Мета наступної сесії:** прогнати MVP-C на реальному записі + обрати наступний пункт backlog (single-command run стає важливішим — тепер 4 процеси).
 
 ---
@@ -62,7 +62,8 @@ await log.record_error(error_type="...", error_message="...", traceback=..., ...
 
 ### MVP-A.2 Web UI (13 липня, 2 commits)
 
-Sidebar (14 meetings) + query form (sync Gemma) + meeting detail + HTMX search + history.
+Sidebar (meetings) + query form (sync Gemma) + meeting detail + HTMX search + history.
+*(Маршрути/навігацію перебудовано 22 липня — див. «Web UI навігація + layout»: `/` тепер дашборд, головна-запит → `/meetings`.)*
 
 ### MVP-A.3 Telegram bot (15 липня, 3 commits) ✅
 
@@ -126,6 +127,14 @@ Sidebar (14 meetings) + query form (sync Gemma) + meeting detail + HTMX search +
 - **Клікабельні таймкоди** — і в стенограмі (кожен `.turn-ts`), і в темах (дужкові списки, роздільники **кома або крапка з комою**: `(00:21)`, `(24:11, 28:16)`, `(31:30; 33:52; 34:42)`). Клік → seek + play. Хибних збігів (біблійні посилання «Псалом 84:6») уникнуто — лінкуються лише дужкові timestamp-списки.
 
 **⚠ Відома засторога:** у автоматизованому тесті великі m4a (74–103 МБ) інколи повільно вантажили метадані в плеєр (пул зʼєднань браузера, не сервер — curl віддає Range миттєво). У звичайному свіжому браузері працює; якщо на великих файлах буде повільний старт — кандидат на легкий metadata-endpoint / оптимізацію m4a під стрімінг.
+
+### Web UI навігація + layout (22 липня) ✅
+
+`base.html` + `web/routes/home.py` + `app.css`:
+- **Landing:** `GET /` → 307 redirect на `/dashboard` (дашборд = стартова сторінка).
+- **Топ-меню** (завжди видиме, у `base.html`, обгорнуте в колонковий `.app-shell`): 📊 Моніторинг (`/dashboard`) · 📅 Зустрічі (`/meetings`) · 🎙️ Нова зустріч (`/ingest`) · 📜 Історія запитів (`/history`). Активний пункт за `request.url.path`.
+- **«Зустрічі»** = стара головна (форма запитів + огляд корпусу), переїхала з `/` на `GET /meetings` (`home.py`).
+- **Сайдбар** (пошук + список зустрічей) — **лише** в розділі «Зустрічі» (`/meetings` + `/meetings/<date>`); на решті сторінок його немає (клас `.no-sidebar` → контент центрується max-width 1100px). Bottom-nav із сайдбара прибрано (тепер у топ-меню).
 
 ---
 
