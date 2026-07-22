@@ -20,21 +20,36 @@
 </head>
 <body>
 
-<div class="app-layout">
+{% set _path = request.url.path %}
+{% set _in_meetings = _path == '/meetings' or _path.startswith('/meetings/') %}
+<div class="app-shell">
 
-    {# ─── SIDEBAR ─── #}
-    <aside class="app-sidebar">
-        <header class="sidebar-header">
-            <h3><a href="/" class="sidebar-title">📖 CMA</a></h3>
-        </header>
+    {# ─── TOP NAV (always visible) ─── #}
+    <nav class="top-nav">
+        <a href="/dashboard" class="top-nav-brand">📖 CMA</a>
+        <div class="top-nav-links">
+            <a href="/dashboard" class="{{ 'is-active' if _path.startswith('/dashboard') else '' }}">📊 Моніторинг</a>
+            <a href="/meetings" class="{{ 'is-active' if _in_meetings else '' }}">📅 Зустрічі</a>
+            <a href="/ingest" class="{{ 'is-active' if _path.startswith('/ingest') else '' }}">🎙️ Нова зустріч</a>
+            <a href="/history" class="{{ 'is-active' if _path.startswith('/history') else '' }}">📜 Історія запитів</a>
+        </div>
+    </nav>
 
-        {% include "partials/sidebar.html" %}
-    </aside>
+    <div class="app-layout {{ 'no-sidebar' if not _in_meetings else '' }}">
 
-    {# ─── MAIN PANEL ─── #}
-    <main class="app-main">
-        {% block main %}{% endblock %}
-    </main>
+        {# ─── SIDEBAR (only in the "Зустрічі" section) ─── #}
+        {% if _in_meetings %}
+        <aside class="app-sidebar">
+            {% include "partials/sidebar.html" %}
+        </aside>
+        {% endif %}
+
+        {# ─── MAIN PANEL ─── #}
+        <main class="app-main">
+            {% block main %}{% endblock %}
+        </main>
+
+    </div>
 
 </div>
 

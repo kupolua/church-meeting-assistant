@@ -31,9 +31,16 @@ body {
     padding: 0;
 }
 
+.app-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
 .app-layout {
     display: flex;
-    height: 100vh;
+    flex: 1 1 auto;
+    min-height: 0;      /* let children (sidebar/main) own the scroll */
     overflow: hidden;
 }
 
@@ -1162,4 +1169,61 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
 .turn-ts.ts-link {
     background: none;
     border-bottom: 1px dotted currentColor;
+}
+
+/* ─────────────────────────────────────────────
+   Top navigation bar (always visible)
+   ───────────────────────────────────────────── */
+
+.top-nav {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 0.5rem 1rem;
+    background: #1f2a44;
+    color: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.top-nav-brand {
+    color: #fff;
+    font-weight: 700;
+    font-size: 1.1rem;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.top-nav-links {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+}
+
+.top-nav-links a {
+    color: #cdd5e6;
+    text-decoration: none;
+    padding: 0.35rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    transition: background 0.12s, color 0.12s;
+}
+
+.top-nav-links a:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.top-nav-links a.is-active {
+    background: #3b82f6;
+    color: #fff;
+}
+
+/* When there's no sidebar (dashboard / ingest / history), keep the main
+   content readable instead of stretching edge-to-edge on wide screens. */
+.app-layout.no-sidebar .app-main > * {
+    max-width: 1100px;
+    margin-left: auto;
+    margin-right: auto;
 }
