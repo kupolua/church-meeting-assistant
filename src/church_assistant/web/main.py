@@ -71,6 +71,7 @@ from church_assistant.web.routes import (  # noqa: E402
     search,
     history,
     dashboard,
+    ingest,
 )
 
 app.include_router(home.router)
@@ -79,3 +80,4 @@ app.include_router(query.router)
 app.include_router(search.router)
 app.include_router(history.router)
 app.include_router(dashboard.router)
+app.include_router(ingest.router)

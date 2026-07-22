@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Job #{{ job.id }} ({{ job.meeting_date }}) — Church Meeting Assistant{% endblock %}
+
+{% set status_meta = {
+    'pending':         ('⏳', 'у черзі'),
+    'transcribing':    ('🎧', 'транскрипція'),
+    'awaiting_review': ('✋', 'очікує ревʼю'),
+    'queued_analysis': ('⏳', 'у черзі на аналіз'),
+    'analyzing':       ('🧠', 'аналіз'),
+    'indexing':        ('📦', 'індексація'),
+    'completed':       ('✅', 'готово'),
+    'failed':          ('✗', 'помилка'),
+    'cancelled':       ('⊘', 'скасовано'),
+} %}
+{% set meta = status_meta.get(job.status, ('•', job.status)) %}
+{% set active_statuses = ['pending','transcribing','awaiting_review','queued_analysis','analyzing','indexing'] %}
+
+{% block main %}
+<article class="dashboard-page ingest-detail">
+    <header class="dashboard-header">
+        <h1>{{ meta[0] }} {{ job.meeting_date }}</h1>
+        <p><small>Job #{{ job.id }} · статус: <strong>{{ meta[1] }}</strong>
+            {% if job.original_filename %}· 📄 {{ job.original_filename }}{% endif %}</small></p>
+    </header>
+
+    {# ─── Stage-appropriate call to action ─── #}
+    {% if job.status == 'awaiting_review' %}
+    <div class="flash flash-error" role="alert">
+        ✋ Потрібне ревʼю спікерів, щоб продовжити.
+        <a href="/ingest/{{ job.id }}/speakers" role="button" class="dash-btn is-requeue">✏️ Відкрити редактор</a>
+    </div>
+    {% elif job.status == 'completed' %}
+    <div class="flash flash-ok" role="status">
+        ✅ Протокол готовий{% if job.indexed %} й індексований у Qdrant{% endif %}.
+        <a href="/meetings/{{ job.meeting_date }}" role="button" class="dash-btn is-requeue">📄 Відкрити протокол</a>
+    </div>
+    {% elif job.status == 'failed' %}
+    <div class="flash flash-error" role="alert">
+        ✗ Обробка впала (спроб: {{ job.retry_count }}). Можна повторити з місця зупинки.
+    </div>
+    {% endif %}
+
+    {# ─── Progress ─── #}
+    <section class="dash-section">
+        <h5 class="dash-section-label">Прогрес</h5>
+        <p>
+            {% if job.progress_note %}{{ job.progress_note }}
+            {% elif job.stage %}Крок: <code>{{ job.stage }}</code>
+            {% else %}—{% endif %}
+        </p>
+    </section>
+
+    {# ─── Timeline ─── #}
+    <section class="dash-section">
+        <h5 class="dash-section-label">Хронологія</h5>
+        <table class="dash-table detail-timeline">
+            <tbody>
+                <tr><td>Створено</td><td>{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '—' }}</td></tr>
+                <tr><td>Старт обробки</td><td>{{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else '—' }}</td></tr>
+                <tr><td>Транскрибовано</td><td>{{ job.transcribed_at.strftime('%Y-%m-%d %H:%M:%S') if job.transcribed_at else '—' }}</td></tr>
+                <tr><td>Ревʼю спікерів</td><td>{{ job.reviewed_at.strftime('%Y-%m-%d %H:%M:%S') if job.reviewed_at else '—' }}</td></tr>
+                <tr><td>Завершено</td><td>{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else '—' }}</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    {# ─── Details ─── #}
+    <section class="dash-section">
+        <h5 class="dash-section-label">Деталі</h5>
+        <table class="dash-table detail-timeline">
+            <tbody>
+                <tr><td>Спікерів</td><td>{{ job.speaker_count if job.speaker_count is not none else '—' }}</td></tr>
+                <tr><td>Індексовано</td><td>{{ '✅ так' if job.indexed else '— ні' }}{% if job.index_points %} ({{ job.index_points }} точок){% endif %}</td></tr>
+                <tr><td>Спроб (retry)</td><td>{{ job.retry_count }}</td></tr>
+                <tr><td>Протокол на диску</td><td>{{ '✅ polished.md' if polished_exists else '— ще немає' }}</td></tr>
+                <tr><td>Папка</td><td><small><code>{{ job.meeting_dir }}</code></small></td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    {# ─── Error (if failed) ─── #}
+    {% if job.status == 'failed' and job.error_message %}
+    <section class="dash-section">
+        <h5 class="dash-section-label">Помилка</h5>
+        <p class="dash-error-msg">{{ job.error_message }}</p>
+        {% if job.error_traceback %}
+        <details>
+            <summary><small>Показати traceback</small></summary>
+            <pre class="detail-traceback"><code>{{ job.error_traceback }}</code></pre>
+        </details>
+        {% endif %}
+    </section>
+    {% endif %}
+
+    {# ─── Actions ─── #}
+    <section class="dash-section detail-actions">
+        {% if job.status == 'failed' %}
+        <form action="/ingest/{{ job.id }}/requeue" method="post">
+            <button type="submit" class="dash-btn is-requeue">↻ Повторити</button>
+        </form>
+        {% endif %}
+        {% if job.status in active_statuses %}
+        <form action="/ingest/{{ job.id }}/cancel" method="post"
+              onsubmit="return confirm('Скасувати job #{{ job.id }} ({{ job.meeting_date }})?');">
+            <button type="submit" class="dash-btn is-cancel">⊘ Скасувати</button>
+        </form>
+        {% endif %}
+        <a href="/ingest" role="button" class="secondary outline">← До списку</a>
+    </section>
+</article>
+{% endblock %}

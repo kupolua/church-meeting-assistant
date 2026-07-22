@@ -1,0 +1,136 @@
+{# ─────────────────────────────────────────────────────────────
+   Ingestion panel — auto-refreshing / action-response fragment.
+   Rendered by GET /ingest/panel (poll) and by the cancel/requeue
+   actions, which re-target #ingest-panel to repaint with fresh data.
+
+   Status flow:
+     pending → transcribing → awaiting_review → queued_analysis
+     → analyzing → indexing → completed | failed | cancelled
+   ───────────────────────────────────────────────────────────── #}
+
+{% set status_meta = {
+    'pending':         ('⏳', 'у черзі'),
+    'transcribing':    ('🎧', 'транскрипція'),
+    'awaiting_review': ('✋', 'очікує ревʼю'),
+    'queued_analysis': ('⏳', 'у черзі на аналіз'),
+    'analyzing':       ('🧠', 'аналіз'),
+    'indexing':        ('📦', 'індексація'),
+    'completed':       ('✅', 'готово'),
+    'failed':          ('✗', 'помилка'),
+    'cancelled':       ('⊘', 'скасовано'),
+} %}
+
+{# ─── Pipeline depth tiles ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Стан pipeline</h5>
+    <div class="stat-tiles">
+        <div class="stat-tile {{ 'is-warn' if depth.pending else '' }}">
+            <div class="stat-value">{{ depth.pending }}</div>
+            <div class="stat-label">⏳ у черзі</div>
+        </div>
+        <div class="stat-tile {{ 'is-active' if depth.transcribing else '' }}">
+            <div class="stat-value">{{ depth.transcribing }}</div>
+            <div class="stat-label">🎧 транскр.</div>
+        </div>
+        <div class="stat-tile {{ 'is-warn' if depth.awaiting_review else '' }}">
+            <div class="stat-value">{{ depth.awaiting_review }}</div>
+            <div class="stat-label">✋ ревʼю</div>
+        </div>
+        <div class="stat-tile {{ 'is-active' if depth.analyzing or depth.indexing else '' }}">
+            <div class="stat-value">{{ depth.analyzing + depth.indexing }}</div>
+            <div class="stat-label">🧠 аналіз</div>
+        </div>
+        <div class="stat-tile">
+            <div class="stat-value">{{ depth.completed }}</div>
+            <div class="stat-label">✅ готово</div>
+        </div>
+        <div class="stat-tile {{ 'is-error' if depth.failed else '' }}">
+            <div class="stat-value">{{ depth.failed }}</div>
+            <div class="stat-label">✗ помилки</div>
+        </div>
+    </div>
+</section>
+
+{# ─── Active jobs with actions ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Активні ({{ active | length }})</h5>
+    {% if not active %}
+    <p><em>Немає активних job — завантаж аудіо, щоб почати.</em></p>
+    {% else %}
+    <table class="dash-table">
+        <thead>
+            <tr><th>#</th><th>дата</th><th>статус</th><th>крок</th><th>дії</th></tr>
+        </thead>
+        <tbody>
+            {% for j in active %}
+            {% set meta = status_meta.get(j.status, ('•', j.status)) %}
+            <tr class="dash-row-{{ j.status }}">
+                <td><small><a href="/ingest/{{ j.id }}">{{ j.id }}</a></small></td>
+                <td><a href="/ingest/{{ j.id }}">{{ j.meeting_date }}</a></td>
+                <td>{{ meta[0] }} {{ meta[1] }}</td>
+                <td class="dash-question">
+                    {% if j.progress_note %}{{ j.progress_note }}{% elif j.stage %}{{ j.stage }}{% else %}—{% endif %}
+                    {% if j.speaker_count %}<small> · 👥 {{ j.speaker_count }}</small>{% endif %}
+                </td>
+                <td class="dash-actions">
+                    {% if j.status == 'awaiting_review' %}
+                    <a href="/ingest/{{ j.id }}/speakers" role="button" class="dash-btn is-requeue">
+                        ✏️ Ревʼю спікерів
+                    </a>
+                    {% endif %}
+                    <button class="dash-btn is-cancel"
+                            hx-post="/ingest/{{ j.id }}/cancel"
+                            hx-target="#ingest-panel" hx-swap="innerHTML"
+                            hx-confirm="Скасувати job #{{ j.id }} ({{ j.meeting_date }})?">
+                        ⊘ cancel
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+
+{# ─── Finished jobs (completed / failed / cancelled) ─── #}
+<section class="dash-section">
+    <h5 class="dash-section-label">Завершені ({{ done | length }})</h5>
+    {% if not done %}
+    <p><em>Ще нічого не завершено.</em></p>
+    {% else %}
+    <table class="dash-table">
+        <thead>
+            <tr><th>#</th><th>дата</th><th>статус</th><th>деталі</th><th>дії</th></tr>
+        </thead>
+        <tbody>
+            {% for j in done %}
+            {% set meta = status_meta.get(j.status, ('•', j.status)) %}
+            <tr class="dash-row-{{ j.status }}">
+                <td><small><a href="/ingest/{{ j.id }}">{{ j.id }}</a></small></td>
+                <td><a href="/ingest/{{ j.id }}">{{ j.meeting_date }}</a></td>
+                <td>{{ meta[0] }} {{ meta[1] }}</td>
+                <td class="dash-question">
+                    {% if j.status == 'completed' %}
+                        <a href="/meetings/{{ j.meeting_date }}">Протокол</a>
+                        {% if j.indexed %}<small> · 📦 індексовано</small>{% else %}<small> · ⚠ не індексовано</small>{% endif %}
+                    {% elif j.status == 'failed' %}
+                        <small class="dash-error-msg">{{ (j.error_message or '')[:120] }}</small>
+                    {% else %}
+                        <small>—</small>
+                    {% endif %}
+                </td>
+                <td class="dash-actions">
+                    {% if j.status == 'failed' %}
+                    <button class="dash-btn is-requeue"
+                            hx-post="/ingest/{{ j.id }}/requeue"
+                            hx-target="#ingest-panel" hx-swap="innerHTML">
+                        ↻ retry
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>

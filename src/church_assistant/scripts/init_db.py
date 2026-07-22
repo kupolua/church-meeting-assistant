@@ -76,6 +76,7 @@ def drop_all_tables(conn: psycopg.Connection) -> None:
         "errors",
         "logs",
         "queries",
+        "ingestion_jobs",
         "health_checks",
         "schema_version",
         "users",
@@ -86,7 +87,7 @@ def drop_all_tables(conn: psycopg.Connection) -> None:
             cur.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
             print(f"   - dropped {t}")
         # Drop views too
-        for v in ["v_latest_health", "v_queue_depth", "v_stats_today"]:
+        for v in ["v_latest_health", "v_queue_depth", "v_stats_today", "v_ingestion_depth"]:
             cur.execute(f"DROP VIEW IF EXISTS {v} CASCADE")
             print(f"   - dropped view {v}")
     conn.commit()
@@ -132,7 +133,7 @@ def verify_tables(conn: psycopg.Connection) -> None:
     for v in views:
         print(f"    - {v}")
 
-    expected_tables = {"users", "queries", "logs", "errors", "health_checks", "schema_version"}
+    expected_tables = {"users", "queries", "ingestion_jobs", "logs", "errors", "health_checks", "schema_version"}
     missing = expected_tables - set(tables)
     if missing:
         print(f"  ⚠ Missing tables: {missing}")

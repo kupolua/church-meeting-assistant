@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Ревʼю спікерів {{ job.meeting_date }} — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="dashboard-page speakers-editor">
+    <header class="dashboard-header">
+        <h1>✏️ Ревʼю спікерів — {{ job.meeting_date }}</h1>
+        <p><small>
+            Job #{{ job.id }} · {{ rows | length }} спікерів
+            {% if n_flagged %}· <strong class="warn">{{ n_flagged }} потребують уваги</strong>{% endif %}
+        </small></p>
+    </header>
+
+    <section class="dash-section">
+        <p class="speakers-help">
+            Перевір і виправ імена для кожного голосу. Підказки — скільки говорив і коли
+            (час у аудіо). Після збереження запуститься аналіз (Gemma) → протокол → індексація.
+        </p>
+        <div class="speakers-legend">
+            <span class="sp-badge sp-review">⚠ слабкий збіг</span>
+            <span class="sp-badge sp-no_match">❓ невідомий голос</span>
+            <span class="sp-badge sp-invalid">🚫 мало мовлення</span>
+        </div>
+    </section>
+
+    <form action="/ingest/{{ job.id }}/speakers" method="post" class="speakers-form">
+        <div class="dash-section">
+            <table class="dash-table speakers-table">
+                <thead>
+                    <tr>
+                        <th>Голос</th>
+                        <th>Говорив</th>
+                        <th>Приклади (час)</th>
+                        <th>Імʼя</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in rows %}
+                    <tr class="{{ ('sp-flag-' ~ r.flag) if r.flag else '' }}">
+                        <td class="sp-label">
+                            <code>{{ r.label }}</code>
+                            {% if r.flag == 'review' %}<span class="sp-badge sp-review" title="слабкий збіг — перевір">⚠</span>
+                            {% elif r.flag == 'no_match' %}<span class="sp-badge sp-no_match" title="невідомий голос — введи імʼя">❓</span>
+                            {% elif r.flag == 'invalid' %}<span class="sp-badge sp-invalid" title="замало мовлення для фінгерпринту">🚫</span>
+                            {% endif %}
+                        </td>
+                        <td class="sp-time">
+                            <strong>{{ r.total_hms }}</strong>
+                            <small>· {{ r.segments }} сегм.</small>
+                        </td>
+                        <td class="sp-samples">
+                            {% if r.sample_starts %}<small>{{ r.sample_starts | join(', ') }}</small>
+                            {% else %}<small>—</small>{% endif %}
+                        </td>
+                        <td class="sp-name">
+                            <input type="text"
+                                   name="name_{{ r.label }}"
+                                   value="{{ r.name }}"
+                                   placeholder="{% if r.flag == 'no_match' %}введи імʼя гостя{% else %}імʼя спікера{% endif %}"
+                                   autocomplete="off">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="speakers-actions">
+            <button type="submit">✅ Зберегти та запустити аналіз</button>
+            <a href="/ingest" role="button" class="secondary outline">← Назад без змін</a>
+        </div>
+        <p><small>
+            Порада: якщо не впевнений у голосі — послухай його сегменти в аудіо за вказаним часом.
+            Порожнє поле збережеться як мітка <code>SPEAKER_XX</code> (краще введи хоч щось).
+        </small></p>
+    </form>
+</article>
+{% endblock %}

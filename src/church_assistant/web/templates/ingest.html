@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Завантаження зустрічі — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="dashboard-page">
+    <header class="dashboard-header">
+        <h1>🎙️ Нова зустріч</h1>
+        <p><small>Завантаж аудіо → діаризація + транскрипція → ревʼю спікерів → протокол → індексація</small></p>
+    </header>
+
+    {# ─── Flash messages (from redirect query params) ─── #}
+    {% if error %}
+    <div class="flash flash-error" role="alert">⚠ {{ error }}</div>
+    {% endif %}
+    {% if ok %}
+    <div class="flash flash-ok" role="status">✓ {{ ok }}</div>
+    {% endif %}
+
+    {# ─── Upload form (plain multipart POST; not polled) ─── #}
+    <section class="dash-section">
+        <h5 class="dash-section-label">Завантажити аудіо</h5>
+        <form action="/ingest" method="post" enctype="multipart/form-data" class="ingest-form">
+            <div class="grid">
+                <label>
+                    Дата зустрічі
+                    <input type="date" name="date" required
+                           title="Формат YYYY-MM-DD (папка data/meetings/&lt;date&gt;)">
+                </label>
+                <label>
+                    Аудіофайл
+                    <input type="file" name="audio" required
+                           accept=".m4a,.mp3,.wav,.aac,.ogg,.flac,.opus,.mp4,.webm,audio/*">
+                </label>
+            </div>
+            <button type="submit">⬆ Завантажити та поставити в чергу</button>
+            <p><small>
+                Pipeline довгий: діаризація ~2 год на M1, аналіз (Gemma) 10–30 хв.
+                Обробка йде у фоні — стеж за прогресом нижче.
+                Потрібен запущений <code>ingestion.main</code> worker.
+            </small></p>
+        </form>
+    </section>
+
+    {# ─── Refreshable job list: polls itself every 5s ─── #}
+    <div
+        id="ingest-panel"
+        hx-get="/ingest/panel"
+        hx-trigger="every 5s"
+        hx-swap="innerHTML"
+    >
+        {% include "partials/ingest_panel.html" %}
+    </div>
+
+    <footer class="dashboard-footer">
+        <p><small><a href="/dashboard">📊 Моніторинг запитів</a> &middot; <a href="/">← Головна</a></small></p>
+    </footer>
+</article>
+{% endblock %}

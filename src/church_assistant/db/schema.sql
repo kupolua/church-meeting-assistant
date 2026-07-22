@@ -233,6 +233,85 @@ COMMENT ON TABLE health_checks IS
 
 
 -- =================================================================
+-- TABLE: ingestion_jobs
+-- =================================================================
+-- Async meeting-ingestion pipeline (MVP-C): upload audio → protocol.
+-- One row per meeting being processed. Mirrors the `queries` queue model,
+-- but the pipeline is long (diarization ~2h) and has a human-in-the-loop
+-- pause (edit speakers.json) between transcription and analysis.
+--
+-- Status machine (runnable states = 'pending', 'queued_analysis'):
+--   pending          → worker runs diarization + transcription (slow)
+--   transcribing     → (in-flight) match_speakers + transcribe
+--   awaiting_review  → paused: user edits speakers.json in web editor
+--   queued_analysis  → review submitted, worker resumes
+--   analyzing        → (in-flight) merge → chunked_analyze → polish
+--   indexing         → (in-flight) index_meeting into Qdrant
+--   completed        → polished.md written + indexed
+--   failed           → error (retry_count tracked)
+--   cancelled        → manual stop (dashboard)
+--
+CREATE TABLE IF NOT EXISTS ingestion_jobs (
+    id BIGSERIAL PRIMARY KEY,
+
+    -- Identity / filesystem
+    meeting_date TEXT NOT NULL,                 -- 'YYYY-MM-DD' (folder name)
+    meeting_dir TEXT NOT NULL,                  -- abs path to data/meetings/<date>/
+    original_filename TEXT,                     -- uploaded file's name (audit)
+    audio_filename TEXT,                        -- copied-in name (e.g. audio.m4a)
+
+    -- Status workflow
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN (
+            'pending', 'transcribing', 'awaiting_review',
+            'queued_analysis', 'analyzing', 'indexing',
+            'completed', 'failed', 'cancelled'
+        )),
+    stage TEXT,                                 -- fine-grained: 'diarization', 'whisper', 'merge', 'analyze', 'polish', 'index'
+    progress_note TEXT,                         -- human-readable current-step note
+
+    -- Timestamps
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,                     -- worker first picked it up
+    transcribed_at TIMESTAMPTZ,                 -- transcription done (→ awaiting_review)
+    reviewed_at TIMESTAMPTZ,                    -- speakers.json submitted
+    completed_at TIMESTAMPTZ,                   -- fully done (or failed/cancelled)
+
+    -- Results / metadata
+    speaker_count INTEGER,                      -- # speakers detected (from speakers.json)
+    indexed BOOLEAN NOT NULL DEFAULT FALSE,     -- did index_meeting run
+    index_points INTEGER,                       -- points upserted (optional)
+
+    -- Error info (if status='failed')
+    error_message TEXT,
+    error_traceback TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+
+    notes TEXT
+);
+
+-- One job per meeting_date (re-uploading resumes the same folder).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingestion_meeting_date
+    ON ingestion_jobs(meeting_date);
+
+-- Queue scan: runnable jobs oldest-first (pending + queued_analysis).
+CREATE INDEX IF NOT EXISTS idx_ingestion_runnable
+    ON ingestion_jobs(created_at)
+    WHERE status IN ('pending', 'queued_analysis');
+
+-- Active-jobs view (newest first) for the ingestion dashboard.
+CREATE INDEX IF NOT EXISTS idx_ingestion_created_at
+    ON ingestion_jobs(created_at DESC);
+
+COMMENT ON TABLE ingestion_jobs IS
+    'Async meeting-ingestion pipeline (MVP-C). Queue + history for audio→protocol.';
+COMMENT ON COLUMN ingestion_jobs.status IS
+    'pending → transcribing → awaiting_review → queued_analysis → analyzing → indexing → completed | failed | cancelled';
+COMMENT ON COLUMN ingestion_jobs.stage IS
+    'Fine-grained progress within a status (diarization/whisper/merge/analyze/polish/index)';
+
+
+-- =================================================================
 -- VIEWS for common queries
 -- =================================================================
 
@@ -263,6 +342,19 @@ SELECT
 FROM queries
 WHERE asked_at > NOW() - INTERVAL '24 hours';
 
+-- Ingestion queue depth (for the ingestion dashboard widget)
+CREATE OR REPLACE VIEW v_ingestion_depth AS
+SELECT
+    count(*) FILTER (WHERE status = 'pending')          AS pending,
+    count(*) FILTER (WHERE status = 'transcribing')     AS transcribing,
+    count(*) FILTER (WHERE status = 'awaiting_review')  AS awaiting_review,
+    count(*) FILTER (WHERE status = 'queued_analysis')  AS queued_analysis,
+    count(*) FILTER (WHERE status = 'analyzing')        AS analyzing,
+    count(*) FILTER (WHERE status = 'indexing')         AS indexing,
+    count(*) FILTER (WHERE status = 'completed')        AS completed,
+    count(*) FILTER (WHERE status = 'failed')           AS failed
+FROM ingestion_jobs;
+
 
 -- =================================================================
 -- INITIAL DATA
@@ -286,4 +378,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 INSERT INTO schema_version (version, description)
 VALUES (1, 'Initial schema: users, queries, logs, errors, health_checks')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_version (version, description)
+VALUES (2, 'MVP-C: ingestion_jobs table + v_ingestion_depth view')
 ON CONFLICT (version) DO NOTHING;
