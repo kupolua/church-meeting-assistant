@@ -48,6 +48,14 @@ class Topic:
 
 
 @dataclass
+class TranscriptTurn:
+    """One speaker turn from annotated.md — the meeting стенограма."""
+    timestamp: str = ""                     # e.g. '00:05' ('' if the line had none)
+    speaker: str = ""                       # e.g. 'Павло Кулаковський' ('' if unknown)
+    text: str = ""
+
+
+@dataclass
 class MeetingSummary:
     """Sidebar-friendly metadata (parsed lazily)."""
     date: str                               # 'YYYY-MM-DD'
@@ -70,6 +78,7 @@ class MeetingDetail:
     folder: Path
     attendees: list[str] = field(default_factory=list)
     topics: list[Topic] = field(default_factory=list)
+    transcript: list[TranscriptTurn] = field(default_factory=list)
     polished_md_path: Optional[Path] = None
     indexed: bool = False
 
@@ -253,11 +262,46 @@ def list_all_summaries() -> list[MeetingSummary]:
     return result
 
 
+# Transcript line: "[00:05 Павло Кулаковський]: текст".
+# Speaker may contain spaces and even nested brackets — the pipeline emits
+# placeholder speakers like "[немає мовця]" / "[нерозбірливо]", giving
+# "[00:30 [немає мовця]]: текст". A lazy speaker group stops at the "]:" that
+# closes the header, so these placeholder lines parse (and their timestamps
+# become clickable) too.
+_TURN_RE = re.compile(r"^\[(?P<ts>[^\]\s]+)\s+(?P<speaker>.+?)\]:\s*(?P<text>.*)$")
+
+
+def _parse_transcript_from_annotated(text: str) -> list[TranscriptTurn]:
+    """
+    Parse annotated.md into speaker turns (the стенограма).
+
+    Recognizes '[timestamp Speaker]: text' lines; any other non-empty,
+    non-heading line is kept as a turn with no timestamp/speaker so nothing
+    is silently dropped.
+    """
+    turns: list[TranscriptTurn] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        m = _TURN_RE.match(line)
+        if m:
+            turns.append(TranscriptTurn(
+                timestamp=m.group("ts"),
+                speaker=m.group("speaker").strip(),
+                text=m.group("text").strip(),
+            ))
+        else:
+            turns.append(TranscriptTurn(text=line))
+    return turns
+
+
 def load_detail(meeting_date: str) -> Optional[MeetingDetail]:
     """
     Load full detail for a meeting by its date ('YYYY-MM-DD').
 
-    Returns None if not found or no polished.md.
+    Returns None if not found or no polished.md. The стенограма (annotated.md)
+    is loaded when present; absent, transcript is an empty list.
     """
     if not _DATE_RE.match(meeting_date):
         return None
@@ -270,11 +314,19 @@ def load_detail(meeting_date: str) -> Optional[MeetingDetail]:
 
     text = polished.read_text(encoding="utf-8")
 
+    annotated = folder / "annotated.md"
+    transcript: list[TranscriptTurn] = []
+    if annotated.exists():
+        transcript = _parse_transcript_from_annotated(
+            annotated.read_text(encoding="utf-8")
+        )
+
     return MeetingDetail(
         date=meeting_date,
         folder=folder,
         attendees=_parse_attendees_from_polished(text),
         topics=_parse_topics_from_polished(text),
+        transcript=transcript,
         polished_md_path=polished,
         indexed=(folder / "index_state.json").exists(),
     )

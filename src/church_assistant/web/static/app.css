@@ -936,3 +936,230 @@ body {
     margin-top: 0.3rem;
     font-family: monospace;
 }
+
+/* ─────────────────────────────────────────────
+   Ingestion page (MVP-C): flash messages + form
+   ───────────────────────────────────────────── */
+
+.flash {
+    padding: 0.6rem 0.9rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+.flash-error {
+    background: #fdecea;
+    border: 1px solid #f5c6c2;
+    color: #a02622;
+}
+
+.flash-ok {
+    background: #eafaf0;
+    border: 1px solid #b7e4c7;
+    color: #1b7a3d;
+}
+
+.ingest-form button[type="submit"] {
+    margin-top: 0.5rem;
+}
+
+/* awaiting-review link styled like a button chip inside the table */
+a.dash-btn {
+    text-decoration: none;
+    display: inline-block;
+}
+
+/* ─────────────────────────────────────────────
+   Speakers review editor (MVP-C, Phase 4)
+   ───────────────────────────────────────────── */
+
+.speakers-help {
+    margin: 0 0 0.75rem 0;
+    color: #555;
+}
+
+.speakers-legend {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+}
+
+.sp-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.sp-badge.sp-review   { background: #fff3cd; color: #7a5c00; }
+.sp-badge.sp-no_match { background: #e7e0ff; color: #4b2fa0; }
+.sp-badge.sp-invalid  { background: #fdecea; color: #a02622; }
+
+.speakers-table td { vertical-align: middle; }
+
+.speakers-table .sp-label code { font-weight: 600; }
+.speakers-table .sp-time strong { font-variant-numeric: tabular-nums; }
+.speakers-table .sp-samples small { color: #888; font-variant-numeric: tabular-nums; }
+
+.speakers-table .sp-name input {
+    margin: 0;
+    width: 100%;
+}
+
+/* highlight the rows needing attention */
+tr.sp-flag-review   { background: rgba(255, 243, 205, 0.35); }
+tr.sp-flag-no_match { background: rgba(231, 224, 255, 0.40); }
+tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
+
+.speakers-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    margin: 1rem 0 0.5rem 0;
+}
+
+.speakers-actions button[type="submit"] { margin: 0; }
+.speakers-actions a[role="button"] { margin: 0; }
+
+/* ─────────────────────────────────────────────
+   Ingestion job detail (MVP-C, Phase 5)
+   ───────────────────────────────────────────── */
+
+.detail-timeline td:first-child {
+    color: #666;
+    width: 12rem;
+    white-space: nowrap;
+}
+
+.detail-timeline td { font-variant-numeric: tabular-nums; }
+
+.detail-traceback {
+    max-height: 320px;
+    overflow: auto;
+    background: #2b2b2b;
+    color: #eee;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+}
+
+.detail-actions {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.detail-actions form { margin: 0; }
+.detail-actions button { margin: 0; }
+.detail-actions a[role="button"] { margin: 0; }
+
+.flash a[role="button"] { margin-left: 0.5rem; }
+
+/* ─────────────────────────────────────────────
+   Meeting transcript / стенограма (annotated.md)
+   ───────────────────────────────────────────── */
+
+.transcript-block { margin-top: 1.5rem; }
+
+.transcript-details > summary {
+    cursor: pointer;
+    padding: 0.5rem 0.75rem;
+    background: #f2f4f7;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    user-select: none;
+}
+
+.transcript-details[open] > summary {
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+}
+
+.transcript-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e3e6ea;
+    border-radius: 6px;
+    background: #fff;
+    line-height: 1.5;
+}
+
+/* extra top gap whenever the speaker changes — visually groups turns */
+.transcript-turn.is-new-speaker { margin-top: 0.75rem; }
+.transcript-turn:first-child { margin-top: 0; }
+
+.turn-meta.is-hidden { display: none; }
+
+.turn-speaker {
+    font-weight: 600;
+    color: #2b3a55;
+    font-size: 0.9rem;
+}
+
+.turn-line {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+}
+
+.turn-ts {
+    flex: 0 0 auto;
+    color: #9aa2ad;
+    font-family: monospace;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.turn-text { flex: 1 1 auto; }
+
+/* ─────────────────────────────────────────────
+   Meeting audio player + clickable timestamps
+   ───────────────────────────────────────────── */
+
+.audio-player-bar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
+    background: #f7f9fb;
+    border: 1px solid #e3e6ea;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.audio-player-bar audio {
+    width: 100%;
+    height: 38px;
+}
+
+.audio-hint { color: #8a919c; }
+
+/* clickable timestamp — used in both topics and стенограма */
+.ts-link {
+    cursor: pointer;
+    color: #2563c9;
+    font-variant-numeric: tabular-nums;
+    text-decoration: none;
+    border-bottom: 1px dotted currentColor;
+}
+
+.ts-link:hover,
+.ts-link:focus {
+    color: #17408b;
+    border-bottom-style: solid;
+    outline: none;
+}
+
+/* in the стенограма the timestamp span is the link */
+.turn-ts.ts-link {
+    background: none;
+    border-bottom: 1px dotted currentColor;
+}

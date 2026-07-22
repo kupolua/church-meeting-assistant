@@ -10,6 +10,7 @@
         <div class="meeting-quick-stats">
             <span title="Учасники">👥 {{ detail.attendees | length }}</span>
             <span title="Теми">📋 {{ detail.topics | length }}</span>
+            {% if detail.transcript %}<span title="Реплік у стенограмі">💬 {{ detail.transcript | length }}</span>{% endif %}
             {% if detail.indexed %}
             <span class="badge indexed" title="Індексовано в Qdrant">✓ indexed</span>
             {% else %}
@@ -17,6 +18,17 @@
             {% endif %}
         </div>
     </header>
+
+    {# ─── Audio player (sticky) — timestamps in topics/стенограма seek here ─── #}
+    {% if has_audio %}
+    <div class="audio-player-bar">
+        <audio id="meeting-audio" controls preload="metadata"
+               src="/meetings/{{ detail.date }}/audio">
+            Ваш браузер не підтримує аудіоплеєр.
+        </audio>
+        <small class="audio-hint">▶ Клікни на час у темах чи стенограмі, щоб перемотати сюди</small>
+    </div>
+    {% endif %}
 
     {# ─── Attendees ─── #}
     <section class="attendees-block">
@@ -59,6 +71,35 @@
         {% endif %}
     </section>
 
+    {# ─── Стенограма (annotated.md) ─── #}
+    <section class="transcript-block">
+        <h4>Стенограма{% if detail.transcript %} ({{ detail.transcript | length }} реплік){% endif %}</h4>
+
+        {% if detail.transcript %}
+        <details class="transcript-details">
+            <summary>Показати стенограму зустрічі</summary>
+            <div class="transcript-list">
+                {% for turn in detail.transcript %}
+                {% set new_speaker = loop.first or turn.speaker != loop.previtem.speaker %}
+                <div class="transcript-turn {{ 'is-new-speaker' if new_speaker else '' }}">
+                    {% if turn.speaker %}
+                    <div class="turn-meta {{ 'is-hidden' if not new_speaker else '' }}">
+                        <span class="turn-speaker">{{ turn.speaker }}</span>
+                    </div>
+                    {% endif %}
+                    <div class="turn-line">
+                        {% if turn.timestamp %}<span class="turn-ts">{{ turn.timestamp }}</span>{% endif %}
+                        <span class="turn-text">{{ turn.text }}</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% else %}
+        <p><em>Стенограма недоступна (немає annotated.md для цієї зустрічі).</em></p>
+        {% endif %}
+    </section>
+
     <footer class="meeting-detail-footer">
         <p>
             <small>
@@ -67,4 +108,118 @@
         </p>
     </footer>
 </article>
+
+{% if has_audio %}
+<script>
+(function () {
+    "use strict";
+    var audio = document.getElementById('meeting-audio');
+    if (!audio) return;
+
+    function tsToSeconds(str) {
+        var parts = str.trim().split(':').map(function (p) { return parseInt(p, 10); });
+        if (parts.some(function (x) { return isNaN(x); })) return null;
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return null;
+    }
+
+    // ── Стенограма: each .turn-ts span is exactly a timestamp → make clickable.
+    //    (No role=button — Pico.css would paint it as a filled button.)
+    document.querySelectorAll('.transcript-list .turn-ts').forEach(function (span) {
+        var secs = tsToSeconds(span.textContent);
+        if (secs === null) return;
+        span.classList.add('ts-link');
+        span.dataset.seconds = secs;
+        span.tabIndex = 0;
+        span.title = 'Слухати з ' + span.textContent.trim();
+    });
+
+    // ── Теми: linkify timestamps that live inside a parenthetical timestamp
+    //    list, e.g. "(00:21)" OR "(2:59:22, 2:59:49)". Only parentheticals made
+    //    up purely of timestamps (+ commas/spaces) qualify, so inline Bible refs
+    //    like "Псалом 84:6" are never touched.
+    function buildParenFragment(parenStr) {
+        var frag = document.createDocumentFragment();
+        var re = /\d{1,2}:\d{2}(?::\d{2})?/g;
+        var last = 0, m;
+        while ((m = re.exec(parenStr))) {
+            if (m.index > last) frag.appendChild(document.createTextNode(parenStr.slice(last, m.index)));
+            var secs = tsToSeconds(m[0]);
+            var a = document.createElement('a');
+            a.className = 'ts-link';
+            a.href = '#';
+            a.dataset.seconds = secs;
+            a.textContent = m[0];
+            a.title = 'Слухати з ' + m[0];
+            frag.appendChild(a);
+            last = m.index + m[0].length;
+        }
+        if (last < parenStr.length) frag.appendChild(document.createTextNode(parenStr.slice(last)));
+        return frag;
+    }
+
+    function linkifyParens(root) {
+        if (!root) return;
+        // A parenthetical of one-or-more timestamps separated by commas OR
+        // semicolons, e.g. "(00:21)", "(24:11, 28:16)", "(31:30; 33:52; 34:42)".
+        var listSrc = '\\(\\s*\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:[;,]\\s*\\d{1,2}:\\d{2}(?::\\d{2})?\\s*)*\\)';
+        var test = new RegExp(listSrc);
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            acceptNode: function (node) {
+                return test.test(node.nodeValue || '')
+                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+            }
+        });
+        var targets = [], node;
+        while ((node = walker.nextNode())) targets.push(node);
+
+        targets.forEach(function (textNode) {
+            var text = textNode.nodeValue;
+            var re = new RegExp(listSrc, 'g');
+            var last = 0, match, frag = document.createDocumentFragment(), replaced = false;
+            while ((match = re.exec(text))) {
+                replaced = true;
+                if (match.index > last) frag.appendChild(document.createTextNode(text.slice(last, match.index)));
+                frag.appendChild(buildParenFragment(match[0]));  // whole "(...)" incl. parens
+                last = match.index + match[0].length;
+            }
+            if (!replaced) return;
+            if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+            textNode.parentNode.replaceChild(frag, textNode);
+        });
+    }
+    linkifyParens(document.querySelector('.topics-list'));
+
+    // ── Seek + play
+    function seekTo(secs) {
+        function doSeek() {
+            try { audio.currentTime = secs; } catch (e) {}
+            var p = audio.play();
+            if (p && p.catch) p.catch(function () {});
+        }
+        if (audio.readyState >= 1) doSeek();
+        else {
+            audio.addEventListener('loadedmetadata', doSeek, { once: true });
+            audio.load();
+        }
+        audio.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+
+    function activate(el, ev) {
+        var link = el.closest ? el.closest('.ts-link') : null;
+        if (!link) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        var secs = parseFloat(link.dataset.seconds);
+        if (!isNaN(secs)) seekTo(secs);
+    }
+
+    document.addEventListener('click', function (e) { activate(e.target, e); });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') activate(e.target, e);
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}
