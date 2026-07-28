@@ -170,7 +170,12 @@ def build_review_rows(
             "total_s": total_s,
             "total_hms": _fmt_mmss(total_s),
             "segments": int(st.get("segments", 0)),
-            "sample_starts": [_fmt_mmss(x) for x in st.get("starts", [])],
+            # Each sample: {hms: '4:12', sec: 252} so the editor can render a
+            # clickable "listen from here" link that seeks the audio player.
+            "samples": [
+                {"hms": _fmt_mmss(x), "sec": int(round(x))}
+                for x in st.get("starts", [])
+            ],
         })
 
     rows.sort(key=lambda r: r["total_s"], reverse=True)

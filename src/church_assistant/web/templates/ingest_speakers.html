@@ -12,10 +12,22 @@
         </small></p>
     </header>
 
+    {# ─── Audio player (sticky) — sample timestamps seek here ─── #}
+    {% if has_audio %}
+    <div class="audio-player-bar">
+        <audio id="speaker-audio" controls preload="metadata"
+               src="/meetings/{{ job.meeting_date }}/audio">
+            Ваш браузер не підтримує аудіоплеєр.
+        </audio>
+        <small class="audio-hint">▶ Клікни на час у колонці «Приклади», щоб послухати голос</small>
+    </div>
+    {% endif %}
+
     <section class="dash-section">
         <p class="speakers-help">
             Перевір і виправ імена для кожного голосу. Підказки — скільки говорив і коли
-            (час у аудіо). Після збереження запуститься аналіз (Gemma) → протокол → індексація.
+            (час у аудіо){% if has_audio %}; клікни на час, щоб послухати цей голос{% endif %}.
+            Після збереження запуститься аналіз (Gemma) → протокол → індексація.
         </p>
         <div class="speakers-legend">
             <span class="sp-badge sp-review">⚠ слабкий збіг</span>
@@ -31,7 +43,7 @@
                     <tr>
                         <th>Голос</th>
                         <th>Говорив</th>
-                        <th>Приклади (час)</th>
+                        <th>Приклади {% if has_audio %}(клікни — послухати){% else %}(час){% endif %}</th>
                         <th>Імʼя</th>
                     </tr>
                 </thead>
@@ -50,7 +62,12 @@
                             <small>· {{ r.segments }} сегм.</small>
                         </td>
                         <td class="sp-samples">
-                            {% if r.sample_starts %}<small>{{ r.sample_starts | join(', ') }}</small>
+                            {% if r.samples %}
+                                <small>
+                                {% for s in r.samples %}
+                                    {% if has_audio %}<a class="ts-link" href="#" data-seconds="{{ s.sec }}" title="Слухати з {{ s.hms }}">{{ s.hms }}</a>{% else %}{{ s.hms }}{% endif %}{{ ', ' if not loop.last }}
+                                {% endfor %}
+                                </small>
                             {% else %}<small>—</small>{% endif %}
                         </td>
                         <td class="sp-name">
@@ -71,9 +88,41 @@
             <a href="/ingest" role="button" class="secondary outline">← Назад без змін</a>
         </div>
         <p><small>
-            Порада: якщо не впевнений у голосі — послухай його сегменти в аудіо за вказаним часом.
+            Порада: якщо не впевнений у голосі — послухай його сегменти{% if has_audio %} (клікни на час у колонці «Приклади»){% else %} в аудіо за вказаним часом{% endif %}.
             Порожнє поле збережеться як мітка <code>SPEAKER_XX</code> (краще введи хоч щось).
         </small></p>
     </form>
 </article>
+
+{% if has_audio %}
+<script>
+(function () {
+    "use strict";
+    var audio = document.getElementById('speaker-audio');
+    if (!audio) return;
+
+    function seekTo(secs) {
+        function doSeek() {
+            try { audio.currentTime = secs; } catch (e) {}
+            var p = audio.play();
+            if (p && p.catch) p.catch(function () {});
+        }
+        if (audio.readyState >= 1) doSeek();
+        else {
+            audio.addEventListener('loadedmetadata', doSeek, { once: true });
+            audio.load();
+        }
+        audio.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+
+    document.addEventListener('click', function (e) {
+        var link = e.target.closest ? e.target.closest('.ts-link') : null;
+        if (!link) return;
+        e.preventDefault();
+        var secs = parseFloat(link.dataset.seconds);
+        if (!isNaN(secs)) seekTo(secs);
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

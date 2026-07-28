@@ -272,6 +272,7 @@ async def speakers_editor(request: Request, job_id: int):
             "job": job,
             "rows": rows,
             "n_flagged": sum(1 for r in rows if r["flag"]),
+            "has_audio": paths.audio.exists(),
             "meetings": meetings_index.list_all_summaries(),
         },
     )
