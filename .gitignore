@@ -38,3 +38,6 @@ data/meetings/*/*
 # Inside voice_profiles/, ignore the .npy files (each is a person's
 # biometric voice signature — confidential).
 data/voice_profiles/*
+
+# dev service logs (restart_dev.sh)
+logs/
