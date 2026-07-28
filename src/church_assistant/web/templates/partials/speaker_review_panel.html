@@ -1,0 +1,33 @@
+{# ─────────────────────────────────────────────────────────────
+   Pending speaker-reassignment changes for a meeting.
+   HTMX target: #speaker-review-panel. Rendered empty (nothing) when
+   there are no queued changes.
+   ───────────────────────────────────────────────────────────── #}
+{% if changes %}
+<div class="review-bar">
+    <div class="review-bar-head">
+        <strong>🎙️ Зміни спікерів у черзі: {{ changes | length }}</strong>
+        <form action="/meetings/{{ date }}/run-analysis" method="post" class="review-run-form">
+            <button type="submit" class="review-run-btn">🔁 Запустити аналіз</button>
+        </form>
+    </div>
+    <ul class="review-list">
+        {% for c in changes %}
+        <li class="review-item">
+            <code>{{ c.label }}</code> →
+            <strong>{{ c.new_name }}</strong>
+            {% if c.is_new %}<span class="review-badge-new" title="Немає голосового профілю — буде зроблено відбиток голосу">новий · відбиток голосу</span>{% endif %}
+            <button type="button" class="review-remove"
+                    hx-post="/meetings/{{ date }}/speaker-change/{{ c.label }}/remove"
+                    hx-target="#speaker-review-panel" hx-swap="innerHTML"
+                    title="Прибрати зміну">✕</button>
+        </li>
+        {% endfor %}
+    </ul>
+    <p class="review-hint"><small>
+        «Запустити аналіз» збереже нові голосові профілі (.npy), оновить
+        <code>speakers.json</code> і поставить зустріч у чергу на переобробку
+        (merge → аналіз → протокол → індекс).
+    </small></p>
+</div>
+{% endif %}

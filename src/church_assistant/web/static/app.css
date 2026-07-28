@@ -1261,3 +1261,66 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
     border-color: #ffe08a;
     background: #fff8e6;
 }
+
+/* ─────────────────────────────────────────────
+   Transcript speaker reassignment (change speaker)
+   ───────────────────────────────────────────── */
+
+.transcript-help { color: #888; margin: 0.25rem 0 0.5rem; }
+
+.turn-speaker-link {
+    color: #2b3a55;
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-decoration: none;
+    border-bottom: 1px dashed #9aa7bd;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.turn-speaker-link:hover,
+.turn-speaker-link:focus { color: #17408b; background: #eef3fb; border-bottom-style: solid; outline: none; }
+
+.turn-speaker-plain { color: #6b7280; font-weight: 600; font-size: 0.9rem; white-space: nowrap; }
+
+/* pending changes bar */
+.review-bar {
+    border: 1px solid #ffe08a;
+    background: #fff8e6;
+    border-radius: 8px;
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 0.75rem;
+}
+.review-bar-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem;
+}
+.review-run-form { margin: 0; }
+.review-run-btn { margin: 0; background: #d97706; border-color: #d97706; }
+.review-run-btn:hover { background: #b45309; border-color: #b45309; }
+
+.review-list { list-style: none; padding: 0; margin: 0 0 0.4rem; }
+.review-item {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.2rem 0; font-size: 0.9rem;
+}
+.review-badge-new {
+    font-size: 0.72rem; padding: 0.1rem 0.4rem; border-radius: 4px;
+    background: #e7e0ff; color: #4b2fa0;
+}
+.review-remove {
+    margin-left: auto; background: none; border: none; color: #a02622;
+    cursor: pointer; font-size: 1rem; line-height: 1; padding: 0 0.3rem; width: auto;
+}
+.review-hint { color: #7a5c00; margin: 0; }
+
+/* change-speaker dialog */
+.speaker-dialog {
+    border: none; border-radius: 10px; padding: 1.25rem 1.4rem;
+    max-width: 420px; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+}
+.speaker-dialog::backdrop { background: rgba(0,0,0,0.4); }
+.speaker-dialog h5 { margin: 0 0 0.4rem; }
+.speaker-dialog-form input[type="text"] { width: 100%; }
+.dlg-newhint { color: #666; margin: 0.25rem 0 0.75rem; }
+.speaker-dialog-actions { display: flex; gap: 0.6rem; }
+.speaker-dialog-actions button { margin: 0; }

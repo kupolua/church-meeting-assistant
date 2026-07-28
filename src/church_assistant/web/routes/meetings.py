@@ -13,11 +13,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import get_pool
+from church_assistant.ingestion import speaker_review as review
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index
@@ -85,6 +86,18 @@ async def meeting_detail(request: Request, date: str):
         active_job is not None and active_job["status"] in jobs_repo.ACTIVE_STATUSES
     )
 
+    # Names for the "change speaker" picker (existing profiles + this meeting's).
+    speakers_json = detail.folder / "speakers.json"
+    known_names: list[str] = []
+    if speakers_json.exists():
+        try:
+            import json as _json
+            sp = _json.loads(speakers_json.read_text(encoding="utf-8"))
+            speaker_map = {k: v for k, v in sp.items() if not k.startswith("_")}
+            known_names = review.list_known_names(speaker_map)
+        except (OSError, ValueError):
+            known_names = review.list_known_names({})
+
     return templates.TemplateResponse(
         request,
         "meeting_detail.html",
@@ -95,6 +108,8 @@ async def meeting_detail(request: Request, date: str):
             "has_audio": _find_audio(date) is not None,
             "reprocessing": reprocessing,
             "reprocess_job": active_job if reprocessing else None,
+            "known_names": known_names,
+            "changes": review.load_changes(detail.folder),
         },
     )
 
@@ -234,5 +249,149 @@ async def save_speakers(request: Request, date: str):
     return RedirectResponse(
         f"/ingest?ok=Голоси+збережено.+Зустріч+{date}+у+черзі+на+переобробку+"
         f"(job+%23{job_id}).+Стеж+за+прогресом+тут.",
+        status_code=303,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# Per-cluster speaker reassignment from the transcript
+# ─────────────────────────────────────────────────────────────
+
+def _review_panel(request: Request, date: str, folder: Path) -> HTMLResponse:
+    """Render the pending-changes panel (HTMX target)."""
+    return templates.TemplateResponse(
+        request,
+        "partials/speaker_review_panel.html",
+        {"date": date, "changes": review.load_changes(folder)},
+    )
+
+
+@router.get("/{date}/speaker-changes", response_class=HTMLResponse)
+async def speaker_changes_panel(request: Request, date: str):
+    """Return just the pending-changes panel (HTMX poll/refresh target)."""
+    folder = _meeting_folder(date)
+    if folder is None:
+        raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
+    return _review_panel(request, date, folder)
+
+
+@router.post("/{date}/speaker-change", response_class=HTMLResponse)
+async def speaker_change(
+    request: Request,
+    date: str,
+    label: str = Form(...),
+    new_name: str = Form(...),
+):
+    """
+    Queue a per-cluster speaker reassignment (from a transcript "change speaker"
+    link). is_new is inferred: a name without an existing voice profile is a new
+    participant that will be fingerprinted on "run analysis".
+    """
+    folder = _meeting_folder(date)
+    if folder is None:
+        raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
+
+    label = label.strip()
+    new_name = new_name.strip()
+    if label and new_name:
+        review.upsert_change(
+            folder, label=label, new_name=new_name, is_new=not review.has_profile(new_name)
+        )
+    return _review_panel(request, date, folder)
+
+
+@router.post("/{date}/speaker-change/{label}/remove", response_class=HTMLResponse)
+async def speaker_change_remove(request: Request, date: str, label: str):
+    """Drop one pending change."""
+    folder = _meeting_folder(date)
+    if folder is None:
+        raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
+    review.remove_change(folder, label)
+    return _review_panel(request, date, folder)
+
+
+@router.post("/{date}/run-analysis", response_class=HTMLResponse)
+async def run_analysis(request: Request, date: str):
+    """
+    The separate "🔁 Запустити аналіз" button. For every queued change:
+      - relabel the cluster in speakers.json (propagates on re-run),
+      - for a NEW participant, save a voice profile (.npy) from the cluster
+        embedding (so future meetings recognize them),
+    then queue a full force re-run and clear the draft.
+    """
+    folder = _meeting_folder(date)
+    if folder is None:
+        raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
+
+    changes = review.load_changes(folder)
+    if not changes:
+        return RedirectResponse(
+            f"/meetings/{date}?error=Немає+змін+для+аналізу", status_code=303
+        )
+
+    paths = resolve_paths(folder)
+    if not paths.speakers.exists():
+        return RedirectResponse(
+            f"/meetings/{date}?error=speakers.json+відсутній", status_code=303
+        )
+
+    pool = await get_pool()
+    existing = await jobs_repo.get_by_date(pool, date)
+    if existing is not None and existing["status"] in jobs_repo.ACTIVE_STATUSES:
+        return RedirectResponse(
+            f"/meetings/{date}?error=Зустріч+уже+обробляється+(job+%23{existing['id']})",
+            status_code=303,
+        )
+
+    audio_path = _find_audio(date)
+    audio_name = audio_path.name if audio_path else None
+
+    meta, mapping = speakers_util.load_speakers(paths.speakers)
+    new_profiles = 0
+    profile_warnings: list[str] = []
+    for c in changes:
+        label = str(c.get("label", "")).strip()
+        name = str(c.get("new_name", "")).strip()
+        if not label or not name:
+            continue
+        mapping[label] = name                       # relabel cluster
+        if c.get("is_new"):
+            ok, msg = review.save_voice_profile_from_cluster(
+                folder, label=label, name=name, audio_filename=audio_name
+            )
+            if ok:
+                new_profiles += 1
+            else:
+                profile_warnings.append(msg)
+
+    speakers_util.save_speakers(paths.speakers, meta, mapping)
+    review.clear_draft(folder)
+
+    job_id = await jobs_repo.enqueue_reprocess(
+        pool,
+        meeting_date=date,
+        meeting_dir=str(folder.resolve()),
+        audio_filename=audio_name,
+        speaker_count=len(mapping),
+    )
+
+    await _logger.info(
+        "meeting.speaker_review_run",
+        message=f"meeting {date}: {len(changes)} speaker change(s), "
+                f"{new_profiles} new voice profile(s) → re-run queued (job #{job_id})",
+        metadata={
+            "job_id": job_id, "meeting_date": date,
+            "changes": len(changes), "new_profiles": new_profiles,
+            "profile_warnings": profile_warnings,
+        },
+    )
+
+    msg = f"Застосовано+змін:+{len(changes)}"
+    if new_profiles:
+        msg += f",+нових+голосових+профілів:+{new_profiles}"
+    if profile_warnings:
+        msg += f".+Увага:+{len(profile_warnings)}+профіль(ів)+не+збережено+(артефакт)"
+    return RedirectResponse(
+        f"/ingest?ok={msg}.+Зустріч+{date}+у+черзі+на+переобробку+(job+%23{job_id}).",
         status_code=303,
     )

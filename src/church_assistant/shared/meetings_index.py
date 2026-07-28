@@ -13,6 +13,8 @@ Design:
 
 from __future__ import annotations
 
+import bisect
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -53,6 +55,8 @@ class TranscriptTurn:
     timestamp: str = ""                     # e.g. '00:05' ('' if the line had none)
     speaker: str = ""                       # e.g. 'Павло Кулаковський' ('' if unknown)
     text: str = ""
+    speaker_label: str = ""                 # diarization cluster, e.g. 'SPEAKER_06'
+                                            # (derived from RTTM by timestamp; '' if unknown)
 
 
 @dataclass
@@ -296,12 +300,113 @@ def _parse_transcript_from_annotated(text: str) -> list[TranscriptTurn]:
     return turns
 
 
+def _rttm_segments(rttm_path: Path) -> list[tuple[float, float, str]]:
+    """Parse diarization.rttm → [(start, end, SPEAKER_XX)] sorted by start."""
+    segs: list[tuple[float, float, str]] = []
+    try:
+        lines = rttm_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return segs
+    for line in lines:
+        p = line.split()
+        if len(p) < 8 or p[0] != "SPEAKER":
+            continue
+        try:
+            start = float(p[3]); dur = float(p[4])
+        except ValueError:
+            continue
+        segs.append((start, start + dur, p[7]))
+    segs.sort(key=lambda s: s[0])
+    return segs
+
+
+def _ts_to_seconds(ts: str) -> Optional[float]:
+    """'4:12' → 252.0 ; '1:02:03' → 3723.0 ; invalid → None."""
+    parts = ts.split(":")
+    try:
+        nums = [int(x) for x in parts]
+    except ValueError:
+        return None
+    if len(nums) == 3:
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    if len(nums) == 2:
+        return nums[0] * 60 + nums[1]
+    return None
+
+
+def _label_at(segs: list[tuple[float, float, str]], starts: list[float], t: float) -> str:
+    """SPEAKER_XX active at time t (covering segment, else nearest). '' if none."""
+    if not segs:
+        return ""
+    i = bisect.bisect_right(starts, t) - 1
+    if 0 <= i < len(segs) and segs[i][1] >= t:        # t falls inside segment i
+        return segs[i][2]
+    cands = []
+    if 0 <= i < len(segs):
+        cands.append(segs[i])
+    if i + 1 < len(segs):
+        cands.append(segs[i + 1])
+    if not cands:
+        return ""
+    best = min(cands, key=lambda s: min(abs(s[0] - t), abs(s[1] - t)))
+    return best[2]
+
+
+def _strip_review(name: str) -> str:
+    return name[: -len(" [REVIEW]")] if name.endswith(" [REVIEW]") else name
+
+
+def _attach_speaker_labels(
+    transcript: list[TranscriptTurn],
+    rttm_path: Path,
+    speaker_map: dict[str, str],
+) -> None:
+    """
+    Fill each turn's speaker_label (diarization cluster) in place.
+
+    The label MUST be consistent with the displayed name so that "reassign this
+    speaker" targets the right cluster. Strategy per turn:
+      1. Candidates = clusters whose speakers.json name == the displayed name.
+         - exactly one → use it (the common case).
+         - several (same name split across clusters) → pick the candidate whose
+           RTTM segment is active at the turn's timestamp.
+      2. No name match (placeholders, unmapped) → fall back to the RTTM cluster
+         active at the timestamp.
+    """
+    segs = _rttm_segments(rttm_path)
+    if not segs:
+        return
+    starts = [s[0] for s in segs]
+
+    # reverse map: display-name → [labels]
+    name_to_labels: dict[str, list[str]] = {}
+    for label, raw in speaker_map.items():
+        name_to_labels.setdefault(_strip_review(str(raw)), []).append(label)
+
+    for turn in transcript:
+        if not turn.timestamp:
+            continue
+        sec = _ts_to_seconds(turn.timestamp)
+        if sec is None:
+            continue
+        candidates = name_to_labels.get(turn.speaker, [])
+        if len(candidates) == 1:
+            turn.speaker_label = candidates[0]
+        elif len(candidates) > 1:
+            sub = [s for s in segs if s[2] in candidates]
+            turn.speaker_label = _label_at(sub, [s[0] for s in sub], sec) or candidates[0]
+        else:
+            turn.speaker_label = _label_at(segs, starts, sec)
+
+
 def load_detail(meeting_date: str) -> Optional[MeetingDetail]:
     """
     Load full detail for a meeting by its date ('YYYY-MM-DD').
 
     Returns None if not found or no polished.md. The стенограма (annotated.md)
-    is loaded when present; absent, transcript is an empty list.
+    is loaded when present; absent, transcript is an empty list. Each turn's
+    speaker_label (diarization cluster) is derived from diarization.rttm so the
+    UI can offer per-cluster speaker reassignment.
     """
     if not _DATE_RE.match(meeting_date):
         return None
@@ -320,6 +425,15 @@ def load_detail(meeting_date: str) -> Optional[MeetingDetail]:
         transcript = _parse_transcript_from_annotated(
             annotated.read_text(encoding="utf-8")
         )
+        rttm = folder / "diarization.rttm"
+        speakers_json = folder / "speakers.json"
+        if rttm.exists() and speakers_json.exists():
+            try:
+                sp = json.loads(speakers_json.read_text(encoding="utf-8"))
+                speaker_map = {k: v for k, v in sp.items() if not k.startswith("_")}
+            except (OSError, json.JSONDecodeError):
+                speaker_map = {}
+            _attach_speaker_labels(transcript, rttm, speaker_map)
 
     return MeetingDetail(
         date=meeting_date,

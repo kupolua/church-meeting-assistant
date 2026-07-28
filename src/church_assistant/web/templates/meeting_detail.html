@@ -85,25 +85,60 @@
         <h4>Стенограма{% if detail.transcript %} ({{ detail.transcript | length }} реплік){% endif %}</h4>
 
         {% if detail.transcript %}
+        {# pending speaker-change queue + "run analysis" button (HTMX target) #}
+        <div id="speaker-review-panel">
+            {% include "partials/speaker_review_panel.html" %}
+        </div>
+
         <details class="transcript-details">
             <summary>Показати стенограму зустрічі</summary>
+            <p class="transcript-help"><small>Клікни на імʼя спікера, щоб виправити його (діє на весь голосовий кластер цієї людини).</small></p>
             <div class="transcript-list">
                 {% for turn in detail.transcript %}
                 {% set new_speaker = loop.first or turn.speaker != loop.previtem.speaker %}
                 <div class="transcript-turn {{ 'is-new-speaker' if new_speaker else '' }}">
-                    {% if turn.speaker %}
-                    <div class="turn-meta {{ 'is-hidden' if not new_speaker else '' }}">
-                        <span class="turn-speaker">{{ turn.speaker }}</span>
-                    </div>
-                    {% endif %}
                     <div class="turn-line">
                         {% if turn.timestamp %}<span class="turn-ts">{{ turn.timestamp }}</span>{% endif %}
+                        {% if turn.speaker %}
+                            {% if turn.speaker_label %}
+                            <a class="turn-speaker-link" href="#"
+                               data-label="{{ turn.speaker_label }}" data-name="{{ turn.speaker }}"
+                               title="Змінити спікера (кластер {{ turn.speaker_label }})">{{ turn.speaker }}</a>
+                            {% else %}
+                            <span class="turn-speaker-plain">{{ turn.speaker }}</span>
+                            {% endif %}
+                        {% endif %}
                         <span class="turn-text">{{ turn.text }}</span>
                     </div>
                 </div>
                 {% endfor %}
             </div>
         </details>
+
+        {# names picker for the change dialog #}
+        <datalist id="known-speaker-names">
+            {% for name in known_names %}<option value="{{ name }}"></option>{% endfor %}
+        </datalist>
+
+        {# shared change-speaker dialog #}
+        <dialog id="speaker-dialog" class="speaker-dialog">
+            <form method="dialog" class="speaker-dialog-form"
+                  hx-post="/meetings/{{ detail.date }}/speaker-change"
+                  hx-target="#speaker-review-panel" hx-swap="innerHTML">
+                <h5>Змінити спікера</h5>
+                <p><small>Кластер <code id="dlg-label-txt"></code> — зміна вплине на <strong>всі</strong> репліки цього голосу.</small></p>
+                <input type="hidden" name="label" id="dlg-label">
+                <label>Імʼя спікера
+                    <input type="text" name="new_name" id="dlg-name" list="known-speaker-names"
+                           placeholder="існуючий або новий учасник" autocomplete="off" required>
+                </label>
+                <p class="dlg-newhint"><small>Якщо імені немає серед відомих — це новий учасник, його голос буде зафінгерпринчено при запуску аналізу.</small></p>
+                <div class="speaker-dialog-actions">
+                    <button type="submit" value="save">Додати до черги</button>
+                    <button type="button" value="cancel" class="secondary outline" id="dlg-cancel">Скасувати</button>
+                </div>
+            </form>
+        </dialog>
         {% else %}
         <p><em>Стенограма недоступна (немає annotated.md для цієї зустрічі).</em></p>
         {% endif %}
@@ -227,6 +262,42 @@
     document.addEventListener('click', function (e) { activate(e.target, e); });
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' || e.key === ' ') activate(e.target, e);
+    });
+})();
+</script>
+{% endif %}
+
+{% if detail.transcript %}
+<script>
+(function () {
+    "use strict";
+    var dialog = document.getElementById('speaker-dialog');
+    if (!dialog || typeof dialog.showModal !== 'function') return;
+
+    var fLabel = document.getElementById('dlg-label');
+    var fLabelTxt = document.getElementById('dlg-label-txt');
+    var fName = document.getElementById('dlg-name');
+
+    // open the dialog from any speaker link
+    document.addEventListener('click', function (e) {
+        var link = e.target.closest ? e.target.closest('.turn-speaker-link') : null;
+        if (!link) return;
+        e.preventDefault();
+        fLabel.value = link.dataset.label || '';
+        fLabelTxt.textContent = link.dataset.label || '';
+        fName.value = link.dataset.name || '';
+        dialog.showModal();
+        fName.focus();
+        fName.select();
+    });
+
+    document.getElementById('dlg-cancel').addEventListener('click', function () {
+        dialog.close();
+    });
+
+    // HTMX swapped the pending panel after submit → close the dialog
+    dialog.querySelector('form').addEventListener('htmx:afterRequest', function (evt) {
+        if (evt.detail && evt.detail.successful) dialog.close();
     });
 })();
 </script>
