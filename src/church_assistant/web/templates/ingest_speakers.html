@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}Ревʼю спікерів {{ job.meeting_date }} — Church Meeting Assistant{% endblock %}
+{% block title %}{{ page_title }} — Church Meeting Assistant{% endblock %}
 
 {% block main %}
 <article class="dashboard-page speakers-editor">
     <header class="dashboard-header">
-        <h1>✏️ Ревʼю спікерів — {{ job.meeting_date }}</h1>
+        <h1>{{ header }}</h1>
         <p><small>
-            Job #{{ job.id }} · {{ rows | length }} спікерів
+            {{ subtitle }} · {{ rows | length }} спікерів
             {% if n_flagged %}· <strong class="warn">{{ n_flagged }} потребують уваги</strong>{% endif %}
         </small></p>
     </header>
@@ -15,8 +15,7 @@
     {# ─── Audio player (sticky) — sample timestamps seek here ─── #}
     {% if has_audio %}
     <div class="audio-player-bar">
-        <audio id="speaker-audio" controls preload="metadata"
-               src="/meetings/{{ job.meeting_date }}/audio">
+        <audio id="speaker-audio" controls preload="metadata" src="{{ audio_src }}">
             Ваш браузер не підтримує аудіоплеєр.
         </audio>
         <small class="audio-hint">▶ Клікни на час у колонці «Приклади», щоб послухати голос</small>
@@ -27,7 +26,7 @@
         <p class="speakers-help">
             Перевір і виправ імена для кожного голосу. Підказки — скільки говорив і коли
             (час у аудіо){% if has_audio %}; клікни на час, щоб послухати цей голос{% endif %}.
-            Після збереження запуститься аналіз (Gemma) → протокол → індексація.
+            {{ help_tail }}
         </p>
         <div class="speakers-legend">
             <span class="sp-badge sp-review">⚠ слабкий збіг</span>
@@ -36,7 +35,7 @@
         </div>
     </section>
 
-    <form action="/ingest/{{ job.id }}/speakers" method="post" class="speakers-form">
+    <form action="{{ form_action }}" method="post" class="speakers-form">
         <div class="dash-section">
             <table class="dash-table speakers-table">
                 <thead>
@@ -84,8 +83,8 @@
         </div>
 
         <div class="speakers-actions">
-            <button type="submit">✅ Зберегти та запустити аналіз</button>
-            <a href="/ingest" role="button" class="secondary outline">← Назад без змін</a>
+            <button type="submit">{{ submit_label }}</button>
+            <a href="{{ back_url }}" role="button" class="secondary outline">← Назад без змін</a>
         </div>
         <p><small>
             Порада: якщо не впевнений у голосі — послухай його сегменти{% if has_audio %} (клікни на час у колонці «Приклади»){% else %} в аудіо за вказаним часом{% endif %}.

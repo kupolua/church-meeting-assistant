@@ -32,7 +32,16 @@
 
     {# ─── Attendees ─── #}
     <section class="attendees-block">
-        <h4>Учасники</h4>
+        <div class="attendees-head">
+            <h4>Учасники</h4>
+            {% if reprocessing %}
+            <a href="/ingest" class="attendees-edit-voices is-reprocessing"
+               title="Зустріч перезбирається з новими іменами">🔄 Перезбирається…</a>
+            {% else %}
+            <a href="/meetings/{{ detail.date }}/speakers" class="attendees-edit-voices"
+               title="Відкрити редагування голосів (спікерів)">🎙️ Редагувати голоси</a>
+            {% endif %}
+        </div>
         {% if detail.attendees %}
         <ul class="attendees-list">
             {% for name in detail.attendees %}

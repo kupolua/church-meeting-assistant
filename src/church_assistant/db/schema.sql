@@ -287,8 +287,17 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
     error_traceback TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
 
+    -- True for a re-run triggered by editing speakers of an already-processed
+    -- meeting: the analysis phase regenerates artifacts in place (bypassing the
+    -- skip-if-exists resumability) so corrected names propagate everywhere.
+    force_reprocess BOOLEAN NOT NULL DEFAULT FALSE,
+
     notes TEXT
 );
+
+-- Idempotent add for databases created before schema v3.
+ALTER TABLE ingestion_jobs
+    ADD COLUMN IF NOT EXISTS force_reprocess BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- One job per meeting_date (re-uploading resumes the same folder).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ingestion_meeting_date
@@ -382,4 +391,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO schema_version (version, description)
 VALUES (2, 'MVP-C: ingestion_jobs table + v_ingestion_depth view')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO schema_version (version, description)
+VALUES (3, 'ingestion_jobs.force_reprocess (edit speakers → full re-run)')
 ON CONFLICT (version) DO NOTHING;

@@ -107,10 +107,12 @@ async def _transcribe(paths: MeetingPaths) -> None:
     )
 
 
-async def _merge(paths: MeetingPaths) -> None:
-    if paths.annotated.exists():
+async def _merge(paths: MeetingPaths, *, force: bool = False) -> None:
+    if not force and paths.annotated.exists():
         _std.info("✓ %s exists — skipping merge", paths.annotated.name)
         return
+    # merge_transcript overwrites its output when invoked → force just means
+    # "run it again with the (edited) speakers.json".
     await _run(
         MODULE_PREFIX + [
             "church_assistant.merge_transcript",
@@ -123,25 +125,26 @@ async def _merge(paths: MeetingPaths) -> None:
     )
 
 
-async def _analyze(paths: MeetingPaths) -> None:
-    if paths.chunks_dir.exists() and any(paths.chunks_dir.iterdir()) and paths.chunked.exists():
+async def _analyze(paths: MeetingPaths, *, force: bool = False) -> None:
+    if not force and paths.chunks_dir.exists() and any(paths.chunks_dir.iterdir()) and paths.chunked.exists():
         _std.info("✓ chunks/ and chunked.md exist — skipping chunked_analyze")
         return
-    await _run(
-        MODULE_PREFIX + [
-            "church_assistant.chunked_analyze",
-            "--transcript", str(paths.annotated),
-            "--output-dir", str(paths.chunks_dir),
-            "--final-output", str(paths.chunked),
-        ],
-        label="analyze",
-    )
+    cmd = MODULE_PREFIX + [
+        "church_assistant.chunked_analyze",
+        "--transcript", str(paths.annotated),
+        "--output-dir", str(paths.chunks_dir),
+        "--final-output", str(paths.chunked),
+    ]
+    if force:
+        cmd.append("--no-cache")  # regenerate every chunk with the new names
+    await _run(cmd, label="analyze")
 
 
-async def _polish(paths: MeetingPaths, *, polish_date: str) -> None:
-    if paths.polished.exists():
+async def _polish(paths: MeetingPaths, *, polish_date: str, force: bool = False) -> None:
+    if not force and paths.polished.exists():
         _std.info("✓ %s exists — skipping polish", paths.polished.name)
         return
+    # polish_protocol overwrites its output when invoked → force reruns it.
     await _run(
         MODULE_PREFIX + [
             "church_assistant.polish_protocol",
@@ -205,35 +208,44 @@ async def run_analysis_phase(
     *,
     polish_date: str,
     progress: ProgressFn = _noop_progress,
+    force: bool = False,
 ) -> None:
     """
     merge_transcript → chunked_analyze (Gemma) → polish_protocol.
 
-    Runs after the human speakers.json review. Each step self-skips if done.
+    Runs after the human speakers.json review. Each step self-skips if done —
+    UNLESS force=True (a speakers re-edit), which regenerates every artifact in
+    place so corrected names propagate. Regeneration overwrites outputs (never
+    deletes them upfront), so a failure leaves the previous protocol intact.
     """
     await progress("merge", "Обʼєднання транскрипту з діаризацією…")
-    await _merge(paths)
+    await _merge(paths, force=force)
 
     await progress("analyze", "Аналіз чанків (Gemma)…")
-    await _analyze(paths)
+    await _analyze(paths, force=force)
 
     await progress("polish", "Фінальне полірування протоколу…")
-    await _polish(paths, polish_date=polish_date)
+    await _polish(paths, polish_date=polish_date, force=force)
 
     if not paths.polished.exists():
         raise StageError("analysis phase produced no polished.md")
 
 
-async def run_index(meeting_dir: Path, *, progress: ProgressFn = _noop_progress) -> None:
+async def run_index(
+    meeting_dir: Path,
+    *,
+    progress: ProgressFn = _noop_progress,
+    force: bool = False,
+) -> None:
     """Index the finished meeting into Qdrant (auto-index step)."""
     await progress("index", "Індексація у Qdrant…")
-    await _run(
-        MODULE_PREFIX + [
-            "church_assistant.index_meeting",
-            "--meeting-dir", str(meeting_dir),
-        ],
-        label="index",
-    )
+    cmd = MODULE_PREFIX + [
+        "church_assistant.index_meeting",
+        "--meeting-dir", str(meeting_dir),
+    ]
+    if force:
+        cmd.append("--force")  # re-index even if content hashes match
+    await _run(cmd, label="index")
 
 
 # ─────────────────────────────────────────────────────────────

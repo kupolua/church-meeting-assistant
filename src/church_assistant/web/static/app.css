@@ -1227,3 +1227,37 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
     margin-left: auto;
     margin-right: auto;
 }
+
+/* ─────────────────────────────────────────────
+   Учасники section — "edit voices" entry point
+   ───────────────────────────────────────────── */
+
+.attendees-head {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.attendees-head h4 { margin: 0; }
+
+.attendees-edit-voices {
+    font-size: 0.85rem;
+    text-decoration: none;
+    padding: 0.2rem 0.6rem;
+    border: 1px solid #cdd5e6;
+    border-radius: 6px;
+    color: #2563c9;
+    white-space: nowrap;
+}
+
+.attendees-edit-voices:hover {
+    background: #eaf1fd;
+    border-color: #2563c9;
+}
+
+.attendees-edit-voices.is-reprocessing {
+    color: #7a5c00;
+    border-color: #ffe08a;
+    background: #fff8e6;
+}

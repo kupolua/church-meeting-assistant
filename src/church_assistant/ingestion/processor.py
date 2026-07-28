@@ -122,14 +122,21 @@ async def _run_analysis(
     async def progress(stage: str, note: str) -> None:
         await jobs_repo.set_stage(pool, job_id, stage=stage, progress_note=note)
 
+    # force=True for a speakers re-edit: regenerate artifacts in place so the
+    # corrected names propagate to стенограма, protocol, and the Qdrant index.
+    force = bool(job.get("force_reprocess"))
+
     try:
         await stages.run_analysis_phase(
-            paths, polish_date=_polish_date(job["meeting_date"]), progress=progress
+            paths,
+            polish_date=_polish_date(job["meeting_date"]),
+            progress=progress,
+            force=force,
         )
 
         if auto_index:
             await jobs_repo.mark_indexing(pool, job_id)
-            await stages.run_index(meeting_dir, progress=progress)
+            await stages.run_index(meeting_dir, progress=progress, force=force)
             await jobs_repo.mark_completed(pool, job_id, indexed=True)
         else:
             await jobs_repo.mark_completed(pool, job_id, indexed=False)

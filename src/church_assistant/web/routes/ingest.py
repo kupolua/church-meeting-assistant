@@ -269,10 +269,17 @@ async def speakers_editor(request: Request, job_id: int):
         request,
         "ingest_speakers.html",
         {
-            "job": job,
+            "page_title": f"Ревʼю спікерів {job['meeting_date']}",
+            "header": f"✏️ Ревʼю спікерів — {job['meeting_date']}",
+            "subtitle": f"Job #{job['id']}",
             "rows": rows,
             "n_flagged": sum(1 for r in rows if r["flag"]),
             "has_audio": paths.audio.exists(),
+            "audio_src": f"/meetings/{job['meeting_date']}/audio",
+            "form_action": f"/ingest/{job['id']}/speakers",
+            "submit_label": "✅ Зберегти та запустити аналіз",
+            "back_url": "/ingest",
+            "help_tail": "Після збереження запуститься аналіз (Gemma) → протокол → індексація.",
             "meetings": meetings_index.list_all_summaries(),
         },
     )

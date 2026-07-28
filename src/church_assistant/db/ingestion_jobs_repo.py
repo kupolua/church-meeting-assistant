@@ -313,6 +313,67 @@ async def mark_queued_analysis(
             await cur.execute(sql, (speaker_count, job_id))
 
 
+async def enqueue_reprocess(
+    pool: AsyncConnectionPool,
+    *,
+    meeting_date: str,
+    meeting_dir: str,
+    audio_filename: Optional[str] = None,
+    speaker_count: Optional[int] = None,
+) -> int:
+    """
+    Queue a full re-run for an already-processed meeting after its speakers were
+    edited. Upserts the job for this meeting at status='queued_analysis' with
+    force_reprocess=TRUE — the worker then regenerates annotated/analysis/
+    protocol in place (bypassing skip-if-exists) and re-indexes, so the
+    corrected names propagate to стенограма, protocol, and Qdrant.
+
+    Reuses the existing job row for this meeting_date if present (unique index),
+    otherwise inserts one. Returns the job id.
+    """
+    note = "У черзі на переобробку (нові імена)"
+    sql_update = """
+        UPDATE ingestion_jobs
+        SET status = 'queued_analysis',
+            force_reprocess = TRUE,
+            audio_filename = COALESCE(%s, audio_filename),
+            speaker_count = COALESCE(%s, speaker_count),
+            reviewed_at = NOW(),
+            started_at = NULL,
+            completed_at = NULL,
+            stage = NULL,
+            progress_note = %s,
+            error_message = NULL,
+            error_traceback = NULL,
+            retry_count = 0
+        WHERE meeting_date = %s
+        RETURNING id
+    """
+    sql_insert = """
+        INSERT INTO ingestion_jobs (
+            meeting_date, meeting_dir, audio_filename, status,
+            force_reprocess, reviewed_at, speaker_count, progress_note
+        ) VALUES (
+            %s, %s, %s, 'queued_analysis',
+            TRUE, NOW(), %s, %s
+        )
+        RETURNING id
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql_update, (audio_filename, speaker_count, note, meeting_date))
+            row = await cur.fetchone()
+            if row is not None:
+                return int(row[0])
+            await cur.execute(
+                sql_insert, (meeting_date, meeting_dir, audio_filename, speaker_count, note)
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise RuntimeError("INSERT ... RETURNING did not return an id")
+            return int(row[0])
+
+
 async def mark_indexing(
     pool: AsyncConnectionPool,
     job_id: int,
