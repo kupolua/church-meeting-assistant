@@ -183,8 +183,11 @@ def _smoke_test() -> None:
         raise AssertionError(f"alias {bad!r} should have been rejected")
     print("5. aliases resolve; a physical name is NOT a valid alias ✓")
 
-    # A malformed slug can't be smuggled into a collection name.
-    from church_assistant.shared.tenant_paths import InvalidTenantSlug
+    # A malformed slug can't be smuggled into a collection name. The platform
+    # tenant is refused by the same guard — it has log rows, never vectors.
+    from church_assistant.shared.tenant_paths import (
+        InvalidTenantSlug, SYSTEM_SLUG, SystemTenantHasNoArtifacts,
+    )
     for bad in ("../etc", "UPPER", "a/b"):
         try:
             collection_name(bad, KIND_TURNS)
@@ -192,6 +195,13 @@ def _smoke_test() -> None:
             continue
         raise AssertionError(f"slug {bad!r} should have been rejected")
     print("6. malformed slugs rejected ✓")
+
+    try:
+        collection_name(SYSTEM_SLUG, KIND_TURNS)
+        raise AssertionError("_system should have no collections")
+    except SystemTenantHasNoArtifacts:
+        pass
+    print("7. '_system' has no collections (same single guard as paths) ✓")
 
     print("=" * 66)
     print("  ✓ ALL COLLECTIONS SMOKE TESTS PASSED")

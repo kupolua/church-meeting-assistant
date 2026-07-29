@@ -116,6 +116,22 @@ async def list_active(
         return [dict(r) for r in await cur.fetchall()]
 
 
+async def list_all(
+    pool: AsyncConnectionPool, tenant_id: int,
+) -> list[dict[str, Any]]:
+    """
+    Every account, disabled ones included — the management view.
+
+    Deactivation is a soft delete, so an admin has to be able to see and restore
+    what they switched off; active first so the working set stays at the top.
+    """
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT * FROM web_users ORDER BY is_active DESC, created_at ASC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
 async def count_active(pool: AsyncConnectionPool, tenant_id: int) -> int:
     async with tenant_cursor(pool, tenant_id) as cur:
         await cur.execute("SELECT count(*) FROM web_users WHERE is_active = TRUE")
@@ -147,6 +163,20 @@ async def set_password_hash(
         await cur.execute(
             "UPDATE web_users SET password_hash = %s WHERE id = %s RETURNING 1",
             (password_hash, user_id),
+        )
+        return await cur.fetchone() is not None
+
+
+async def set_role(
+    pool: AsyncConnectionPool, tenant_id: int, user_id: int, role: str,
+) -> bool:
+    """Promote/demote. Returns True if a row was updated."""
+    if role not in ROLES:
+        raise ValueError(f"Invalid role: {role!r} (expected one of {ROLES})")
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(
+            "UPDATE web_users SET role = %s WHERE id = %s RETURNING 1",
+            (role, user_id),
         )
         return await cur.fetchone() is not None
 

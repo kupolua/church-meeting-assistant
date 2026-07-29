@@ -24,18 +24,53 @@ Design:
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Optional
 
-from church_assistant.db import logs_repo
+from church_assistant.db import logs_repo, tenants_repo
 from church_assistant.db.connection import get_pool
 
 
 VALID_PROCESSES = ("web", "bot", "worker", "cli")
 
-# Tenant for platform/system events with no specific church (worker.started,
-# health warnings, …). Defaults to the default tenant for now.
-# TODO(mt): a dedicated '_system' tenant so system logs don't sit in a church.
-SYSTEM_TENANT_ID = int(os.getenv("SYSTEM_TENANT_ID", "1"))
+# Tenant for platform events with no specific church (worker.started, health
+# warnings, …) — the reserved `_system` tenant from migration 007, NOT the first
+# church, whose dashboard would otherwise show the platform's operational noise.
+#
+# A constant rather than a registry lookup on purpose: this module must pick a
+# tenant before any tenant context exists, and it is the component that has to
+# keep working while other things break. Overridable for tests/one-offs, but a
+# deployment that has not applied 007 must set it back to 1 — an unknown
+# tenant_id violates the foreign key and every system log would be dropped
+# silently by the never-raise guard below.
+SYSTEM_TENANT_ID = int(
+    os.getenv("SYSTEM_TENANT_ID", str(tenants_repo.SYSTEM_TENANT_ID))
+)
+
+
+_warned = False
+
+
+def _warn_once(exc: Exception) -> None:
+    """
+    Report the FIRST swallowed logging failure on stderr, then stay quiet.
+
+    Swallowing is required — a broken log table must not take down the bot — but
+    swallowing silently once cost us a whole class of invisible breakage: an
+    unset/unmigrated SYSTEM_TENANT_ID makes every system event vanish with no
+    trace anywhere. One line is enough to find that; repeating it per event
+    would flood the console of a service that is already in trouble.
+    """
+    global _warned
+    if _warned:
+        return
+    _warned = True
+    print(
+        f"[logger] DB logging is failing, events are being dropped: "
+        f"{type(exc).__name__}: {exc}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class Logger:
@@ -78,8 +113,8 @@ class Logger:
                 query_id=query_id,
                 user_id=user_id,
             )
-        except Exception:
-            pass  # logging must never crash
+        except Exception as e:
+            _warn_once(e)   # logging must never crash — but not silently, either
 
     async def debug(self, event, message=None, *, metadata=None, query_id=None, user_id=None, tenant_id=None) -> None:
         await self._emit("DEBUG", event, message, metadata, query_id, user_id, tenant_id)
@@ -118,5 +153,6 @@ class Logger:
                 user_id=user_id,
                 metadata=metadata,
             )
-        except Exception:
+        except Exception as e:
+            _warn_once(e)
             return None

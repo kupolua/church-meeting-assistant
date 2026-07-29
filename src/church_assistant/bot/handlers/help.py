@@ -12,7 +12,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from church_assistant.bot.formatting import md2
-from church_assistant.bot.middleware.whitelist import USER_KEY
+from church_assistant.bot.middleware.whitelist import TENANT_KEY, USER_KEY
 from church_assistant.shared.logger import Logger
 
 
@@ -44,6 +44,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "bot.start",
         message=f"/start from user_id={user.id if user else '?'}",
         user_id=(db_user or {}).get("id"),
+        # Resolved by the whitelist gate; without it this would file a church
+        # member's activity under the `_system` tenant.
+        tenant_id=(context.user_data or {}).get(TENANT_KEY),
     )
 
     await update.message.reply_text(

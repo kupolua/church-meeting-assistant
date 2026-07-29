@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Користувачі — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="dashboard-page">
+    <header class="dashboard-header">
+        <h1>👥 Користувачі</h1>
+        <p><small>
+            Веб-акаунти церкви <strong>{{ me.tenant_slug }}</strong> —
+            хто може входити у вебінтерфейс. Список у Telegram-боті окремий
+            (див. <a href="/dashboard">Моніторинг</a>).
+        </small></p>
+    </header>
+
+    {# No polling here: unlike the dashboard this page shows state that only
+       changes when someone on it acts, and a 5s refresh would wipe a
+       half-typed password field. Each action swaps the panel itself. #}
+    <div id="admin-users-panel">
+        {% include "partials/admin_users_panel.html" %}
+    </div>
+</article>
+{% endblock %}

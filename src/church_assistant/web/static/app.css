@@ -877,6 +877,10 @@ body {
     border-radius: 5px;
     border: 1px solid #ccc;
     background: #fff;
+    /* Pico's default button colour is white-on-primary; on this white pill it
+       would be invisible. Every existing .dash-btn happened to carry a modifier
+       with its own colour, so a plain one was the first to show the hole. */
+    color: #333;
     cursor: pointer;
     margin: 0 0 0 0.3rem;
     width: auto;
@@ -1218,6 +1222,108 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
 .top-nav-links a.is-active {
     background: #3b82f6;
     color: #fff;
+}
+
+/* ── Web account management (/admin/users) ───────────────────────────── */
+
+.admin-msg {
+    margin: 0 0 1rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+}
+
+.admin-msg.is-error {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.admin-msg.is-ok {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+/* A disabled account stays listed (deactivation is a soft delete and must be
+   reversible), but should not read as an account that can currently sign in. */
+.dash-table tr.is-disabled td {
+    opacity: 0.55;
+}
+
+.admin-create-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.admin-create-form input,
+.admin-create-form select,
+.admin-create-form button {
+    margin: 0;
+    width: auto;
+    flex: 1 1 10rem;
+    font-size: 0.9rem;
+    padding: 0.35rem 0.6rem;
+    height: auto;
+}
+
+.admin-create-form button {
+    flex: 0 0 auto;
+}
+
+/* Password reset folds away so the row stays scannable until it's needed.
+   <details> is display:block by default, which would drop it onto its own line
+   below the other row actions. */
+.admin-inline-form {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.admin-inline-form summary {
+    display: inline-block;
+    cursor: pointer;
+    list-style: none;
+}
+
+/* Pico decorates every <summary> with an accordion chevron (::after) and the
+   native marker; neither belongs on a button-shaped control. */
+.admin-inline-form summary::after,
+.admin-inline-form summary::marker,
+.admin-inline-form summary::-webkit-details-marker {
+    display: none;
+    content: none;
+}
+
+.admin-inline-form form {
+    display: flex;
+    gap: 0.35rem;
+    margin: 0.35rem 0 0;
+}
+
+.admin-inline-form input {
+    margin: 0;
+    width: 11rem;
+    font-size: 0.85rem;
+    padding: 0.25rem 0.5rem;
+    height: auto;
+}
+
+/* Keep the row's controls on one line and vertically centred — the lock badge
+   is a <small>, the rest are buttons, so they need a common baseline. */
+.dash-actions {
+    white-space: nowrap;
+}
+
+.dash-actions > * {
+    vertical-align: middle;
+}
+
+.dash-admin-lock {
+    display: inline-block;
+    margin-left: 0.3rem;
 }
 
 /* Right-hand identity block: which church you're in and who you are. Pushed

@@ -45,9 +45,19 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # is ever concatenated into a path.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 
+# The platform tenant (migration 007). It owns log rows, never artifacts — it is
+# not a church and has no recordings, protocols or voice profiles. Reaching here
+# with it means a system code path picked up a tenant it should have skipped, so
+# say that plainly instead of failing on the leading-underscore regex.
+SYSTEM_SLUG = "_system"
+
 
 class InvalidTenantSlug(ValueError):
     """A tenant slug that must not be turned into a filesystem path."""
+
+
+class SystemTenantHasNoArtifacts(InvalidTenantSlug):
+    """Asked for the platform tenant's data directory — it has none."""
 
 
 def data_root() -> Path:
@@ -71,6 +81,12 @@ def legacy_slug() -> str:
 def validate_slug(slug: str) -> str:
     """Return the slug if it is path-safe, else raise."""
     slug = (slug or "").strip()
+    if slug == SYSTEM_SLUG:
+        raise SystemTenantHasNoArtifacts(
+            f"Tenant {SYSTEM_SLUG!r} is the platform, not a church — it has no "
+            f"meetings or voice profiles. A caller reached artifact storage with "
+            f"a system tenant; skip system tenants there instead."
+        )
     if not _SLUG_RE.match(slug) or slug in (".", ".."):
         raise InvalidTenantSlug(
             f"Unsafe tenant slug {slug!r} — expected [a-z0-9][a-z0-9._-]*"
@@ -201,9 +217,17 @@ def _smoke_test() -> None:
             raise AssertionError(f"slug {bad!r} should have been rejected")
         print("6. traversal / malformed slugs rejected ✓")
 
+        # The platform tenant owns log rows, never artifacts.
+        try:
+            paths_for(SYSTEM_SLUG)
+            raise AssertionError("_system should have no artifact directory")
+        except SystemTenantHasNoArtifacts:
+            pass
+        print("7. '_system' has no data directory (distinct, explicit error) ✓")
+
         p = paths_for("church-a").ensure()
         assert p.meetings.is_dir() and p.voice_profiles.is_dir()
-        print("7. ensure() creates both folders ✓")
+        print("8. ensure() creates both folders ✓")
 
     print("=" * 66)
     print("  ✓ ALL TENANT_PATHS SMOKE TESTS PASSED")

@@ -87,6 +87,7 @@ async def verbose_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         message=f"/verbose chat_id={chat_id} found={last is not None}",
         query_id=(last or {}).get("id"),
         user_id=db_user.get("id"),
+        tenant_id=tenant_id,
     )
 
     if last is None:

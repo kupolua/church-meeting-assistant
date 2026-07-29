@@ -15,6 +15,24 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 
+# ─────────────────────────────────────────────────────────────
+# Reserved tenants
+# ─────────────────────────────────────────────────────────────
+
+# The platform itself (migration 007). Owns events that belong to no church —
+# worker.started, health warnings, "Ollama unreachable". A fixed id rather than
+# a lookup because shared/logger.py needs it before any tenant context exists
+# and must never raise. It is is_active=FALSE, which is what stops anyone
+# logging in "as the platform" and keeps it out of list_active().
+SYSTEM_TENANT_ID = 0
+SYSTEM_TENANT_SLUG = "_system"
+
+
+def is_system_tenant(tenant_id: int) -> bool:
+    """True for the reserved platform tenant (no church, no files, no vectors)."""
+    return int(tenant_id) == SYSTEM_TENANT_ID
+
+
 async def create_tenant(
     pool: AsyncConnectionPool,
     *,

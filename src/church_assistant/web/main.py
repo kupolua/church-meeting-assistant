@@ -75,6 +75,7 @@ app.add_middleware(AuthMiddleware)
 # ─────────────────────────────────────────────────────────────
 
 from church_assistant.web.routes import (  # noqa: E402
+    admin,
     auth,
     home,
     meetings,
@@ -86,6 +87,7 @@ from church_assistant.web.routes import (  # noqa: E402
 )
 
 app.include_router(auth.router)
+app.include_router(admin.router)
 app.include_router(home.router)
 app.include_router(meetings.router)
 app.include_router(query.router)

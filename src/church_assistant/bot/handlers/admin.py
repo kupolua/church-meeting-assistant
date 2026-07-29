@@ -35,23 +35,29 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Handle /stats — admin-only queue + today snapshot."""
     message = update.message
     db_user = (context.user_data or {}).get(USER_KEY) or {}
+    # The whitelist gate already resolved the church; pass it on every log call
+    # so these land in the user's own church rather than the `_system` tenant.
+    tenant_id = (context.user_data or {}).get(TENANT_KEY)
 
     if db_user.get("role") != "admin":
         await _log.warn(
             "bot.stats_denied",
             message=f"Non-admin /stats by user_id={db_user.get('id')}",
             user_id=db_user.get("id"),
+            tenant_id=tenant_id,
         )
         await message.reply_text("⛔ Ця команда доступна лише адміністратору.")
         return
 
     pool = await get_pool()
-    tenant_id = (context.user_data or {}).get(TENANT_KEY)
     depth = await queries_repo.get_queue_depth(pool, tenant_id)
     today = await queries_repo.get_stats_today(pool, tenant_id)
     active_users = await users_repo.count_active(pool, tenant_id)
 
-    await _log.info("bot.stats", message="/stats", user_id=db_user.get("id"))
+    await _log.info(
+        "bot.stats", message="/stats",
+        user_id=db_user.get("id"), tenant_id=tenant_id,
+    )
 
     text = (
         "📊 *Статистика*\n"

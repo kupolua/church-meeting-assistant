@@ -143,6 +143,8 @@ async def login_submit(
         # would, so timing doesn't reveal which usernames exist.
         security.waste_time_like_a_real_check()
         _record_failure(key)
+        # No tenant_id: we could not resolve one, so this goes to `_system`.
+        # (The bad-password branch below DOES know the church and says so.)
         await _logger.warn(
             "web.login_failed",
             message=f"unknown web user {username!r}",

@@ -17,7 +17,8 @@ SETUP (once per run — recreates the sandbox from scratch):
     # heredoc/stdin NEEDS `docker exec -i` — without -i stdin never arrives
     for f in schema.sql migrations/003_multitenancy.sql \
              migrations/004_app_role_and_claim.sql \
-             migrations/005_mt_fixups.sql migrations/006_web_auth.sql; do
+             migrations/005_mt_fixups.sql migrations/006_web_auth.sql \
+             migrations/007_system_tenant.sql; do
       $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -q -v ON_ERROR_STOP=1 \
         < src/church_assistant/db/$f
     done
@@ -34,7 +35,8 @@ RUN:
 
     uv run python tests/mt_phase3_smoke.py
 
-The tenant ids below assume that seed order (default=1, a=2, b=3, off=4).
+The tenant ids below assume that seed order (_system=0, default=1, a=2, b=3,
+off=4).
 """
 
 from __future__ import annotations
@@ -85,7 +87,18 @@ def ok(msg: str) -> None:
 
 
 async def seed(pool) -> None:
-    """One web account per church (plus one in the suspended church)."""
+    """
+    One web account per church (plus one in the suspended church).
+
+    Wipes first so the file is re-runnable: section 7 drives the real admin UI
+    and leaves accounts behind, which would otherwise make section 1's exact
+    list assertions fail on the second run. (RLS scopes each DELETE to its own
+    tenant; audit_log is append-only and deliberately accumulates.)
+    """
+    for tid in (TENANT_A, TENANT_B, TENANT_OFF):
+        async with tenant_cursor(pool, tid) as cur:
+            await cur.execute("DELETE FROM web_users")
+
     for tid, uname, pw, name, role in [
         (TENANT_A, "anna", PASSWORD_A, "Анна А", "admin"),
         (TENANT_B, "borys", PASSWORD_B, "Борис Б", "member"),
@@ -349,6 +362,168 @@ async def test_audit(pool) -> None:
     ok("audit_log is append-only for the app role (UPDATE denied)")
 
 
+# ─────────────────────────────────────────────────────────────
+# 6. The reserved `_system` tenant
+# ─────────────────────────────────────────────────────────────
+
+async def test_system_tenant(pool) -> None:
+    print("\n6. `_system` tenant — platform events live outside every church")
+    print("-" * 66)
+
+    from church_assistant.db import logs_repo, tenants_repo
+    from church_assistant.shared.logger import SYSTEM_TENANT_ID, Logger
+
+    assert SYSTEM_TENANT_ID == tenants_repo.SYSTEM_TENANT_ID == 0
+    assert Logger("worker").tenant_id == 0
+    ok("an unbound Logger defaults to tenant 0, not to the first church")
+
+    marker = f"worker.started {secrets.token_hex(4)}"
+    await Logger("worker").info("worker.started", message=marker)
+
+    sys_logs = await logs_repo.list_recent(pool, SYSTEM_TENANT_ID, limit=20)
+    assert any(row["message"] == marker for row in sys_logs), sys_logs
+    ok("platform event landed in the `_system` tenant")
+
+    for tid, label in [(1, "default"), (TENANT_A, "church-a")]:
+        rows = await logs_repo.list_recent(pool, tid, limit=50)
+        assert not any(r["message"] == marker for r in rows), label
+    ok("no church's log (nor its dashboard) shows the platform's noise")
+
+    # A church-scoped log still goes where it belongs.
+    church_marker = f"query.completed {secrets.token_hex(4)}"
+    await Logger("web", tenant_id=TENANT_A).info("query.completed", message=church_marker)
+    rows = await logs_repo.list_recent(pool, TENANT_A, limit=20)
+    assert any(r["message"] == church_marker for r in rows)
+    assert not any(
+        r["message"] == church_marker
+        for r in await logs_repo.list_recent(pool, TENANT_B, limit=20)
+    )
+    ok("per-church events still route to their own church (and only there)")
+
+    # The platform is a tenant row, but not a church: no login, no artifacts.
+    system = await tenants_repo.get_by_id(pool, SYSTEM_TENANT_ID)
+    assert system is not None and system["slug"] == "_system"
+    assert system["is_active"] is False
+    assert not any(
+        t["id"] == SYSTEM_TENANT_ID for t in await tenants_repo.list_active(pool)
+    )
+    ok("`_system` is inactive → invisible to list_active and unusable for login")
+
+    for fn in (
+        lambda: tenant_paths.paths_for("_system"),
+        lambda: collections.collection_name("_system", collections.KIND_TURNS),
+    ):
+        try:
+            fn()
+            raise AssertionError("_system must have neither folders nor collections")
+        except tenant_paths.SystemTenantHasNoArtifacts:
+            pass
+    ok("`_system` has no data directory and no Qdrant collections")
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. Web account management UI
+# ─────────────────────────────────────────────────────────────
+
+def test_admin_ui() -> None:
+    print("\n7. /admin/users — account management")
+    print("-" * 66)
+
+    from fastapi.testclient import TestClient
+    from church_assistant.web.main import app
+
+    def login(client, username: str, password: str) -> None:
+        r = client.post("/login", data={"username": username, "password": password})
+        assert r.status_code == 303, (username, r.status_code)
+
+    with TestClient(app, follow_redirects=False) as client:
+        # A member must not reach the page — and gets sent somewhere useful
+        # rather than a raw 403 body.
+        login(client, "borys", PASSWORD_B)
+        r = client.get("/admin/users")
+        assert r.status_code == 303 and r.headers["location"].startswith("/dashboard")
+        assert client.post("/admin/users/1/deactivate").status_code == 403
+        ok("member: page redirects away, action endpoint returns 403")
+        client.cookies.clear()
+
+        login(client, "anna", PASSWORD_A)
+        r = client.get("/admin/users")
+        assert r.status_code == 200 and "anna" in r.text
+        assert "borys" not in r.text          # church B's account
+        ok("admin sees only their own church's accounts")
+
+        # Create → the new account can sign in immediately.
+        r = client.post("/admin/users", data={
+            "username": "dmytro", "full_name": "Дмитро Д",
+            "role": "member", "password": "novyi-parol-123",
+        })
+        assert r.status_code == 200 and "створено" in r.text, r.text[:300]
+        ok("admin creates an account in their church")
+
+        # Sign in as the new account on the SAME client — a nested TestClient
+        # would start a second event loop and close this one's pool underneath
+        # it (the pool is a module singleton bound to the loop that opened it).
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "dmytro",
+                                        "password": "novyi-parol-123"})
+        assert r.status_code == 303 and security.SESSION_COOKIE in r.cookies
+        s = security.load_session(r.cookies[security.SESSION_COOKIE])
+        assert s["tid"] == TENANT_A and s["rol"] == "member"
+        ok("the new account logs in, into the creating admin's church")
+
+        client.cookies.clear()
+        login(client, "anna", PASSWORD_A)
+
+        # Usernames are global; the clash message reveals nothing about church B.
+        r = client.post("/admin/users", data={
+            "username": "borys", "full_name": "Клон",
+            "role": "member", "password": "shche-odyn-parol",
+        })
+        assert "зайнятий" in r.text and "church-b" not in r.text
+        ok("clash with another church's login is refused without disclosing it")
+
+        r = client.post("/admin/users", data={
+            "username": "korotkyi", "full_name": "Х", "role": "member", "password": "abc",
+        })
+        assert "закороткий" in r.text
+        ok("short password rejected")
+
+        # Guard rails.
+        me = client.get("/admin/users")
+        import re as _re
+        anna_id = int(_re.search(r"/admin/users/(\d+)/password", me.text).group(1))
+
+        r = client.post(f"/admin/users/{anna_id}/deactivate")
+        assert "власний доступ" in r.text, r.text[:300]
+        ok("an admin cannot deactivate themselves")
+
+        r = client.post(f"/admin/users/{anna_id}/role", data={"role": "member"})
+        assert "власний доступ" in r.text
+        ok("an admin cannot demote themselves")
+
+        # Promote Dmytro, then Anna is no longer the last admin — but Dmytro,
+        # once alone, is protected in turn.
+        dmytro_id = anna_id
+        page = client.get("/admin/users").text
+        for m in _re.finditer(r"/admin/users/(\d+)/role", page):
+            if int(m.group(1)) != anna_id:
+                dmytro_id = int(m.group(1))
+        r = client.post(f"/admin/users/{dmytro_id}/role", data={"role": "admin"})
+        assert "→ admin" in r.text
+        r = client.post(f"/admin/users/{dmytro_id}/deactivate")
+        assert "вимкнено" in r.text
+        ok("with a second admin present, deactivation goes through")
+
+        # Cross-church: church A's admin must not touch church B's account by id.
+        r = client.post("/admin/users/2/deactivate")   # borys is id 2
+        assert "не знайдено" in r.text
+        ok("another church's account id is simply 'not found' (RLS)")
+
+        r = client.post(f"/admin/users/{dmytro_id}/reactivate")
+        assert "увімкнено" in r.text
+        ok("a deactivated account can be restored (soft delete)")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -362,6 +537,7 @@ async def phase_audit() -> None:
     pool = await get_pool()
     try:
         await test_audit(pool)
+        await test_system_tenant(pool)
     finally:
         await close_pool()
 
@@ -381,6 +557,7 @@ def main() -> int:
         test_fs_isolation()
         test_collections()
         test_http()              # owns its pool via the app's lifespan
+        test_admin_ui()          # ditto
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

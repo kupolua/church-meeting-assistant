@@ -33,6 +33,9 @@
             <a href="/meetings" class="{{ 'is-active' if _in_meetings else '' }}">📅 Зустрічі</a>
             <a href="/ingest" class="{{ 'is-active' if _path.startswith('/ingest') else '' }}">🎙️ Нова зустріч</a>
             <a href="/history" class="{{ 'is-active' if _path.startswith('/history') else '' }}">📜 Історія запитів</a>
+            {% if _user and _user.is_admin %}
+            <a href="/admin/users" class="{{ 'is-active' if _path.startswith('/admin') else '' }}">👥 Користувачі</a>
+            {% endif %}
         </div>
 
         {# ─── Who am I / which church (the tenant is never implicit) ─── #}

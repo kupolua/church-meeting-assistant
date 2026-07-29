@@ -68,6 +68,8 @@ async def auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if tenant_id is None or db_user is None or not db_user.get("is_active", False):
         # Silent ignore — do NOT reveal the bot exists to strangers.
+        # No tenant_id on purpose: this stranger belongs to no church, so the
+        # event goes to `_system` rather than being filed against one.
         await _log.warn(
             "bot.unauthorized",
             message=(
