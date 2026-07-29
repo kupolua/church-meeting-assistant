@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from church_assistant.db.connection import close_pool, get_pool
+from church_assistant.web.auth import AuthMiddleware
+from church_assistant.web.security import get_secret_key
 
 
 # ─────────────────────────────────────────────────────────────
@@ -41,6 +43,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast rather than at the first login: without a secret key every
+    # session cookie would be forgeable, and a forged cookie means a forged
+    # tenant_id — i.e. one church reading another's protocols.
+    get_secret_key()
     await get_pool()
     yield
     await close_pool()
@@ -59,12 +65,17 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Deny-by-default: every route except /login and /static needs a valid session,
+# because a request without a session has no tenant and must not reach a repo.
+app.add_middleware(AuthMiddleware)
+
 
 # ─────────────────────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────────────────────
 
 from church_assistant.web.routes import (  # noqa: E402
+    auth,
     home,
     meetings,
     query,
@@ -74,6 +85,7 @@ from church_assistant.web.routes import (  # noqa: E402
     ingest,
 )
 
+app.include_router(auth.router)
 app.include_router(home.router)
 app.include_router(meetings.router)
 app.include_router(query.router)

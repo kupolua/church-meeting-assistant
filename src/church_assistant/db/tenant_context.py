@@ -78,3 +78,23 @@ async def resolve_tenant_for_telegram(
             )
             row = await cur.fetchone()
             return int(row[0]) if row and row[0] is not None else None
+
+
+async def resolve_tenant_for_web_user(
+    pool: AsyncConnectionPool, username: str
+) -> Optional[int]:
+    """
+    Which tenant does this web account belong to? None if unknown/inactive.
+
+    The login-side twin of resolve_tenant_for_telegram (migration 006): the same
+    SECURITY DEFINER bootstrap, because web_users is RLS-gated too. Returns only
+    the tenant id — the password hash is read afterwards INSIDE that tenant's
+    context, so this call can leak at most "such a username exists".
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT resolve_tenant_for_web_user(%s)", (username,)
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None

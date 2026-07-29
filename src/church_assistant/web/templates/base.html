@@ -22,6 +22,7 @@
 
 {% set _path = request.url.path %}
 {% set _in_meetings = _path == '/meetings' or _path.startswith('/meetings/') %}
+{% set _user = request.state.session %}
 <div class="app-shell">
 
     {# ─── TOP NAV (always visible) ─── #}
@@ -33,6 +34,17 @@
             <a href="/ingest" class="{{ 'is-active' if _path.startswith('/ingest') else '' }}">🎙️ Нова зустріч</a>
             <a href="/history" class="{{ 'is-active' if _path.startswith('/history') else '' }}">📜 Історія запитів</a>
         </div>
+
+        {# ─── Who am I / which church (the tenant is never implicit) ─── #}
+        {% if _user %}
+        <div class="top-nav-user">
+            <span class="top-nav-tenant" title="Церква (tenant)">⛪ {{ _user.tenant_slug }}</span>
+            <span class="top-nav-who" title="{{ _user.username }}">{{ _user.full_name or _user.username }}</span>
+            <form method="post" action="/logout">
+                <button type="submit" class="top-nav-logout">Вийти</button>
+            </form>
+        </div>
+        {% endif %}
     </nav>
 
     <div class="app-layout {{ 'no-sidebar' if not _in_meetings else '' }}">

@@ -1220,6 +1220,52 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
     color: #fff;
 }
 
+/* Right-hand identity block: which church you're in and who you are. Pushed
+   to the far edge so the tenant is always visible — on a shared server that's
+   the one thing a user must never be confused about. */
+.top-nav-user {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.top-nav-tenant {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    padding: 0.2rem 0.55rem;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+.top-nav-who {
+    color: #cdd5e6;
+}
+
+.top-nav-user form {
+    margin: 0;
+}
+
+.top-nav-logout {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #cdd5e6;
+    padding: 0.25rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    width: auto;
+    margin: 0;
+    line-height: 1.3;
+}
+
+.top-nav-logout:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.5);
+    color: #fff;
+}
+
 /* When there's no sidebar (dashboard / ingest / history), keep the main
    content readable instead of stretching edge-to-edge on wide screens. */
 .app-layout.no-sidebar .app-main > * {
