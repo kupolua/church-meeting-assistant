@@ -6,16 +6,21 @@ church. With many churches on one server the tenant MUST come from the logged-in
 account, so an unauthenticated request has no tenant at all and must be turned
 away before it reaches any repo.
 
+Sessions are SERVER-SIDE (migration 008). The cookie is a signed pointer; the
+web_sessions row is the authority. Two consequences worth knowing:
+
+  - every gated request costs one indexed lookup. That is the price of being
+    able to revoke access, and it is the right trade for a system whose whole
+    premise is that a supervisory board can see and control who reads what;
+  - identity is read fresh each time, so a demotion, a rename, a disabled
+    account or a suspended church all take effect on the NEXT request — not at
+    the next login.
+
 Pieces:
-    SessionUser        — the decoded, signature-verified cookie payload
+    SessionUser        — the identity this request runs as
     AuthMiddleware     — rejects/redirects anonymous requests, publishes
                          request.state.session for downstream handlers
     set/clear_session_cookie — the two cookie mutations, in one place
-
-The cookie itself (signing, expiry) lives in web/security.py. Note the payload
-carries tenant_slug as well as tenant_id: the filesystem and Qdrant layers are
-addressed by slug, and re-reading the registry on every request would be a DB
-round-trip for a value that never changes.
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from church_assistant.db import web_sessions_repo
+from church_assistant.db.connection import get_pool
 from church_assistant.web import security
 
 
@@ -41,6 +48,7 @@ PUBLIC_PREFIXES = ("/static/",)
 @dataclass(frozen=True)
 class SessionUser:
     """The authenticated web user for one request."""
+    session_id: int
     user_id: int
     tenant_id: int
     tenant_slug: str
@@ -57,43 +65,29 @@ class SessionUser:
         """Audit-log actor string, e.g. 'web:pavlo'."""
         return f"web:{self.username}"
 
-    def to_payload(self) -> dict[str, Any]:
-        """Compact cookie payload (short keys — cookies have a size budget)."""
-        return {
-            "uid": self.user_id,
-            "tid": self.tenant_id,
-            "slug": self.tenant_slug,
-            "usr": self.username,
-            "nam": self.full_name,
-            "rol": self.role,
-        }
-
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> Optional["SessionUser"]:
-        """Rebuild from a verified payload. None if any field is missing/odd."""
-        try:
-            return cls(
-                user_id=int(payload["uid"]),
-                tenant_id=int(payload["tid"]),
-                tenant_slug=str(payload["slug"]),
-                username=str(payload["usr"]),
-                full_name=str(payload.get("nam", "")),
-                role=str(payload.get("rol", "member")),
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
+    def from_row(cls, row: dict[str, Any]) -> "SessionUser":
+        """Build from resolve_web_session()'s output."""
+        return cls(
+            session_id=int(row["session_id"]),
+            user_id=int(row["web_user_id"]),
+            tenant_id=int(row["tenant_id"]),
+            tenant_slug=str(row["tenant_slug"]),
+            username=str(row["username"]),
+            full_name=str(row["full_name"] or ""),
+            role=str(row["role"] or "member"),
+        )
 
 
 # ─────────────────────────────────────────────────────────────
 # Cookie helpers
 # ─────────────────────────────────────────────────────────────
 
-def set_session_cookie(response: Response, user: SessionUser) -> None:
-    """Issue a fresh signed session cookie for this user."""
-    token = security.sign_session(user.to_payload())
+def set_session_cookie(response: Response, token: str) -> None:
+    """Hand the browser a signed pointer to its web_sessions row."""
     response.set_cookie(
         security.SESSION_COOKIE,
-        token,
+        security.sign_session({"sid": token}),
         max_age=security.SESSION_TTL_SECONDS,
         httponly=True,          # not readable from JS → XSS can't lift the session
         samesite="lax",         # blocks cross-site POSTs while keeping normal nav
@@ -106,12 +100,30 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(security.SESSION_COOKIE, path="/")
 
 
-def read_session(request: Request) -> Optional[SessionUser]:
-    """Decode + verify this request's session cookie (None if absent/invalid)."""
+def read_token(request: Request) -> Optional[str]:
+    """
+    The session token from this request's cookie, if the signature checks out.
+
+    Verifying the signature here means a junk or tampered cookie is rejected
+    in-process and never reaches the database.
+    """
     payload = security.load_session(request.cookies.get(security.SESSION_COOKIE))
-    if payload is None:
+    if not payload:
         return None
-    return SessionUser.from_payload(payload)
+    token = payload.get("sid")
+    return token if isinstance(token, str) and token else None
+
+
+async def read_session(request: Request) -> Optional[SessionUser]:
+    """Resolve this request's identity against the sessions table."""
+    token = read_token(request)
+    if token is None:
+        return None
+    pool = await get_pool()
+    row = await web_sessions_repo.resolve(pool, security.hash_token(token))
+    if row is None:
+        return None
+    return SessionUser.from_row(row)
 
 
 def is_public(path: str) -> bool:
@@ -133,22 +145,46 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        session = read_session(request)
+        # Skip the lookup entirely for /login and /static: they don't need an
+        # identity, and this is every request for the CSS on the login page.
+        public = is_public(request.url.path)
+        session = None if public else await read_session(request)
         request.state.session = session
 
-        if session is not None or is_public(request.url.path):
+        if public:
             return await call_next(request)
 
-        if request.headers.get("HX-Request") == "true":
-            response = Response(status_code=401)
-            response.headers["HX-Redirect"] = LOGIN_PATH
-            return response
+        if session is None:
+            # A cookie that no longer resolves is stale (revoked, expired, or the
+            # account was disabled) — clear it so the browser stops sending it.
+            return _reject(request)
 
-        target = request.url.path
-        if request.url.query:
-            target = f"{target}?{request.url.query}"
-        next_param = "" if target == "/" else f"?next={_quote(target)}"
-        return RedirectResponse(f"{LOGIN_PATH}{next_param}", status_code=303)
+        response = await call_next(request)
+        await self._touch(session)
+        return response
+
+    @staticmethod
+    async def _touch(session: SessionUser) -> None:
+        """Refresh last_seen_at (throttled inside the repo; never raises)."""
+        pool = await get_pool()
+        await web_sessions_repo.touch(pool, session.tenant_id, session.session_id)
+
+
+def _reject(request: Request) -> Response:
+    """Turn an unauthenticated request away in the form its caller can use."""
+    if request.headers.get("HX-Request") == "true":
+        response: Response = Response(status_code=401)
+        response.headers["HX-Redirect"] = LOGIN_PATH
+        clear_session_cookie(response)
+        return response
+
+    target = request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    next_param = "" if target == "/" else f"?next={_quote(target)}"
+    response = RedirectResponse(f"{LOGIN_PATH}{next_param}", status_code=303)
+    clear_session_cookie(response)
+    return response
 
 
 def _quote(value: str) -> str:

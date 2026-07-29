@@ -8,6 +8,7 @@ Web account management (admin only):
     POST /admin/users/{id}/reactivate     restore access
     POST /admin/users/{id}/role           promote/demote
     POST /admin/users/{id}/password       set a new password
+    POST /admin/users/{id}/sessions/revoke  sign the account out everywhere
 
 Everything is scoped to the logged-in admin's own church: the tenant comes from
 the session and every query runs through tenant_cursor, so an admin of church A
@@ -31,7 +32,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from church_assistant.db import audit_repo, web_users_repo
+from church_assistant.db import audit_repo, web_sessions_repo, web_users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
@@ -64,6 +65,9 @@ async def _panel_context(request: Request, pool: Any, tenant_id: int) -> dict[st
     return {
         "users": users,
         "me": me,
+        # One grouped query rather than one per row — the table shows "who is
+        # signed in right now", which is the point of having a sessions table.
+        "live_sessions": await web_sessions_repo.count_live_by_user(pool, tenant_id),
         # Rendered per row so the template doesn't re-derive the rule: the last
         # active admin, and yourself, are not removable.
         "n_active_admins": sum(
@@ -236,15 +240,20 @@ async def deactivate_user(request: Request, user_id: int):
     if blocked:
         return await _panel_with(request, error=blocked)
 
-    await web_users_repo.deactivate(pool, current_tenant(request), user_id)
+    tenant_id = current_tenant(request)
+    await web_users_repo.deactivate(pool, tenant_id, user_id)
+    # Revoking is belt-and-braces: resolve_web_session() already refuses a
+    # session whose account is inactive, so access is gone either way. Doing it
+    # explicitly means the rows also *read* as ended, which is what an admin —
+    # and the board — will look at afterwards.
+    n = await web_sessions_repo.revoke_all_for_user(pool, tenant_id, user_id)
+
     await _audit(pool, request, "admin.web_user_deactivated", user_id,
-                 username=target["username"])
-    # The session cookie is self-contained, so a signed-in user keeps working
-    # until it expires. Say so rather than implying an instant cut-off.
+                 username=target["username"], sessions_revoked=n)
+    suffix = f" Активних сесій закрито: {n}." if n else ""
     return await _panel_with(
         request,
-        ok=f"Акаунт «{target['username']}» вимкнено (активна сесія доживе до "
-           f"кінця строку дії).",
+        ok=f"Акаунт «{target['username']}» вимкнено — доступ припинено одразу.{suffix}",
     )
 
 
@@ -288,6 +297,40 @@ async def set_role(request: Request, user_id: int, role: str = Form(...)):
     )
 
 
+@router.post("/users/{user_id}/sessions/revoke", response_class=HTMLResponse)
+async def revoke_sessions(request: Request, user_id: int):
+    """
+    Sign an account out of every browser it is open in.
+
+    Unlike deactivation this leaves the account usable — it is the "someone left
+    a session open on a shared machine" lever, not the "revoke access" one. An
+    admin may do it to themselves; their current session goes too, and the very
+    next request bounces them to the login page.
+    """
+    require_admin(request)
+    pool = await get_pool()
+
+    target, err = await _load_target(request, pool, user_id)
+    if err is not None:
+        return err
+
+    n = await web_sessions_repo.revoke_all_for_user(
+        pool, current_tenant(request), user_id
+    )
+    await _audit(pool, request, "admin.web_user_sessions_revoked", user_id,
+                 username=target["username"], sessions_revoked=n)
+
+    if not n:
+        return await _panel_with(
+            request, ok=f"У «{target['username']}» не було активних сесій."
+        )
+    return await _panel_with(
+        request,
+        ok=f"Сесії «{target['username']}» закрито: {n}. Наступний запит "
+           f"поверне на сторінку входу.",
+    )
+
+
 @router.post("/users/{user_id}/password", response_class=HTMLResponse)
 async def set_password(request: Request, user_id: int, password: str = Form(...)):
     """Set a new password (an admin resetting someone who forgot theirs)."""
@@ -303,17 +346,30 @@ async def set_password(request: Request, user_id: int, password: str = Form(...)
     if err is not None:
         return err
 
+    me = current_user(request)
+    tenant_id = me.tenant_id
     await web_users_repo.set_password_hash(
-        pool, current_tenant(request), user_id, security.hash_password(password)
+        pool, tenant_id, user_id, security.hash_password(password)
     )
+    # A password reset is usually a response to "this account may be
+    # compromised", so the old sessions must not outlive the old password.
+    # Spare the acting admin's own session when they reset their own password —
+    # otherwise the action logs them out of the page they just used.
+    n = await web_sessions_repo.revoke_all_for_user(
+        pool, tenant_id, user_id,
+        except_session_id=me.session_id if user_id == me.user_id else None,
+    )
+
     # The new password is never logged, here or in the audit detail.
     await _audit(pool, request, "admin.web_user_password_reset", user_id,
-                 username=target["username"])
+                 username=target["username"], sessions_revoked=n)
     await _logger.info(
         "web.password_reset",
-        message=f"{current_user(request).username} reset password for {target['username']}",
-        tenant_id=current_tenant(request),
+        message=f"{me.username} reset password for {target['username']} "
+                f"({n} session(s) ended)",
+        tenant_id=tenant_id,
     )
+    suffix = f" Активних сесій закрито: {n}." if n else ""
     return await _panel_with(
-        request, ok=f"Пароль для «{target['username']}» змінено."
+        request, ok=f"Пароль для «{target['username']}» змінено.{suffix}"
     )

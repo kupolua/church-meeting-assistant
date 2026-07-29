@@ -27,7 +27,9 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from church_assistant.db import audit_repo, tenants_repo, web_users_repo
+from church_assistant.db import (
+    audit_repo, tenants_repo, web_sessions_repo, web_users_repo,
+)
 from church_assistant.db.connection import get_pool
 from church_assistant.db.tenant_context import resolve_tenant_for_web_user
 from church_assistant.shared.logger import Logger
@@ -111,7 +113,7 @@ def _render_login(
 @router.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request, next: str = "/"):
     """Show the login form (or bounce an already-signed-in user onward)."""
-    if auth.read_session(request) is not None:
+    if await auth.read_session(request) is not None:
         return RedirectResponse(_safe_next(next), status_code=303)
     return _render_login(request, next_url=_safe_next(next))
 
@@ -201,49 +203,67 @@ async def login_submit(
             username=username, next_url=next_url, status_code=403,
         )
 
-    # ─── 4. Issue the session ────────────────────────────────
+    # ─── 4. Open a server-side session ───────────────────────
     _failures.pop(key, None)
-    session_user = auth.SessionUser(
-        user_id=int(user_row["id"]),
-        tenant_id=tenant_id,
-        tenant_slug=str(tenant["slug"]),
-        username=username,
-        full_name=str(user_row["full_name"]),
-        role=str(user_row["role"]),
+    user_id = int(user_row["id"])
+
+    # The plaintext token exists only here and in the browser; the row keeps
+    # nothing but its hash.
+    token = security.new_session_token()
+    session_id = await web_sessions_repo.create(
+        pool,
+        tenant_id,
+        web_user_id=user_id,
+        token_hash=security.hash_token(token),
+        ttl_seconds=security.SESSION_TTL_SECONDS,
+        user_agent=request.headers.get("user-agent"),
+        ip=request.client.host if request.client else None,
     )
 
-    await web_users_repo.touch_login(pool, tenant_id, session_user.user_id)
+    await web_users_repo.touch_login(pool, tenant_id, user_id)
     await audit_repo.record(
         pool,
         tenant_id=tenant_id,
         action="auth.login",
-        actor=session_user.actor,
-        resource=f"web_users/{session_user.user_id}",
-        detail={"role": session_user.role},
+        actor=f"web:{username}",
+        resource=f"web_users/{user_id}",
+        detail={"role": str(user_row["role"]), "session_id": session_id},
     )
     await _logger.info(
         "web.login",
-        message=f"{username} signed in (tenant {tenant['slug']})",
+        message=f"{username} signed in (tenant {tenant['slug']}, session {session_id})",
         tenant_id=tenant_id,
     )
 
+    # Opportunistic cleanup — long-dead rows, not the ones an admin still wants
+    # to look at. Login is rare enough to carry it and never on the hot path.
+    await web_sessions_repo.purge_expired(pool)
+
     response = RedirectResponse(next_url, status_code=303)
-    auth.set_session_cookie(response, session_user)
+    auth.set_session_cookie(response, token)
     return response
 
 
 @router.post("/logout")
 async def logout(request: Request):
-    """Drop the session (and record it — the board sees sessions end, too)."""
-    session = auth.read_session(request)
+    """
+    End the session server-side, then drop the cookie.
+
+    Order matters: revoking first means the session is dead even if the browser
+    keeps (or has already copied) the cookie. Clearing the cookie alone would
+    have been the whole of "sign out" under the old self-contained scheme.
+    """
+    session = await auth.read_session(request)
     if session is not None:
         pool = await get_pool()
+        await web_sessions_repo.revoke(pool, session.tenant_id, session.session_id)
         await audit_repo.record(
             pool,
             tenant_id=session.tenant_id,
             action="auth.logout",
             actor=session.actor,
             resource=f"web_users/{session.user_id}",
+            detail={"session_id": session.session_id},
         )
 
     response = RedirectResponse("/login", status_code=303)

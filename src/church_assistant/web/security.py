@@ -10,15 +10,22 @@ passlib/bcrypt/itsdangerous for two well-understood primitives.
     so the cost parameters travel with the hash and can be raised later without
     invalidating existing accounts.
 
-    Sessions — a signed (NOT encrypted) cookie: <payload_b64>.<hmac_sha256_b64>.
-    The payload is readable by the user; that's fine, it holds no secret — only
-    user id / tenant id / username / role / expiry. The HMAC is what stops a user
-    from editing their tenant_id and reading another church's data, so
-    WEB_SECRET_KEY must be a real random secret and must NOT be shared.
+    Sessions — a signed (NOT encrypted) cookie carrying one opaque token:
+        <payload_b64>.<hmac_sha256_b64>   where payload = {"sid": "<token>"}
+    The identity itself lives in the web_sessions table (migration 008); the
+    cookie only points at it. That is what makes a session revocable — see
+    db/web_sessions_repo.py.
 
-    Nothing is cached in memory: a session survives an app restart as long as the
-    secret does, and a rotated secret logs everyone out (which is the intended
-    emergency lever).
+    Why still sign it, when the DB is the authority? Because the signature is a
+    free pre-filter: a junk or tampered cookie is rejected in-process, so random
+    traffic never reaches the session lookup. Rotating WEB_SECRET_KEY therefore
+    still signs everyone out, and remains the blunt emergency lever next to the
+    per-session revocation the table now provides.
+
+    Tokens — 256 bits of CSPRNG output, stored only as a SHA-256 digest. Plain
+    SHA-256 rather than scrypt is correct here precisely because the input is
+    already high-entropy: there is no guessable password to slow an attacker
+    down over, only a value they cannot enumerate.
 """
 
 from __future__ import annotations
@@ -155,6 +162,30 @@ def waste_time_like_a_real_check() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# Session tokens
+# ─────────────────────────────────────────────────────────────
+
+SESSION_TOKEN_BYTES = 32          # 256 bits — not enumerable
+
+
+def new_session_token() -> str:
+    """A fresh opaque session token. Handed to the browser, never stored."""
+    return secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+
+
+def hash_token(token: str) -> str:
+    """
+    SHA-256 hex of a session token — this is what goes in the database.
+
+    Unsalted and fast on purpose: the token is already 256 random bits, so the
+    slow, salted hashing that protects human-chosen passwords buys nothing here,
+    while the lookup happens on every single request. What it does buy is that a
+    leaked dump of web_sessions contains nothing a browser could present.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ─────────────────────────────────────────────────────────────
 # Signed session cookie
 # ─────────────────────────────────────────────────────────────
 
@@ -218,24 +249,30 @@ def _smoke_test() -> None:
     assert hash_password("same") != hash_password("same")
     print("2. per-password salt ✓")
 
-    tok = sign_session({"uid": 7, "tid": 3, "username": "pavlo", "role": "admin"})
-    s = load_session(tok)
-    assert s is not None and s["uid"] == 7 and s["tid"] == 3
-    print("3. session sign/load ✓")
+    t1, t2 = new_session_token(), new_session_token()
+    assert t1 != t2 and len(t1) >= 40
+    assert hash_token(t1) == hash_token(t1) != hash_token(t2)
+    assert t1 not in hash_token(t1)      # the stored form does not contain it
+    print("3. session tokens unique + hashed one-way ✓")
 
-    # Tamper with the payload → signature fails (this is what stops a user from
-    # editing their tenant id).
+    tok = sign_session({"sid": t1})
+    s = load_session(tok)
+    assert s is not None and s["sid"] == t1
+    print("4. session cookie sign/load ✓")
+
+    # Tamper with the payload → signature fails, so a swapped-in session id
+    # never reaches the database lookup.
     body, _, sig = tok.partition(".")
     forged_payload = _b64e(
-        json.dumps({"uid": 7, "tid": 999, "exp": int(time.time()) + 60},
+        json.dumps({"sid": t2, "exp": int(time.time()) + 60},
                    separators=(",", ":"), sort_keys=True).encode()
     )
     assert load_session(f"{forged_payload}.{sig}") is None
-    print("4. forged tenant_id rejected ✓")
+    print("5. forged session id rejected before any DB hit ✓")
 
-    assert load_session(sign_session({"uid": 1}, ttl=-1)) is None
+    assert load_session(sign_session({"sid": t1}, ttl=-1)) is None
     assert load_session(None) is None and load_session("nonsense") is None
-    print("5. expiry + garbage rejected ✓")
+    print("6. expiry + garbage rejected ✓")
 
     print("=" * 60)
     print("  ✓ ALL SECURITY SMOKE TESTS PASSED")

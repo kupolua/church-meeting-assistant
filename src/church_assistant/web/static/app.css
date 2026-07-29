@@ -1311,6 +1311,11 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
     height: auto;
 }
 
+.admin-session-count {
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
 /* Keep the row's controls on one line and vertically centred — the lock badge
    is a <small>, the rest are buttons, so they need a common baseline. */
 .dash-actions {

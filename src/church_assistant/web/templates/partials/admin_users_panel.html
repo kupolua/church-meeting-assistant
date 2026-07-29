@@ -12,7 +12,7 @@
         <thead>
             <tr>
                 <th>логін</th><th>ім'я</th><th>роль</th>
-                <th>останній вхід</th><th></th>
+                <th>сесії</th><th>останній вхід</th><th></th>
             </tr>
         </thead>
         <tbody>
@@ -21,12 +21,27 @@
             {% set is_me = u.id == me.user_id %}
             {% set is_last_admin = u.is_active and u.role == 'admin' and n_active_admins <= 1 %}
             {% set locked = is_me or is_last_admin %}
+            {% set n_sessions = live_sessions.get(u.id, 0) %}
             <tr class="{{ '' if u.is_active else 'is-disabled' }}">
                 <td><strong>{{ u.username }}</strong>{% if is_me %} <small>(це ви)</small>{% endif %}</td>
                 <td>{{ u.full_name }}</td>
                 <td>
                     {% if u.role == 'admin' %}⭐ admin{% else %}member{% endif %}
                     {% if not u.is_active %}<small> · вимкнено</small>{% endif %}
+                </td>
+                <td>
+                    {# Live sessions, and the lever to end them. #}
+                    {% if n_sessions %}
+                    <span class="admin-session-count" title="Активних сесій">🟢 {{ n_sessions }}</span>
+                    <button class="dash-btn"
+                            hx-post="/admin/users/{{ u.id }}/sessions/revoke"
+                            hx-target="#admin-users-panel" hx-swap="innerHTML"
+                            hx-confirm="{% if is_me %}Закрити ВСІ ваші сесії, включно з цією? Вас переведе на сторінку входу.{% else %}Закрити всі сесії {{ u.username }}? Наступний запит поверне їх на сторінку входу.{% endif %}">
+                        ⏻ вийти скрізь
+                    </button>
+                    {% else %}
+                    <small>—</small>
+                    {% endif %}
                 </td>
                 <td><small>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else '—' }}</small></td>
                 <td class="dash-actions">
@@ -57,7 +72,7 @@
                         <button class="dash-btn is-cancel"
                                 hx-post="/admin/users/{{ u.id }}/deactivate"
                                 hx-target="#admin-users-panel" hx-swap="innerHTML"
-                                hx-confirm="Вимкнути акаунт {{ u.username }}? Втратить доступ до вебінтерфейсу.">
+                                hx-confirm="Вимкнути акаунт {{ u.username }}? Доступ припиниться одразу, відкриті сесії закриються.">
                             ⊘ вимкнути
                         </button>
                         {% endif %}

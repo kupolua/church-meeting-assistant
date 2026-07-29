@@ -18,7 +18,7 @@ SETUP (once per run — recreates the sandbox from scratch):
     for f in schema.sql migrations/003_multitenancy.sql \
              migrations/004_app_role_and_claim.sql \
              migrations/005_mt_fixups.sql migrations/006_web_auth.sql \
-             migrations/007_system_tenant.sql; do
+             migrations/007_system_tenant.sql migrations/008_web_sessions.sql; do
       $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -q -v ON_ERROR_STOP=1 \
         < src/church_assistant/db/$f
     done
@@ -175,11 +175,20 @@ def test_fs_isolation() -> None:
     assert da != db
     ok("same date, two churches → two folders (no collision)")
 
+    # A date that exists ONLY in church B. The shared date above proves folders
+    # don't collide, but it can't prove a listing is filtered — both churches
+    # would show it. This one can: if it ever appears in church A's sidebar,
+    # the listing leaked.
+    db2 = b.meeting_dir("2026-06-22")
+    db2.mkdir(parents=True)
+    (db2 / "polished.md").write_text("## Присутні\n\n- Борис Б\n\n### Лише Б\nтільки Б\n")
+
     from church_assistant.shared import meetings_index
     sa = meetings_index.list_all_summaries(a.meetings)
     sb = meetings_index.list_all_summaries(b.meetings)
+    assert [s.date for s in sa] == ["2026-06-15"], sa
+    assert [s.date for s in sb] == ["2026-06-22", "2026-06-15"], sb
     assert [s.attendees for s in sa] == [["Анна А"]], sa
-    assert [s.attendees for s in sb] == [["Борис Б"]], sb
     ok("meetings_index lists only the church it was pointed at")
 
     hits = meetings_index.search_topics(a.meetings, "секрет")
@@ -286,10 +295,11 @@ def test_http() -> None:
         assert security.SESSION_COOKIE in r.cookies
         ok("correct credentials → session cookie + redirect to ?next")
 
-        session = security.load_session(r.cookies[security.SESSION_COOKIE])
-        assert session["tid"] == TENANT_A and session["slug"] == "church-a"
-        assert session["usr"] == "anna" and session["rol"] == "admin"
-        ok("session carries tenant id + slug + role from the DB, not the request")
+        # The cookie is a pointer only — identity is resolved server-side from
+        # web_sessions on every request (see section 8).
+        payload = security.load_session(r.cookies[security.SESSION_COOKIE])
+        assert set(payload) == {"sid", "exp"}, payload
+        ok("cookie holds an opaque session id, no tenant/role of its own")
 
         # Open redirect: an off-site ?next must not be honoured.
         r = client.post(
@@ -300,10 +310,12 @@ def test_http() -> None:
         assert r.headers["location"] == "/", r.headers["location"]
         ok("off-site ?next is ignored (no open redirect)")
 
-        # Authenticated: the meetings page shows only church A's meeting.
+        # Authenticated: the sidebar lists church A's meeting and not the date
+        # that exists only in church B. (Asserting on a NAME would be a false
+        # positive — the header prints the signed-in user's own name.)
         r = client.get("/meetings")
         assert r.status_code == 200
-        assert "Анна А" in r.text and "Борис Б" not in r.text
+        assert "2026-06-15" in r.text and "2026-06-22" not in r.text
         ok("logged in as church A → sees A's meetings, not B's")
 
         r = client.get("/meetings/2026-06-15")
@@ -467,9 +479,12 @@ def test_admin_ui() -> None:
         r = client.post("/login", data={"username": "dmytro",
                                         "password": "novyi-parol-123"})
         assert r.status_code == 303 and security.SESSION_COOKIE in r.cookies
-        s = security.load_session(r.cookies[security.SESSION_COOKIE])
-        assert s["tid"] == TENANT_A and s["rol"] == "member"
-        ok("the new account logs in, into the creating admin's church")
+        # Landed in church A: they see A's meeting and not the B-only date, and
+        # as a member they get no account-management link.
+        page = client.get("/meetings").text
+        assert "2026-06-15" in page and "2026-06-22" not in page
+        assert "/admin/users" not in page
+        ok("the new account logs in, into the creating admin's church, as member")
 
         client.cookies.clear()
         login(client, "anna", PASSWORD_A)
@@ -524,6 +539,172 @@ def test_admin_ui() -> None:
         ok("a deactivated account can be restored (soft delete)")
 
 
+# ─────────────────────────────────────────────────────────────
+# 8. Server-side sessions — the point is that access can be TAKEN AWAY
+# ─────────────────────────────────────────────────────────────
+
+def test_sessions() -> None:
+    print("\n8. web_sessions — revocation takes effect immediately")
+    print("-" * 66)
+
+    import asyncio as _asyncio
+    from fastapi.testclient import TestClient
+    from psycopg_pool import AsyncConnectionPool
+    from church_assistant.db import tenants_repo, web_sessions_repo, web_users_repo
+    from church_assistant.db.connection import _build_conninfo
+    from church_assistant.web.main import app
+
+    def as_admin(client) -> None:
+        r = client.post("/login", data={"username": "anna", "password": PASSWORD_A})
+        assert r.status_code == 303, r.status_code
+
+    async def _db(fn):
+        """
+        Run one out-of-band DB step alongside the running app.
+
+        Opens a private pool instead of the module singleton: the app's pool
+        belongs to TestClient's event loop, and touching it from this one
+        fails ("attached to a different loop"). These steps stand in for an
+        admin acting from another browser while a session is open.
+        """
+        pool = AsyncConnectionPool(conninfo=_build_conninfo(), min_size=1,
+                                   max_size=2, open=False)
+        await pool.open()
+        try:
+            return await fn(pool)
+        finally:
+            await pool.close()
+
+    with TestClient(app, follow_redirects=False) as client:
+        as_admin(client)
+        cookie = client.cookies[security.SESSION_COOKIE]
+
+        # The cookie is a pointer, not the identity: no tenant/role inside it.
+        payload = security.load_session(cookie)
+        assert set(payload) == {"sid", "exp"}, payload
+        assert "church-a" not in cookie and "admin" not in cookie
+        ok("cookie carries only an opaque session id (identity lives in the DB)")
+
+        assert client.get("/dashboard").status_code == 200
+        ok("session works while it is live")
+
+        # …and stops working the moment the row is revoked — no waiting for TTL.
+        async def revoke_mine(pool):
+            row = await web_sessions_repo.resolve(
+                pool, security.hash_token(security.load_session(cookie)["sid"])
+            )
+            assert row is not None
+            return await web_sessions_repo.revoke(
+                pool, TENANT_A, int(row["session_id"])
+            )
+
+        assert _asyncio.run(_db(revoke_mine)) is True
+        r = client.get("/dashboard")
+        assert r.status_code == 303 and r.headers["location"].startswith("/login")
+        ok("revoked session → next request is bounced (no TTL wait)")
+
+        # The stale cookie is cleared, so the browser stops presenting it.
+        assert client.cookies.get(security.SESSION_COOKIE) in (None, "")
+        ok("the rejecting response clears the dead cookie")
+
+        # Deactivating an account cuts its live session off.
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "borys", "password": PASSWORD_B})
+        assert r.status_code == 303
+        borys_client_cookie = client.cookies[security.SESSION_COOKIE]
+        assert client.get("/dashboard").status_code == 200
+
+        async def disable_borys(pool):
+            u = await web_users_repo.get_by_username(pool, TENANT_B, "borys")
+            await web_users_repo.deactivate(pool, TENANT_B, int(u["id"]))
+            return int(u["id"])
+
+        borys_id = _asyncio.run(_db(disable_borys))
+        client.cookies.set(security.SESSION_COOKIE, borys_client_cookie)
+        r = client.get("/dashboard")
+        assert r.status_code == 303
+        ok("disabling an account ends its open session on the next request")
+
+        async def restore_borys(pool):
+            await web_users_repo.reactivate(pool, TENANT_B, borys_id)
+        _asyncio.run(_db(restore_borys))
+
+        # "Sign out everywhere" through the admin UI, across two browsers.
+        client.cookies.clear()
+        as_admin(client)
+        first = client.cookies[security.SESSION_COOKIE]
+
+        client.cookies.clear()
+        as_admin(client)
+        second = client.cookies[security.SESSION_COOKIE]
+        assert first != second
+        ok("two logins → two independent sessions")
+
+        page = client.get("/admin/users").text
+        assert "вийти скрізь" in page
+        import re as _re
+        anna_id = int(_re.search(r"/admin/users/(\d+)/sessions/revoke", page).group(1))
+
+        r = client.post(f"/admin/users/{anna_id}/sessions/revoke")
+        assert r.status_code == 200 and "Сесії" in r.text
+        ok("admin can end every session of an account from the UI")
+
+        for label, c in (("first", first), ("second", second)):
+            client.cookies.set(security.SESSION_COOKIE, c)
+            assert client.get("/dashboard").status_code == 303, label
+        ok("both browsers are signed out, including the one that clicked")
+
+        # Logout revokes server-side, not just client-side: replaying the exact
+        # cookie afterwards must not work.
+        client.cookies.clear()
+        as_admin(client)
+        replay = client.cookies[security.SESSION_COOKIE]
+        assert client.post("/logout").status_code == 303
+        client.cookies.set(security.SESSION_COOKIE, replay)
+        assert client.get("/dashboard").status_code == 303
+        ok("a cookie captured before logout is dead afterwards (replay fails)")
+
+    # The resolver's remaining clauses, exercised directly.
+    async def resolver_rules(pool):
+        u = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
+
+        # A live session resolves to its OWN church — the tenant comes from the
+        # row, so no token can be presented "as" another church.
+        token = security.new_session_token()
+        await web_sessions_repo.create(
+            pool, TENANT_A, web_user_id=int(u["id"]),
+            token_hash=security.hash_token(token), ttl_seconds=600,
+        )
+        row = await web_sessions_repo.resolve(pool, security.hash_token(token))
+        assert row["tenant_id"] == TENANT_A and row["tenant_slug"] == "church-a"
+
+        # Expired → refused by the same function, no separate check to forget.
+        expired = security.new_session_token()
+        await web_sessions_repo.create(
+            pool, TENANT_A, web_user_id=int(u["id"]),
+            token_hash=security.hash_token(expired), ttl_seconds=-60,
+        )
+        assert await web_sessions_repo.resolve(pool, security.hash_token(expired)) is None
+
+        # An unknown token is simply nobody.
+        assert await web_sessions_repo.resolve(pool, "0" * 64) is None
+
+        # A session in a SUSPENDED church is dead even though the row itself is
+        # live and the account is active. (church-off is inactive in the
+        # fixture; cma_app may not flip that flag — the tenants registry is
+        # platform-administered, which migration 004 enforces.)
+        olha = await web_users_repo.get_by_username(pool, TENANT_OFF, "olha")
+        off_token = security.new_session_token()
+        await web_sessions_repo.create(
+            pool, TENANT_OFF, web_user_id=int(olha["id"]),
+            token_hash=security.hash_token(off_token), ttl_seconds=600,
+        )
+        assert await web_sessions_repo.resolve(pool, security.hash_token(off_token)) is None
+
+    _asyncio.run(_db(resolver_rules))
+    ok("resolver: own church only; expired, unknown and suspended-church → nobody")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -558,6 +739,7 @@ def main() -> int:
         test_collections()
         test_http()              # owns its pool via the app's lifespan
         test_admin_ui()          # ditto
+        test_sessions()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
