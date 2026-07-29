@@ -7,16 +7,14 @@
 
     <!-- Pico.css: semantic, classless, ~50KB -->
     <link rel="stylesheet" href="/static/pico.min.css">
-    <!-- Our small overrides -->
+    <!-- Our small overrides (also holds what used to be inline <style> here,
+         so the Content-Security-Policy can forbid inline styles outright) -->
     <link rel="stylesheet" href="/static/app.css">
 
-    <!-- HTMX (will use in query form later) -->
-    <script src="https://unpkg.com/htmx.org@1.9.10" defer></script>
-
-    <!-- Prevent auto dark mode from OS preference -->
-    <style>
-        :root { color-scheme: light; }
-    </style>
+    <!-- HTMX — served locally, never from a CDN. See static/VENDOR.md. -->
+    <script src="/static/htmx.min.js" defer></script>
+    <!-- Our handful of non-htmx behaviour (data-confirm on plain forms) -->
+    <script src="/static/app.js" defer></script>
 </head>
 <body>
 

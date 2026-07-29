@@ -1,7 +1,32 @@
 /* ═══════════════════════════════════════════════════════════
    Church Meeting Assistant — app.css
    Small overrides on top of Pico.css
+
+   NOTE: this file is also where the templates' former inline <style>
+   blocks now live. Keeping them here (rather than in the HTML) is what
+   lets the Content-Security-Policy in web/headers.py say
+   style-src 'self' with no 'unsafe-inline' escape hatch.
    ═══════════════════════════════════════════════════════════ */
+
+/* Pin the light scheme rather than following the OS: the palette below is
+   hand-tuned for light, and Pico's automatic dark mode would half-apply. */
+:root { color-scheme: light; }
+
+/* ── Login page (login.html — standalone, does not extend base.html) ── */
+
+.login-shell {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+}
+
+.login-card { width: 100%; max-width: 24rem; }
+.login-brand { text-align: center; margin-bottom: 1.5rem; }
+.login-brand h1 { margin-bottom: .25rem; font-size: 1.5rem; }
+.login-brand p { margin: 0; color: var(--pico-muted-color); font-size: .875rem; }
+.login-error { color: var(--pico-del-color); }
 
 :root {
     --sidebar-width: 320px;

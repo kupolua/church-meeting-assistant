@@ -101,8 +101,11 @@
         </form>
         {% endif %}
         {% if job.status in active_statuses %}
+        {# data-confirm, not onsubmit: inline handlers are blocked by the CSP.
+           Stays a plain POST so the route redirects back to THIS page instead
+           of returning the job-list panel it gives htmx. See static/app.js. #}
         <form action="/ingest/{{ job.id }}/cancel" method="post"
-              onsubmit="return confirm('Скасувати job #{{ job.id }} ({{ job.meeting_date }})?');">
+              data-confirm="Скасувати job #{{ job.id }} ({{ job.meeting_date }})?">
             <button type="submit" class="dash-btn is-cancel">⊘ Скасувати</button>
         </form>
         {% endif %}

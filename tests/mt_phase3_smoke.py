@@ -827,6 +827,16 @@ def test_hardening() -> None:
         assert r.status_code == 303 and r.headers.get("X-Frame-Options") == "DENY"
         ok("headers also on middleware responses that never reach a handler")
 
+        # CSP: strict, and strict in the ways that actually matter. An escape
+        # hatch added "just to fix one page" would quietly undo the point.
+        csp = client.get("/login").headers.get("Content-Security-Policy", "")
+        assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+        assert "unsafe-eval" not in csp
+        assert "style-src 'self'" in csp
+        assert "img-src 'self' data:" in csp      # Pico inlines SVG icons
+        assert "frame-ancestors 'none'" in csp and "form-action 'self'" in csp
+        ok("CSP present with no unsafe-inline / unsafe-eval escape hatch")
+
         # A member — not just an admin — can manage their own sessions.
         r = client.post("/login", data={"username": "borys", "password": PASSWORD_B})
         assert r.status_code == 303
@@ -881,6 +891,38 @@ def test_hardening() -> None:
         r = client.post(f"/account/sessions/{foreign}/revoke")
         assert "не знайдено" in r.text
         ok("cannot close someone else's session by id (ownership checked)")
+
+    # The CSP above is only honest while the UI stays self-hosted: one CDN tag
+    # or one inline handler re-introduces exactly what it forbids — and that
+    # breaks in a browser, not here. So assert it at the source instead.
+    from pathlib import Path as _Path
+    import re as _re2
+
+    tpl_dir = _Path(__file__).resolve().parent.parent / "src/church_assistant/web/templates"
+    templates = sorted(tpl_dir.rglob("*.html"))
+    offenders: list[str] = []
+    for tpl in templates:
+        body = tpl.read_text(encoding="utf-8")
+        # Strip HTML comments first: a comment cannot violate a CSP, and the
+        # comments explaining WHY there are no inline styles would otherwise
+        # trip the very check they document.
+        body = _re2.sub(r"<!--.*?-->", "", body, flags=_re2.S)
+        for pattern, what in (
+            (r'(src|href)="https?://', "external origin (CDN)"),
+            (r"\bon(click|change|submit|input|load)=", "inline event handler"),
+            (r"<style[ >]", "inline <style> block"),
+            (r'\sstyle="', "inline style attribute"),
+        ):
+            if _re2.search(pattern, body):
+                offenders.append(f"{tpl.name}: {what}")
+    assert not offenders, "the CSP would block these: " + "; ".join(offenders)
+    ok(f"no CDN links / inline handlers / inline styles in {len(templates)} templates")
+
+    static_dir = _Path(__file__).resolve().parent.parent / "src/church_assistant/web/static"
+    for asset in ("htmx.min.js", "app.js", "app.css", "pico.min.css"):
+        p = static_dir / asset
+        assert p.is_file() and p.stat().st_size > 0, f"missing/empty: {asset}"
+    ok("every front-end asset the UI loads is vendored in static/")
 
 
 async def phase_db() -> None:
