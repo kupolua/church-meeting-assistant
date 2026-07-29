@@ -20,24 +20,30 @@ wheels/
 
 # Data (recordings, transcripts, voice profiles — confidential)
 # Default: ignore everything in data/, then make targeted exceptions.
+#
+# Layout is now per tenant: data/tenants/<slug>/{meetings,voice_profiles}/
+# (scripts/migrate_tenant_fs.py). The rules below MUST follow it — under the
+# old data/meetings/* rules the layout README silently stopped being tracked
+# the moment the folders moved.
 data/*
-!data/meetings/
-!data/voice_profiles/
+!data/tenants/
+data/tenants/*
+!data/tenants/*/
 
-# Inside data/meetings/, ignore all meeting content BUT show that
-# subfolders exist (so the global README can document them).
-# Commit only the global meetings README.
-data/meetings/*
-!data/meetings/README.md
-!data/meetings/*/
+# Per tenant: allow the two folders through, then ignore their contents.
+data/tenants/*/*
+!data/tenants/*/meetings/
+!data/tenants/*/voice_profiles/
 
-# Inside per-meeting folders, ignore everything (audio, transcripts,
-# protocols are private).
-data/meetings/*/*
+# Inside meetings/, show that per-meeting subfolders exist and commit only
+# the layout README; everything else (audio, transcripts, protocols) is private.
+data/tenants/*/meetings/*
+!data/tenants/*/meetings/README.md
+!data/tenants/*/meetings/*/
+data/tenants/*/meetings/*/*
 
-# Inside voice_profiles/, ignore the .npy files (each is a person's
-# biometric voice signature — confidential).
-data/voice_profiles/*
+# Voice profiles: each .npy is a person's biometric voice signature.
+data/tenants/*/voice_profiles/*
 
 # dev service logs (restart_dev.sh)
 logs/

@@ -148,6 +148,24 @@ def paths_for(slug: str) -> TenantPaths:
     )
 
 
+def cli_default_paths() -> TenantPaths:
+    """
+    Artifact folders the single-tenant CLI tools default to.
+
+    new_meeting, match_speakers, add_voice_profile and friends predate
+    multi-tenancy and each operate on one church at a time. Going through
+    paths_for() instead of a hard-coded "data/voice_profiles" means they FOLLOW
+    the layout — including after scripts/migrate_tenant_fs.py moves it — rather
+    than reading and writing an abandoned directory. new_meeting.py in
+    particular would otherwise create meetings somewhere the app never looks,
+    and say nothing about it.
+
+    NOT for request handling: web code must take its tenant from the session
+    (web/tenant.py). A default there would be a cross-tenant read.
+    """
+    return paths_for(legacy_slug() or "default")
+
+
 def legacy_paths_for(slug: str) -> TenantPaths:
     """The pre-multi-tenancy folders for a slug (used by the migration script)."""
     return _legacy_paths(validate_slug(slug), data_root())

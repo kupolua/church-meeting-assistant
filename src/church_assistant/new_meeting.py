@@ -1,7 +1,7 @@
 """End-to-end pipeline wrapper for processing a new meeting.
 
 Orchestrates:
-    1. Create per-meeting folder: data/meetings/YYYY-MM-DD/
+    1. Create per-meeting folder: <tenant meetings>/YYYY-MM-DD/
     2. Copy audio file into the folder as audio.m4a (or original extension)
     3. Run match_speakers.py and transcribe.py in PARALLEL (slow steps)
     4. PAUSE for manual review of speakers.json (you edit [REVIEW] / no-match)
@@ -48,6 +48,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from church_assistant.shared import tenant_paths
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?$")
@@ -106,9 +108,16 @@ def date_for_polish(date_str: str) -> str:
     return date_str
 
 
-def create_meeting_folder(date: str) -> Path:
-    """Create data/meetings/YYYY-MM-DD/ if not exists."""
-    folder = Path("data/meetings") / date
+def create_meeting_folder(date: str, tenant_slug: str) -> Path:
+    """
+    Create <tenant meetings>/YYYY-MM-DD/ if it doesn't exist.
+
+    Resolved through tenant_paths rather than a literal "data/meetings": that
+    path moves (scripts/migrate_tenant_fs.py) and differs per church, and a
+    hard-coded one would keep creating meetings in a directory the app no
+    longer reads — with no error to notice.
+    """
+    folder = tenant_paths.paths_for(tenant_slug).meetings / date
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -248,7 +257,18 @@ def main() -> None:
         help="Don't pause for manual speakers.json edit (DANGEROUS — leaves "
              "[REVIEW] tags in the protocol)",
     )
+    parser.add_argument(
+        "--tenant-slug",
+        type=str,
+        default=None,
+        help="Church this meeting belongs to; decides where the folder is "
+             "created and which voice profiles are matched against. Defaults "
+             "to LEGACY_TENANT_SLUG (the pre-multi-tenancy corpus).",
+    )
     args = parser.parse_args()
+
+    tenant_slug = args.tenant_slug or tenant_paths.legacy_slug() or "default"
+    tpaths = tenant_paths.paths_for(tenant_slug)
 
     # Validate inputs
     if not args.audio.exists():
@@ -263,7 +283,9 @@ def main() -> None:
     log(f"Sequential:   {args.sequential}")
     log(f"Resume mode:  {args.resume}")
 
-    meeting_dir = create_meeting_folder(args.date)
+    log(f"Tenant:       {tenant_slug}")
+
+    meeting_dir = create_meeting_folder(args.date, tenant_slug)
     log(f"\nMeeting folder: {meeting_dir}", "green")
 
     # 2. Copy audio
@@ -299,6 +321,10 @@ def main() -> None:
         "--audio", str(audio_path),
         "--output", str(speakers_path),
         "--rttm", str(rttm_path),
+        # Explicit, like ingestion/stages.py does: matching this church's
+        # speakers against another church's voice profiles would be a
+        # privacy failure, not a bug you notice in the output.
+        "--profiles-dir", str(tpaths.voice_profiles),
     ]
     transcribe_cmd = MODULE_PREFIX + [
         "church_assistant.transcribe",

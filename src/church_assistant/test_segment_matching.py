@@ -24,7 +24,11 @@ import numpy as np
 
 
 DEFAULT_SEGMENTS_DIR = Path("data/test_segments")
-DEFAULT_PROFILES_DIR = Path("data/voice_profiles")
+from church_assistant.shared import tenant_paths
+
+# Resolved through tenant_paths, not hard-coded: the CLI must follow the
+# artifact layout (including after scripts/migrate_tenant_fs.py moves it).
+DEFAULT_PROFILES_DIR = tenant_paths.cli_default_paths().voice_profiles
 
 
 # Ground-truth: filename → expected person
