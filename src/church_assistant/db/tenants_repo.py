@@ -71,3 +71,32 @@ async def set_active(pool: AsyncConnectionPool, tenant_id: int, active: bool) ->
             await cur.execute(
                 "UPDATE tenants SET is_active = %s WHERE id = %s", (active, tenant_id)
             )
+
+
+# ─────────────────────────────────────────────────────────────
+# id → slug (hot path for the shared workers)
+# ─────────────────────────────────────────────────────────────
+
+class TenantNotFound(Exception):
+    """No tenant with that id — a claimed row points at a deleted church."""
+
+
+# The background workers claim jobs across tenants and then need the slug for
+# every one (it addresses the filesystem subtree and the Qdrant collections).
+# Slugs never change — they're the key the storage layout is built on — so a
+# process-lifetime cache is safe and saves a query per job.
+_slug_cache: dict[int, str] = {}
+
+
+async def get_slug(pool: AsyncConnectionPool, tenant_id: int) -> str:
+    """The tenant's slug, cached for the process lifetime."""
+    cached = _slug_cache.get(tenant_id)
+    if cached is not None:
+        return cached
+
+    tenant = await get_by_id(pool, tenant_id)
+    if tenant is None:
+        raise TenantNotFound(f"No tenant with id={tenant_id}")
+    slug = str(tenant["slug"])
+    _slug_cache[tenant_id] = slug
+    return slug

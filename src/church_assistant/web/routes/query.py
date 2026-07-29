@@ -31,7 +31,7 @@ from church_assistant.db.connection import get_pool
 from church_assistant.shared import rag
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
-from church_assistant.web.tenant import current_tenant
+from church_assistant.web.tenant import current_tenant, current_tenant_slug
 
 
 router = APIRouter(prefix="/api")
@@ -110,6 +110,7 @@ async def query_endpoint(
     try:
         result = await rag.answer(
             question,
+            tenant_slug=current_tenant_slug(request),
             collection=collection,
             limit=5,
             rerank=True,

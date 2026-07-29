@@ -9,8 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
-from church_assistant.shared import meetings_index
+from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.web.main import templates
+from church_assistant.web.tenant import current_tenant_slug
 
 
 router = APIRouter(prefix="/api")
@@ -21,7 +22,7 @@ async def search_endpoint(
     request: Request,
     q: str = Query("", description="Keyword to search"),
 ):
-    """Instant keyword search across topics."""
+    """Instant keyword search across this tenant's topics."""
     q = q.strip()
 
     if not q:
@@ -31,7 +32,8 @@ async def search_endpoint(
             {"query": "", "matches": [], "empty_prompt": True},
         )
 
-    matches = meetings_index.search_topics(q, limit=30)
+    meetings_dir = tenant_paths.paths_for(current_tenant_slug(request)).meetings
+    matches = meetings_index.search_topics(meetings_dir, q, limit=30)
 
     return templates.TemplateResponse(
         request,

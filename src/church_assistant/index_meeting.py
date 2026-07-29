@@ -1,29 +1,41 @@
 """Index a single meeting into Qdrant collections for RAG retrieval.
 
-Indexes 4 levels of granularity, each into its own Qdrant collection:
+Indexes 4 levels of granularity ("kinds"), each into its own Qdrant collection:
 
-    cma_protocols      — one chunk per ### topic heading in polished.md
-                         (meeting-level decisions, deduplicated topics)
+    protocols      — one chunk per ### topic heading in polished.md
+                     (meeting-level decisions, deduplicated topics)
 
-    cma_analyses       — one chunk per ### topic heading in each raw chunk
-                         (per-15-minute-segment topics, before merging)
+    analyses       — one chunk per ### topic heading in each raw chunk
+                     (per-15-minute-segment topics, before merging)
 
-    cma_turns          — one chunk per speaker turn in annotated.md
-                         (literal text by speaker; for "who said X?" queries)
+    turns          — one chunk per speaker turn in annotated.md
+                     (literal text by speaker; for "who said X?" queries)
 
-    cma_protocol_full  — one entry per meeting (Gemma-generated summary)
-                         (for meeting-level "summarize the May meeting")
+    protocol_full  — one entry per meeting (Gemma-generated summary)
+                     (for meeting-level "summarize the May meeting")
+
+MULTI-TENANCY: the physical collection names depend on --tenant-slug
+(shared/collections.py) — `t_<slug>_protocols` for a normal church, and the
+original `cma_*` for the legacy tenant, so the existing corpus needs no
+re-embedding. Indexing into the wrong tenant's collection is the one mistake
+this script can make that RLS cannot catch, so the slug is explicit at the CLI
+rather than defaulted per meeting folder.
 
 All embeddings use local bge-m3 (1024-dim, Cosine distance) to
 match the team's existing Qdrant setup (Phase 1 collections also 1024d).
 
-Idempotent: writes data/meetings/YYYY-MM-DD/index_state.json with content
-hashes. Re-running on unchanged content is a no-op. Changed content
-(re-polished, re-analyzed) triggers delete-and-reupsert.
+Idempotent: writes <meeting-dir>/index_state.json with content hashes.
+Re-running on unchanged content is a no-op. Changed content (re-polished,
+re-analyzed) triggers delete-and-reupsert.
 
 Usage:
     uv run python -m church_assistant.index_meeting \\
         --meeting-dir data/meetings/2026-06-08
+
+    # Another church's meeting → its own collections
+    uv run python -m church_assistant.index_meeting \\
+        --meeting-dir data/tenants/first-baptist/meetings/2026-06-08 \\
+        --tenant-slug first-baptist
 
     # Dry-run to see what would be indexed
     uv run python -m church_assistant.index_meeting \\
@@ -52,20 +64,14 @@ from pathlib import Path
 from typing import Any
 
 
-# Constants
-COLLECTION_PROTOCOLS = "cma_protocols"
-COLLECTION_ANALYSES = "cma_analyses"
-COLLECTION_TURNS = "cma_turns"
-COLLECTION_PROTOCOL_FULL = "cma_protocol_full"
-
-ALL_COLLECTIONS = [
-    COLLECTION_PROTOCOLS,
-    COLLECTION_ANALYSES,
-    COLLECTION_TURNS,
-    COLLECTION_PROTOCOL_FULL,
-]
-
-from church_assistant.shared import local_embed  # noqa: E402
+from church_assistant.shared import collections, local_embed  # noqa: E402
+from church_assistant.shared.collections import (  # noqa: E402
+    ALL_KINDS,
+    KIND_ANALYSES,
+    KIND_PROTOCOL_FULL,
+    KIND_PROTOCOLS,
+    KIND_TURNS,
+)
 
 EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
 EMBEDDING_DIM = local_embed.EMBED_DIM              # 1024 (unchanged)
@@ -379,7 +385,7 @@ def build_protocol_points(
     meeting_date: str,
     attendees: list[str],
 ) -> list[IndexPoint]:
-    """Build cma_protocols points from polished.md (one per ### topic)."""
+    """Build `protocols` points from polished.md (one per ### topic)."""
     topics = parse_polished_topics(polished_md)
     points: list[IndexPoint] = []
     for topic_title, body, source_chunks in topics:
@@ -390,7 +396,7 @@ def build_protocol_points(
             "body": body,                  # stored for retrieval, not embedding
             "source_chunks": source_chunks,
             "attendees": attendees,
-            "collection": COLLECTION_PROTOCOLS,
+            "collection": KIND_PROTOCOLS,
         }
         points.append(IndexPoint(text=text, payload=payload))
     return points
@@ -400,7 +406,7 @@ def build_analysis_points(
     chunks_dir: Path,
     meeting_date: str,
 ) -> list[IndexPoint]:
-    """Build cma_analyses points from chunks/*.md."""
+    """Build `analyses` points from chunks/*.md."""
     entries = parse_chunks_topics(chunks_dir)
     points: list[IndexPoint] = []
     for e in entries:
@@ -411,7 +417,7 @@ def build_analysis_points(
             "time_range": e["time_range"],
             "topic_title": e["topic_title"],
             "body": e["body"],             # stored for retrieval
-            "collection": COLLECTION_ANALYSES,
+            "collection": KIND_ANALYSES,
         }
         points.append(IndexPoint(text=text, payload=payload))
     return points
@@ -421,7 +427,7 @@ def build_turn_points(
     annotated_md: Path,
     meeting_date: str,
 ) -> list[IndexPoint]:
-    """Build cma_turns points from annotated.md."""
+    """Build `turns` points from annotated.md."""
     turns = parse_annotated_turns(annotated_md)
     points: list[IndexPoint] = []
     for t in turns:
@@ -434,7 +440,7 @@ def build_turn_points(
             "start_timestamp": t["start_timestamp"],
             "start_seconds": t["start_seconds"],
             "text": t["text"],
-            "collection": COLLECTION_TURNS,
+            "collection": KIND_TURNS,
         }
         points.append(IndexPoint(text=text, payload=payload))
     return points
@@ -446,7 +452,7 @@ def build_protocol_full_points(
     attendees: list[str],
     topic_count: int,
 ) -> list[IndexPoint]:
-    """Build one cma_protocol_full point per meeting.
+    """Build one `protocol_full` point per meeting.
 
     For now, the embedded text is the FIRST 1500 chars of polished.md
     (intro + first few topics). Later we can replace this with a
@@ -459,7 +465,7 @@ def build_protocol_full_points(
         "meeting_date": meeting_date,
         "attendees": attendees,
         "n_topics": topic_count,
-        "collection": COLLECTION_PROTOCOL_FULL,
+        "collection": KIND_PROTOCOL_FULL,
         "polished_md_path": str(polished_md),
     }
     return [IndexPoint(text=text, payload=payload)]
@@ -594,10 +600,18 @@ def index_one_meeting(
     meeting_dir: Path,
     force: bool,
     dry_run: bool,
+    tenant_slug: str,
 ) -> dict[str, Any]:
-    """Index all four collections for one meeting. Returns the new state."""
+    """
+    Index all four collections for one meeting into ONE tenant's namespace.
+
+    Returns the new state. `tenant_slug` selects the physical collection names
+    (and is validated by shared/collections.py before it becomes one).
+    """
     meeting_date = parse_meeting_date(meeting_dir)
+    names = collections.all_collections(tenant_slug)
     log(f"\n  Meeting date: {meeting_date}", "bold")
+    log(f"  Tenant:       {tenant_slug}  →  {names[KIND_PROTOCOLS]}, …")
 
     polished_md = meeting_dir / "polished.md"
     annotated_md = meeting_dir / "annotated.md"
@@ -640,14 +654,17 @@ def index_one_meeting(
         polished_md, meeting_date, attendees, len(protocol_points)
     )
 
-    log(f"    {COLLECTION_PROTOCOLS:<22} {len(protocol_points):>4} points")
-    log(f"    {COLLECTION_ANALYSES:<22} {len(analysis_points):>4} points")
-    log(f"    {COLLECTION_TURNS:<22} {len(turn_points):>4} points")
-    log(f"    {COLLECTION_PROTOCOL_FULL:<22} {len(full_points):>4} points")
+    points_by_kind: dict[str, list[IndexPoint]] = {
+        KIND_PROTOCOLS: protocol_points,
+        KIND_ANALYSES: analysis_points,
+        KIND_TURNS: turn_points,
+        KIND_PROTOCOL_FULL: full_points,
+    }
+    for kind in ALL_KINDS:
+        log(f"    {names[kind]:<26} {len(points_by_kind[kind]):>4} points")
 
-    total = (len(protocol_points) + len(analysis_points)
-             + len(turn_points) + len(full_points))
-    log(f"    {'TOTAL':<22} {total:>4} points")
+    total = sum(len(p) for p in points_by_kind.values())
+    log(f"    {'TOTAL':<26} {total:>4} points")
 
     if dry_run:
         log(f"\n  ✓ Dry run — no embeddings or upserts performed", "yellow")
@@ -656,10 +673,9 @@ def index_one_meeting(
     # Embed (local — bge-m3 via Ollama)
     log(f"\n  Embedding points (local {EMBEDDING_MODEL} via Ollama)...")
     t0 = time.time()
-    protocol_vecs = embed_points(protocol_points)
-    analysis_vecs = embed_points(analysis_points)
-    turn_vecs = embed_points(turn_points)
-    full_vecs = embed_points(full_points)
+    vectors_by_kind = {
+        kind: embed_points(points_by_kind[kind]) for kind in ALL_KINDS
+    }
     log(f"  ✓ Embeddings done in {time.time() - t0:.1f}s", "green")
 
     # Connect Qdrant
@@ -667,26 +683,27 @@ def index_one_meeting(
     from qdrant_client import QdrantClient
     qdrant = QdrantClient(host="localhost", port=6333)
 
-    for c in ALL_COLLECTIONS:
-        ensure_collection(qdrant, c)
+    for kind in ALL_KINDS:
+        ensure_collection(qdrant, names[kind])
 
-    # Delete old points for this meeting (in case of re-index)
+    # Delete old points for this meeting (in case of re-index). Scoped to this
+    # tenant's collections, so a same-date meeting in another church is untouched.
     log(f"\n  Deleting previous points for {meeting_date} (if any)...")
     deleted = {}
-    for c in ALL_COLLECTIONS:
-        n = delete_points_for_meeting(qdrant, c, meeting_date)
-        deleted[c] = n
+    for kind in ALL_KINDS:
+        n = delete_points_for_meeting(qdrant, names[kind], meeting_date)
+        deleted[kind] = n
         if n > 0:
-            log(f"    {c:<22} deleted {n}")
+            log(f"    {names[kind]:<26} deleted {n}")
     if not any(deleted.values()):
         log(f"    (nothing previous — first index for this meeting)")
 
     # Upsert
     log(f"\n  Upserting points...")
-    upsert_points(qdrant, COLLECTION_PROTOCOLS, protocol_points, protocol_vecs)
-    upsert_points(qdrant, COLLECTION_ANALYSES, analysis_points, analysis_vecs)
-    upsert_points(qdrant, COLLECTION_TURNS, turn_points, turn_vecs)
-    upsert_points(qdrant, COLLECTION_PROTOCOL_FULL, full_points, full_vecs)
+    for kind in ALL_KINDS:
+        upsert_points(
+            qdrant, names[kind], points_by_kind[kind], vectors_by_kind[kind]
+        )
     log(f"  ✓ Upserts complete", "green")
 
     # Save state
@@ -695,11 +712,9 @@ def index_one_meeting(
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "content_hashes": hashes,
         "embedding_model": EMBEDDING_MODEL,
+        "tenant_slug": tenant_slug,
         "collection_counts": {
-            COLLECTION_PROTOCOLS: len(protocol_points),
-            COLLECTION_ANALYSES: len(analysis_points),
-            COLLECTION_TURNS: len(turn_points),
-            COLLECTION_PROTOCOL_FULL: len(full_points),
+            names[kind]: len(points_by_kind[kind]) for kind in ALL_KINDS
         },
     }
     save_index_state(state_path, new_state)
@@ -716,7 +731,14 @@ def main() -> None:
         "--meeting-dir",
         type=Path,
         required=True,
-        help="Path to data/meetings/YYYY-MM-DD/ folder",
+        help="Path to the meeting folder (…/meetings/YYYY-MM-DD/)",
+    )
+    parser.add_argument(
+        "--tenant-slug",
+        type=str,
+        default=None,
+        help="Church this meeting belongs to; picks the Qdrant collections. "
+             "Defaults to LEGACY_TENANT_SLUG (the pre-multi-tenancy corpus).",
     )
     parser.add_argument(
         "--dry-run",
@@ -736,6 +758,10 @@ def main() -> None:
 
     load_env()
 
+    # Omitting --tenant-slug means "the church that predates multi-tenancy",
+    # which is what every existing CLI invocation and doc example assumes.
+    tenant_slug = args.tenant_slug or collections.legacy_slug() or "default"
+
     log("=" * 70, "blue")
     log(f"  Index meeting: {args.meeting_dir}", "blue")
     log("=" * 70, "blue")
@@ -744,6 +770,7 @@ def main() -> None:
         meeting_dir=args.meeting_dir,
         force=args.force,
         dry_run=args.dry_run,
+        tenant_slug=tenant_slug,
     )
 
     log(f"\n{'=' * 70}", "blue")

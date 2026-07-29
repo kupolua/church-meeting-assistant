@@ -1,14 +1,18 @@
 """
-Meetings index — scans data/meetings/ directory and parses polished.md files.
+Meetings index — scans a meetings directory and parses polished.md files.
 
 Provides read-only access to meeting metadata (for sidebar) and structured
 topics (for meeting detail page + keyword search).
 
 Design:
     - No DB dependency (reads flat files).
-    - In-memory cache (loaded once at app start, refreshable on demand).
     - Small dataset (~14 meetings, ~500 topics total) — no need for anything
       fancier.
+    - Every entry point takes the meetings directory EXPLICITLY. It used to be a
+      module constant, but under multi-tenancy each church has its own subtree
+      (shared/tenant_paths.py) and an implicit default would silently serve one
+      church's protocols to another. Callers resolve it from the request's
+      tenant: `tenant_paths.paths_for(slug).meetings`.
 """
 
 from __future__ import annotations
@@ -20,16 +24,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
-
-
-# ─────────────────────────────────────────────────────────────
-# Paths
-# ─────────────────────────────────────────────────────────────
-
-# Repo root: this file lives at src/church_assistant/shared/meetings_index.py
-# Root = 3 levels up (shared → church_assistant → src → REPO_ROOT)
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-DATA_MEETINGS = REPO_ROOT / "data" / "meetings"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -94,12 +88,12 @@ class MeetingDetail:
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def list_meeting_folders() -> list[Path]:
-    """Return meeting folders sorted by date (newest first)."""
-    if not DATA_MEETINGS.exists():
+def list_meeting_folders(meetings_dir: Path) -> list[Path]:
+    """Return one tenant's meeting folders sorted by date (newest first)."""
+    if not meetings_dir.exists():
         return []
     folders = [
-        p for p in DATA_MEETINGS.iterdir()
+        p for p in meetings_dir.iterdir()
         if p.is_dir() and _DATE_RE.match(p.name)
     ]
     return sorted(folders, key=lambda p: p.name, reverse=True)
@@ -252,14 +246,14 @@ def load_summary(folder: Path) -> Optional[MeetingSummary]:
     )
 
 
-def list_all_summaries() -> list[MeetingSummary]:
+def list_all_summaries(meetings_dir: Path) -> list[MeetingSummary]:
     """
-    Return summaries for all meetings, newest first.
+    Return summaries for one tenant's meetings, newest first.
 
     Skips folders without polished.md.
     """
     result: list[MeetingSummary] = []
-    for folder in list_meeting_folders():
+    for folder in list_meeting_folders(meetings_dir):
         summary = load_summary(folder)
         if summary:
             result.append(summary)
@@ -399,18 +393,21 @@ def _attach_speaker_labels(
             turn.speaker_label = _label_at(segs, starts, sec)
 
 
-def load_detail(meeting_date: str) -> Optional[MeetingDetail]:
+def load_detail(meetings_dir: Path, meeting_date: str) -> Optional[MeetingDetail]:
     """
-    Load full detail for a meeting by its date ('YYYY-MM-DD').
+    Load full detail for a meeting by its date ('YYYY-MM-DD') within one tenant.
 
     Returns None if not found or no polished.md. The стенограма (annotated.md)
     is loaded when present; absent, transcript is an empty list. Each turn's
     speaker_label (diarization cluster) is derived from diarization.rttm so the
     UI can offer per-cluster speaker reassignment.
+
+    The date is regex-checked before it is joined onto the path, so a crafted
+    'date' can't walk out of the tenant's folder.
     """
     if not _DATE_RE.match(meeting_date):
         return None
-    folder = DATA_MEETINGS / meeting_date
+    folder = meetings_dir / meeting_date
     if not folder.is_dir():
         return None
     polished = folder / "polished.md"
@@ -459,9 +456,11 @@ class SearchMatch:
     snippet: str = ""
 
 
-def search_topics(keyword: str, limit: int = 50) -> list[SearchMatch]:
+def search_topics(
+    meetings_dir: Path, keyword: str, limit: int = 50,
+) -> list[SearchMatch]:
     """
-    Case-insensitive substring search across all meetings' topics.
+    Case-insensitive substring search across ONE tenant's meeting topics.
 
     Returns matches ordered by meeting date DESC (newest first).
     """
@@ -470,8 +469,8 @@ def search_topics(keyword: str, limit: int = 50) -> list[SearchMatch]:
         return []
 
     results: list[SearchMatch] = []
-    for summary in list_all_summaries():
-        detail = load_detail(summary.date)
+    for summary in list_all_summaries(meetings_dir):
+        detail = load_detail(meetings_dir, summary.date)
         if not detail:
             continue
         for topic in detail.topics:
@@ -500,15 +499,23 @@ def search_topics(keyword: str, limit: int = 50) -> list[SearchMatch]:
 # ─────────────────────────────────────────────────────────────
 
 def _smoke_test() -> None:
+    """Run against the legacy tenant's folder (the existing corpus)."""
+    from church_assistant.shared import tenant_paths
+
+    meetings_dir = tenant_paths.paths_for(
+        tenant_paths.legacy_slug() or "default"
+    ).meetings
+
     print("=" * 70)
     print("  meetings_index — smoke test")
     print("=" * 70)
+    print(f"  meetings_dir: {meetings_dir}")
     print()
 
     # 1. List all summaries
     print("1. list_all_summaries()")
     print("-" * 70)
-    summaries = list_all_summaries()
+    summaries = list_all_summaries(meetings_dir)
     print(f"  Found {len(summaries)} meetings")
     for s in summaries[:5]:
         print(f"    {s.date}  ({len(s.attendees)} attendees, "
@@ -524,7 +531,7 @@ def _smoke_test() -> None:
     latest = summaries[0]
     print(f"2. load_detail({latest.date})")
     print("-" * 70)
-    detail = load_detail(latest.date)
+    detail = load_detail(meetings_dir, latest.date)
     assert detail is not None
     print(f"  Attendees ({len(detail.attendees)}):")
     for a in detail.attendees[:10]:
@@ -543,7 +550,7 @@ def _smoke_test() -> None:
     keyword = "пастор"
     print(f"3. search_topics({keyword!r})")
     print("-" * 70)
-    matches = search_topics(keyword, limit=10)
+    matches = search_topics(meetings_dir, keyword, limit=10)
     print(f"  Found {len(matches)} matches (limit=10)")
     for m in matches[:5]:
         print(f"    [{m.meeting_date}] {m.topic_title!r}")

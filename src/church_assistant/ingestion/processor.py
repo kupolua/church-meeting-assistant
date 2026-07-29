@@ -10,6 +10,12 @@ fetch_next_runnable() hands us a job already moved to an in-flight status:
 On failure, record it and requeue to the phase's runnable status if under the
 retry cap, else leave it permanently 'failed'.
 
+The worker is shared across churches (it claims jobs cross-tenant via a
+SECURITY DEFINER function), so every job's tenant comes from the claimed row.
+That tenant then decides two things outside the meeting folder: which voice-
+profile library diarization matches against, and which Qdrant collections the
+result is indexed into.
+
 Never raises — the caller's loop must survive any single job.
 """
 
@@ -22,8 +28,10 @@ from typing import Any
 from psycopg_pool import AsyncConnectionPool
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
+from church_assistant.db import tenants_repo
 from church_assistant.ingestion import stages
 from church_assistant.ingestion.paths import resolve as resolve_paths
+from church_assistant.shared import tenant_paths
 from church_assistant.shared.logger import Logger
 
 
@@ -76,6 +84,9 @@ async def _run_transcription(
     tenant_id = job["tenant_id"]
     paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
 
+    tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
+    profiles_dir = tenant_paths.paths_for(tenant_slug).voice_profiles
+
     await _log.info(
         "ingestion.transcription.started",
         message=f"job #{job_id} ({job['meeting_date']}) diarization + transcription",
@@ -87,7 +98,10 @@ async def _run_transcription(
 
     try:
         await stages.run_transcription_phase(
-            paths, sequential=sequential, progress=progress
+            paths,
+            profiles_dir=profiles_dir,
+            sequential=sequential,
+            progress=progress,
         )
     except Exception as e:
         await _handle_failure(pool, job, e, requeue_status="pending", max_retries=max_retries)
@@ -141,8 +155,11 @@ async def _run_analysis(
         )
 
         if auto_index:
+            tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
             await jobs_repo.mark_indexing(pool, tenant_id, job_id)
-            await stages.run_index(meeting_dir, progress=progress, force=force)
+            await stages.run_index(
+                meeting_dir, tenant_slug=tenant_slug, progress=progress, force=force
+            )
             await jobs_repo.mark_completed(pool, tenant_id, job_id, indexed=True)
         else:
             await jobs_repo.mark_completed(pool, tenant_id, job_id, indexed=False)

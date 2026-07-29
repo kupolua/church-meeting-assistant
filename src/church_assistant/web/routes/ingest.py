@@ -8,9 +8,10 @@ Ingestion routes (MVP-C): GET/POST /ingest — upload audio → protocol pipelin
     POST /ingest/{id}/requeue          retry a failed job (at the phase it stopped)
 
 The heavy lifting runs in a separate process (church_assistant.ingestion.main);
-these routes only enqueue work and show status. The audio is copied straight
-into data/meetings/<date>/audio.<ext> so the web flow and the CLI (new_meeting.py)
-share the same folder layout.
+these routes only enqueue work and show status. The audio is copied into the
+LOGGED-IN TENANT's meetings folder (shared/tenant_paths.py) as
+<meetings>/<date>/audio.<ext>, keeping the same per-meeting layout the CLI
+(new_meeting.py) produces so either side can resume the other's folder.
 """
 
 from __future__ import annotations
@@ -27,19 +28,15 @@ from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
-from church_assistant.shared import meetings_index
+from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
-from church_assistant.web.tenant import current_tenant
+from church_assistant.web.tenant import current_tenant, current_tenant_slug
 
 
 router = APIRouter()
 
 _logger = Logger(process="web")
-
-# Project root: …/src/church_assistant/web/routes/ingest.py → parents[4]
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-MEETINGS_DIR = PROJECT_ROOT / "data" / "meetings"
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?$")
 ALLOWED_AUDIO_SUFFIXES = {
@@ -65,6 +62,16 @@ def _render_panel(request: Request, ctx: dict[str, Any]) -> HTMLResponse:
     return templates.TemplateResponse(request, "partials/ingest_panel.html", ctx)
 
 
+def _meetings_dir(request: Request) -> Path:
+    """This request's tenant's meetings folder."""
+    return tenant_paths.paths_for(current_tenant_slug(request)).meetings
+
+
+def _summaries(request: Request) -> list[Any]:
+    """Sidebar meeting list for this tenant."""
+    return meetings_index.list_all_summaries(_meetings_dir(request))
+
+
 def _requeue_target(job: dict[str, Any]) -> str:
     """
     Which runnable status a failed job should return to.
@@ -86,7 +93,7 @@ async def ingest_page(request: Request, error: Optional[str] = None, ok: Optiona
     pool = await get_pool()
     tenant_id = current_tenant(request)
     ctx = await _panel_context(pool, tenant_id)
-    ctx["meetings"] = meetings_index.list_all_summaries()
+    ctx["meetings"] = _summaries(request)
     ctx["error"] = error
     ctx["ok"] = ok
     return templates.TemplateResponse(request, "ingest.html", ctx)
@@ -121,7 +128,7 @@ async def ingest_detail(request: Request, job_id: int):
         {
             "job": job,
             "polished_exists": paths.polished.exists(),
-            "meetings": meetings_index.list_all_summaries(),
+            "meetings": _summaries(request),
         },
     )
 
@@ -172,7 +179,9 @@ async def ingest_upload(
         )
 
     # ─── Create folder + copy audio ──────────────────────────
-    meeting_dir = MEETINGS_DIR / date
+    # Inside THIS tenant's subtree: two churches meeting on the same date get
+    # separate folders (and the DB's unique index is (tenant_id, meeting_date)).
+    meeting_dir = _meetings_dir(request) / date
     meeting_dir.mkdir(parents=True, exist_ok=True)
     audio_filename = f"audio{suffix}"
     dest_path = meeting_dir / audio_filename
@@ -290,7 +299,7 @@ async def speakers_editor(request: Request, job_id: int):
             "submit_label": "✅ Зберегти та запустити аналіз",
             "back_url": "/ingest",
             "help_tail": "Після збереження запуститься аналіз (Gemma) → протокол → індексація.",
-            "meetings": meetings_index.list_all_summaries(),
+            "meetings": _summaries(request),
         },
     )
 

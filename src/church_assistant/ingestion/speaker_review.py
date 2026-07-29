@@ -8,13 +8,18 @@ cluster's cached embedding — so future meetings recognize them — writes the
 names into speakers.json, and queues a full re-run.
 
 Voice model (see match_speakers.py / add_voice_profile.py):
-    - data/voice_profiles/<name>.npy   — one baseline embedding per known person
+    - <voice_profiles>/<name>.npy      — one baseline embedding per known person
     - <audio>_embeddings.pkl           — {SPEAKER_XX → embedding} for this meeting
 
 This module owns:
-    - the draft store (data/meetings/<date>/speaker_review.json)
+    - the draft store (<meeting_dir>/speaker_review.json)
     - the list of known names (profiles + current speakers) for the picker
     - saving a new voice profile from a meeting cluster
+
+The voice-profile directory is passed in, never assumed: a voice fingerprint
+identifies a real person, so one church's profiles must never surface as name
+suggestions in another's speaker review. Callers resolve it per tenant via
+shared/tenant_paths.py.
 """
 
 from __future__ import annotations
@@ -28,9 +33,6 @@ import numpy as np
 
 from church_assistant.ingestion.paths import resolve as resolve_paths
 
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PROFILES_DIR = REPO_ROOT / "data" / "voice_profiles"
 
 DRAFT_NAME = "speaker_review.json"
 MIN_EMBEDDING_NORM = 0.01
@@ -48,9 +50,9 @@ def filename_safe(name: str) -> str:
     return result
 
 
-def has_profile(name: str) -> bool:
+def has_profile(profiles_dir: Path, name: str) -> bool:
     """True if a baseline voice profile already exists for this name."""
-    return (PROFILES_DIR / f"{filename_safe(name)}.npy").exists()
+    return (profiles_dir / f"{filename_safe(name)}.npy").exists()
 
 
 def _is_real_name(value: str) -> bool:
@@ -59,14 +61,14 @@ def _is_real_name(value: str) -> bool:
     return bool(v) and not v.startswith("[") and not v.startswith("SPEAKER_")
 
 
-def list_known_names(speaker_map: dict[str, str]) -> list[str]:
+def list_known_names(profiles_dir: Path, speaker_map: dict[str, str]) -> list[str]:
     """
-    Sorted unique names for the picker: existing voice profiles ∪ this meeting's
-    current speaker names (real names only).
+    Sorted unique names for the picker: this tenant's voice profiles ∪ this
+    meeting's current speaker names (real names only).
     """
     names: set[str] = set()
-    if PROFILES_DIR.is_dir():
-        for p in PROFILES_DIR.glob("*.npy"):
+    if profiles_dir.is_dir():
+        for p in profiles_dir.glob("*.npy"):
             names.add(p.stem)
     for raw in speaker_map.values():
         v = str(raw)
@@ -132,13 +134,14 @@ def clear_draft(meeting_dir: Path) -> None:
 
 def save_voice_profile_from_cluster(
     meeting_dir: Path,
+    profiles_dir: Path,
     *,
     label: str,
     name: str,
     audio_filename: Optional[str] = None,
 ) -> tuple[bool, str]:
     """
-    Save data/voice_profiles/<name>.npy from this meeting's cached embedding for
+    Save <profiles_dir>/<name>.npy from this meeting's cached embedding for
     cluster `label`. Returns (ok, message). Mirrors add_voice_profile.py's checks.
     """
     paths = resolve_paths(Path(meeting_dir), audio_filename)
@@ -163,8 +166,8 @@ def save_voice_profile_from_cluster(
     if np.isnan(emb).any() or np.isinf(emb).any():
         return False, f"ембединг {label} містить NaN/Inf — профіль не збережено"
 
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    out = PROFILES_DIR / f"{filename_safe(name)}.npy"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    out = profiles_dir / f"{filename_safe(name)}.npy"
     np.save(out, emb)
     return True, f"голосовий профіль збережено: {out.name}"
 
@@ -204,11 +207,25 @@ def _smoke_test() -> None:
         assert load_changes(md) == [] and not draft_path(md).exists()
         print("3. remove + clear ✓")
 
-    # known names includes existing profiles
-    names = list_known_names({"SPEAKER_00": "Богдан Терещенко", "SPEAKER_01": "[нерозбірливо]"})
+    # known names = this tenant's profiles ∪ the meeting's own speakers
+    from church_assistant.shared import tenant_paths
+    profiles_dir = tenant_paths.paths_for(
+        tenant_paths.legacy_slug() or "default"
+    ).voice_profiles
+    names = list_known_names(
+        profiles_dir,
+        {"SPEAKER_00": "Богдан Терещенко", "SPEAKER_01": "[нерозбірливо]"},
+    )
     assert "Богдан Терещенко" in names
     assert not any(n.startswith("[") for n in names)
     print(f"4. list_known_names ✓ ({len(names)} names, placeholders excluded)")
+
+    # A tenant with no profiles directory sees only its own meeting's names —
+    # never another church's fingerprints.
+    isolated = list_known_names(Path("/nonexistent/tenant/voice_profiles"),
+                                {"SPEAKER_00": "Богдан Терещенко"})
+    assert isolated == ["Богдан Терещенко"]
+    print("5. profiles are per-tenant (empty dir → no cross-church names) ✓")
 
     print("=" * 60)
     print("  ✓ ALL SMOKE TESTS PASSED")

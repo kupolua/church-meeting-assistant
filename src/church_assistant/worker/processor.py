@@ -18,7 +18,7 @@ from typing import Any, Optional
 from telegram import Bot
 
 from church_assistant.bot import delivery
-from church_assistant.db import queries_repo
+from church_assistant.db import queries_repo, tenants_repo
 from church_assistant.shared import rag
 from church_assistant.shared.logger import Logger
 
@@ -59,9 +59,14 @@ async def process_query(
     )
 
     # ─── Run RAG ─────────────────────────────────────────────
+    # The worker claims queries across tenants, so the slug comes from the
+    # claimed row — never from config — or one church's question would be
+    # answered out of another's index.
     try:
+        tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
         result = await rag.answer(
             question,
+            tenant_slug=tenant_slug,
             collection=collection,
             limit=5,
             rerank=True,

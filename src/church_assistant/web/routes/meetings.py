@@ -21,10 +21,10 @@ from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import speaker_review as review
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
-from church_assistant.shared import meetings_index
+from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
-from church_assistant.web.tenant import current_tenant
+from church_assistant.web.tenant import current_tenant, current_tenant_slug
 
 
 router = APIRouter(prefix="/meetings")
@@ -56,11 +56,16 @@ def _audio_media_type(path: Path) -> str:
     )
 
 
-def _find_audio(date: str) -> Optional[Path]:
-    """Locate data/meetings/<date>/audio.* (None if the date is bad or no file)."""
+def _tenant_paths(request: Request) -> tenant_paths.TenantPaths:
+    """This request's tenant's artifact folders (meetings + voice profiles)."""
+    return tenant_paths.paths_for(current_tenant_slug(request))
+
+
+def _find_audio(meetings_dir: Path, date: str) -> Optional[Path]:
+    """Locate <meetings>/<date>/audio.* (None if the date is bad or no file)."""
     if not _DATE_RE.match(date):
         return None
-    folder = meetings_index.DATA_MEETINGS / date
+    folder = meetings_dir / date
     if not folder.is_dir():
         return None
     matches = sorted(folder.glob("audio.*"))
@@ -70,14 +75,17 @@ def _find_audio(date: str) -> Optional[Path]:
 @router.get("/{date}", response_class=HTMLResponse)
 async def meeting_detail(request: Request, date: str):
     """Render meeting detail page for a given date (YYYY-MM-DD)."""
-    detail = meetings_index.load_detail(date)
+    tpaths = _tenant_paths(request)
+    detail = meetings_index.load_detail(tpaths.meetings, date)
     if detail is None:
+        # Also the answer when the meeting belongs to ANOTHER church: the
+        # lookup never leaves this tenant's folder, so it simply isn't there.
         raise HTTPException(
             status_code=404,
             detail=f"Meeting {date!r} not found",
         )
 
-    summaries = meetings_index.list_all_summaries()
+    summaries = meetings_index.list_all_summaries(tpaths.meetings)
 
     # If a speakers re-edit is currently re-running, surface it (the page still
     # shows the old names until the new protocol is ready).
@@ -96,9 +104,9 @@ async def meeting_detail(request: Request, date: str):
             import json as _json
             sp = _json.loads(speakers_json.read_text(encoding="utf-8"))
             speaker_map = {k: v for k, v in sp.items() if not k.startswith("_")}
-            known_names = review.list_known_names(speaker_map)
+            known_names = review.list_known_names(tpaths.voice_profiles, speaker_map)
         except (OSError, ValueError):
-            known_names = review.list_known_names({})
+            known_names = review.list_known_names(tpaths.voice_profiles, {})
 
     return templates.TemplateResponse(
         request,
@@ -107,7 +115,7 @@ async def meeting_detail(request: Request, date: str):
             "detail": detail,
             "meetings": summaries,
             "current_date": date,
-            "has_audio": _find_audio(date) is not None,
+            "has_audio": _find_audio(tpaths.meetings, date) is not None,
             "reprocessing": reprocessing,
             "reprocess_job": active_job if reprocessing else None,
             "known_names": known_names,
@@ -117,9 +125,10 @@ async def meeting_detail(request: Request, date: str):
 
 
 @router.get("/{date}/audio")
-async def meeting_audio(date: str):
+async def meeting_audio(request: Request, date: str):
     """
-    Serve the meeting recording.
+    Serve the meeting recording — resolved inside the caller's tenant folder,
+    so a guessed date from another church yields 404, not their audio.
 
     Starlette's FileResponse handles HTTP Range natively (async file I/O, proper
     client-disconnect handling), returning 206 for range requests. That lets the
@@ -127,7 +136,7 @@ async def meeting_audio(date: str):
     timestamps in topics and the стенограма — without a hand-rolled streamer that
     would tie up threadpool workers on every seek.
     """
-    audio_path = _find_audio(date)
+    audio_path = _find_audio(_tenant_paths(request).meetings, date)
     if audio_path is None or not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio not found")
 
@@ -138,11 +147,11 @@ async def meeting_audio(date: str):
 # Speaker editor for an already-processed meeting
 # ─────────────────────────────────────────────────────────────
 
-def _meeting_folder(date: str) -> Optional[Path]:
+def _meeting_folder(meetings_dir: Path, date: str) -> Optional[Path]:
     """Return the meeting folder if the date is valid and the folder exists."""
     if not _DATE_RE.match(date):
         return None
-    folder = meetings_index.DATA_MEETINGS / date
+    folder = meetings_dir / date
     return folder if folder.is_dir() else None
 
 
@@ -155,7 +164,8 @@ async def edit_speakers(request: Request, date: str):
     standalone: reachable from the meeting's Учасники section. Saving triggers a
     full re-run so corrected names propagate everywhere.
     """
-    folder = _meeting_folder(date)
+    tpaths = _tenant_paths(request)
+    folder = _meeting_folder(tpaths.meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
 
@@ -178,7 +188,7 @@ async def edit_speakers(request: Request, date: str):
             "subtitle": "Зустріч",
             "rows": rows,
             "n_flagged": sum(1 for r in rows if r["flag"]),
-            "has_audio": _find_audio(date) is not None,
+            "has_audio": _find_audio(tpaths.meetings, date) is not None,
             "audio_src": f"/meetings/{date}/audio",
             "form_action": f"/meetings/{date}/speakers",
             "submit_label": "💾 Зберегти та перезібрати зустріч",
@@ -189,7 +199,7 @@ async def edit_speakers(request: Request, date: str):
                 "потребує запущеного ingestion-worker. Протокол лишається доступним, "
                 "поки готується новий."
             ),
-            "meetings": meetings_index.list_all_summaries(),
+            "meetings": meetings_index.list_all_summaries(tpaths.meetings),
         },
     )
 
@@ -203,7 +213,8 @@ async def save_speakers(request: Request, date: str):
     'queued_analysis' with force_reprocess=TRUE. The worker regenerates the
     стенограма, protocol, and Qdrant index in place with the corrected names.
     """
-    folder = _meeting_folder(date)
+    tpaths = _tenant_paths(request)
+    folder = _meeting_folder(tpaths.meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
 
@@ -234,7 +245,7 @@ async def save_speakers(request: Request, date: str):
 
     speakers_util.save_speakers(paths.speakers, meta, new_mapping)
 
-    audio_path = _find_audio(date)
+    audio_path = _find_audio(tpaths.meetings, date)
     job_id = await jobs_repo.enqueue_reprocess(
         pool,
         tenant_id,
@@ -274,7 +285,7 @@ def _review_panel(request: Request, date: str, folder: Path) -> HTMLResponse:
 @router.get("/{date}/speaker-changes", response_class=HTMLResponse)
 async def speaker_changes_panel(request: Request, date: str):
     """Return just the pending-changes panel (HTMX poll/refresh target)."""
-    folder = _meeting_folder(date)
+    folder = _meeting_folder(_tenant_paths(request).meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
     return _review_panel(request, date, folder)
@@ -292,23 +303,25 @@ async def speaker_change(
     link). is_new is inferred: a name without an existing voice profile is a new
     participant that will be fingerprinted on "run analysis".
     """
-    folder = _meeting_folder(date)
+    tpaths = _tenant_paths(request)
+    folder = _meeting_folder(tpaths.meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
 
     label = label.strip()
     new_name = new_name.strip()
     if label and new_name:
-        review.upsert_change(
-            folder, label=label, new_name=new_name, is_new=not review.has_profile(new_name)
-        )
+        # "New participant" is judged against THIS church's profiles: a person
+        # already fingerprinted in another church is still new here.
+        is_new = not review.has_profile(tpaths.voice_profiles, new_name)
+        review.upsert_change(folder, label=label, new_name=new_name, is_new=is_new)
     return _review_panel(request, date, folder)
 
 
 @router.post("/{date}/speaker-change/{label}/remove", response_class=HTMLResponse)
 async def speaker_change_remove(request: Request, date: str, label: str):
     """Drop one pending change."""
-    folder = _meeting_folder(date)
+    folder = _meeting_folder(_tenant_paths(request).meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
     review.remove_change(folder, label)
@@ -324,7 +337,8 @@ async def run_analysis(request: Request, date: str):
         embedding (so future meetings recognize them),
     then queue a full force re-run and clear the draft.
     """
-    folder = _meeting_folder(date)
+    tpaths = _tenant_paths(request)
+    folder = _meeting_folder(tpaths.meetings, date)
     if folder is None:
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
 
@@ -349,7 +363,7 @@ async def run_analysis(request: Request, date: str):
             status_code=303,
         )
 
-    audio_path = _find_audio(date)
+    audio_path = _find_audio(tpaths.meetings, date)
     audio_name = audio_path.name if audio_path else None
 
     meta, mapping = speakers_util.load_speakers(paths.speakers)
@@ -363,7 +377,9 @@ async def run_analysis(request: Request, date: str):
         mapping[label] = name                       # relabel cluster
         if c.get("is_new"):
             ok, msg = review.save_voice_profile_from_cluster(
-                folder, label=label, name=name, audio_filename=audio_name
+                folder,
+                tpaths.voice_profiles,
+                label=label, name=name, audio_filename=audio_name,
             )
             if ok:
                 new_profiles += 1

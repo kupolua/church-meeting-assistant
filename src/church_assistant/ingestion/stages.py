@@ -9,11 +9,17 @@ Stages are resumable: a step is skipped when its output already exists (mirrors
 new_meeting.py). A non-zero exit raises StageError, which the processor turns
 into a job failure (+ retry).
 
+MULTI-TENANCY: two stages reach outside the meeting folder and so must be told
+which church the job belongs to — diarization reads the voice-profile library
+(--profiles-dir), and indexing writes Qdrant collections (--tenant-slug). Both
+are required parameters here: a default would silently match one church's
+speakers against another's fingerprints.
+
 Phases:
     run_transcription_phase  — diarization (match_speakers) + transcription
                                (transcribe), parallel or sequential. Slow (~2h).
     run_analysis_phase       — merge_transcript → chunked_analyze → polish_protocol.
-    run_index                — index_meeting into Qdrant.
+    run_index                — index_meeting into the tenant's Qdrant collections.
 """
 
 from __future__ import annotations
@@ -82,7 +88,7 @@ async def _run(cmd: list[str], *, label: str) -> None:
 # Individual steps
 # ─────────────────────────────────────────────────────────────
 
-async def _diarize(paths: MeetingPaths) -> None:
+async def _diarize(paths: MeetingPaths, *, profiles_dir: Path) -> None:
     if paths.speakers.exists() and paths.rttm.exists():
         _std.info("✓ speakers.json + diarization.rttm exist — skipping match_speakers")
         return
@@ -92,6 +98,7 @@ async def _diarize(paths: MeetingPaths) -> None:
             "--audio", str(paths.audio),
             "--output", str(paths.speakers),
             "--rttm", str(paths.rttm),
+            "--profiles-dir", str(profiles_dir),
         ],
         label="diarization",
     )
@@ -165,11 +172,15 @@ async def _polish(paths: MeetingPaths, *, polish_date: str, force: bool = False)
 async def run_transcription_phase(
     paths: MeetingPaths,
     *,
+    profiles_dir: Path,
     sequential: bool = False,
     progress: ProgressFn = _noop_progress,
 ) -> None:
     """
     Diarization + transcription (the slow ~2h phase).
+
+    `profiles_dir` is the tenant's voice-profile library — the only cross-meeting
+    input to this phase, and the one that must not be shared between churches.
 
     Both steps are independent; run them concurrently unless sequential=True
     (lower peak memory). Each self-skips if its output already exists.
@@ -181,13 +192,15 @@ async def run_transcription_phase(
     if sequential or not (need_diar and need_tx):
         # Nothing to parallelize (or user forced sequential): run in order.
         await progress("diarization", "Діаризація (pyannote)…")
-        await _diarize(paths)
+        await _diarize(paths, profiles_dir=profiles_dir)
         await progress("whisper", "Транскрипція (Whisper)…")
         await _transcribe(paths)
     else:
         await progress("diarization", "Діаризація + транскрипція (паралельно)…")
         results = await asyncio.gather(
-            _diarize(paths), _transcribe(paths), return_exceptions=True
+            _diarize(paths, profiles_dir=profiles_dir),
+            _transcribe(paths),
+            return_exceptions=True,
         )
         errors = [r for r in results if isinstance(r, BaseException)]
         if errors:
@@ -234,14 +247,16 @@ async def run_analysis_phase(
 async def run_index(
     meeting_dir: Path,
     *,
+    tenant_slug: str,
     progress: ProgressFn = _noop_progress,
     force: bool = False,
 ) -> None:
-    """Index the finished meeting into Qdrant (auto-index step)."""
+    """Index the finished meeting into THIS tenant's Qdrant collections."""
     await progress("index", "Індексація у Qdrant…")
     cmd = MODULE_PREFIX + [
         "church_assistant.index_meeting",
         "--meeting-dir", str(meeting_dir),
+        "--tenant-slug", tenant_slug,
     ]
     if force:
         cmd.append("--force")  # re-index even if content hashes match

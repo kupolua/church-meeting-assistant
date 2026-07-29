@@ -1,7 +1,10 @@
 """RAG over indexed meeting protocols (Phase 2B.2 + rerank).
 
-Searches the Qdrant `cma_*` collections for content relevant to a question,
+Searches one church's Qdrant collections for content relevant to a question,
 then asks Gemma to synthesize an answer with citations to source meetings.
+
+Which church is --tenant-slug (default: the pre-multi-tenancy corpus, whose
+collections are still named `cma_*`). See shared/collections.py.
 
 Architecture:
     1. Embed the question (local bge-m3 via Ollama)
@@ -25,6 +28,9 @@ Usage:
 
     # Compare without rerank
     uv run python -m church_assistant.query "тема" --no-rerank --no-synth
+
+    # Another church's corpus
+    uv run python -m church_assistant.query "тема" --tenant-slug first-baptist
 """
 
 from __future__ import annotations
@@ -37,13 +43,14 @@ from pathlib import Path
 from typing import Any
 
 
-# Constants (must match index_meeting.py)
-COLLECTION_PROTOCOLS = "cma_protocols"
-COLLECTION_ANALYSES = "cma_analyses"
-COLLECTION_TURNS = "cma_turns"
-COLLECTION_PROTOCOL_FULL = "cma_protocol_full"
-
-from church_assistant.shared import local_embed, local_rerank  # noqa: E402
+# Collection identity is per tenant now — branch on KIND, not on a name.
+from church_assistant.shared import collections, local_embed, local_rerank  # noqa: E402
+from church_assistant.shared.collections import (  # noqa: E402
+    KIND_ANALYSES,
+    KIND_PROTOCOL_FULL,
+    KIND_PROTOCOLS,
+    KIND_TURNS,
+)
 
 EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
 RERANK_MODEL = local_rerank.RERANK_MODEL           # local: bge-reranker-v2-m3
@@ -122,7 +129,7 @@ class Hit:
 def hit_text_for_rerank(hit: Hit) -> str:
     """Build the candidate text rerank-2 will score against the query."""
     p = hit.payload
-    if hit.collection == COLLECTION_TURNS:
+    if collections.kind_of(hit.collection) == KIND_TURNS:
         speaker = p.get("speaker", "?")
         return f"{speaker}: {p.get('text', '')}"
     # protocols / analyses
@@ -204,23 +211,23 @@ def format_hit_short(hit: Hit, idx: int) -> str:
     )
     date = p.get("meeting_date", "?")
 
-    if hit.collection == COLLECTION_PROTOCOLS:
+    if collections.kind_of(hit.collection) == KIND_PROTOCOLS:
         topic = p.get("topic_title", "?")
         return f"[{idx}] [{date}] '{topic}'  ({score_str})"
 
-    if hit.collection == COLLECTION_ANALYSES:
+    if collections.kind_of(hit.collection) == KIND_ANALYSES:
         topic = p.get("topic_title", "?")
         tr = p.get("time_range", "?")
         return f"[{idx}] [{date} chunk {tr}] '{topic}'  ({score_str})"
 
-    if hit.collection == COLLECTION_TURNS:
+    if collections.kind_of(hit.collection) == KIND_TURNS:
         speaker = p.get("speaker", "?")
         ts = p.get("start_timestamp", "?")
         text = p.get("text", "")[:100].replace("\n", " ")
         return (f"[{idx}] [{date} {ts}] {speaker}: \"{text}...\"  "
                 f"({score_str})")
 
-    if hit.collection == COLLECTION_PROTOCOL_FULL:
+    if collections.kind_of(hit.collection) == KIND_PROTOCOL_FULL:
         return f"[{idx}] [{date}] meeting summary  ({score_str})"
 
     return f"[{idx}] [{date}] unknown  ({score_str})"
@@ -231,7 +238,7 @@ def format_hit_for_context(hit: Hit, idx: int) -> str:
     p = hit.payload
     date = p.get("meeting_date", "?")
 
-    if hit.collection == COLLECTION_PROTOCOLS:
+    if collections.kind_of(hit.collection) == KIND_PROTOCOLS:
         topic = p.get("topic_title", "?")
         attendees = ", ".join(p.get("attendees", [])[:5])
         return (
@@ -240,7 +247,7 @@ def format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_ANALYSES:
+    if collections.kind_of(hit.collection) == KIND_ANALYSES:
         topic = p.get("topic_title", "?")
         tr = p.get("time_range", "?")
         return (
@@ -248,7 +255,7 @@ def format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_TURNS:
+    if collections.kind_of(hit.collection) == KIND_TURNS:
         speaker = p.get("speaker", "?")
         ts = p.get("start_timestamp", "?")
         text = p.get("text", "")
@@ -258,7 +265,7 @@ def format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_PROTOCOL_FULL:
+    if collections.kind_of(hit.collection) == KIND_PROTOCOL_FULL:
         return f"[{idx}] Meeting {date} (overview)  (Score: {hit.score:.3f})"
 
     return f"[{idx}] {hit.payload}  (Score: {hit.score:.3f})"
@@ -291,9 +298,9 @@ def call_gemma(question: str, hits: list[Hit]) -> str:
     body_blocks = []
     for i, hit in enumerate(hits, 1):
         p = hit.payload
-        if hit.collection == COLLECTION_TURNS:
+        if collections.kind_of(hit.collection) == KIND_TURNS:
             body_text = p.get("text", "")
-        elif hit.collection in (COLLECTION_PROTOCOLS, COLLECTION_ANALYSES):
+        elif collections.kind_of(hit.collection) in (KIND_PROTOCOLS, KIND_ANALYSES):
             # Prefer body (added in re-indexed data); fall back to title
             body_text = p.get("body", "") or p.get("topic_title", "")
             title = p.get("topic_title", "")
@@ -348,11 +355,13 @@ def run_query(
     limit: int,
     synthesize: bool,
     rerank: bool,
+    tenant_slug: str,
 ) -> None:
-    """Run the full RAG pipeline for one question."""
+    """Run the full RAG pipeline for one question, within one church's corpus."""
     log(f"\n{'=' * 70}", "blue")
     log(f"  Query: {question}", "blue")
     log(f"{'=' * 70}", "blue")
+    log(f"  Tenant:     {tenant_slug}")
     log(f"  Collection: {collection}")
     log(f"  Limit:      {limit}")
     log(f"  Rerank:     {rerank}")
@@ -369,10 +378,9 @@ def run_query(
     from qdrant_client import QdrantClient
     client = QdrantClient(host="localhost", port=6333)
 
-    full_collection = (
-        collection
-        if collection.startswith("cma_")
-        else f"cma_{collection}"
+    # `collection` names a kind; the tenant decides whose index of that kind.
+    full_collection = collections.collection_name(
+        tenant_slug, collections.resolve_kind(collection)
     )
     hits = search_collection(client, full_collection, vec, pool_size)
 
@@ -422,10 +430,15 @@ def main() -> None:
         "--collection",
         type=str,
         default="protocols",
-        choices=["protocols", "analyses", "turns", "protocol_full",
-                 "cma_protocols", "cma_analyses", "cma_turns",
-                 "cma_protocol_full"],
+        choices=sorted(collections.KIND_ALIASES),
         help="Which collection to search (default: protocols)",
+    )
+    parser.add_argument(
+        "--tenant-slug",
+        type=str,
+        default=None,
+        help="Church whose corpus to search. Defaults to LEGACY_TENANT_SLUG "
+             "(the pre-multi-tenancy corpus).",
     )
     parser.add_argument(
         "--limit",
@@ -452,6 +465,7 @@ def main() -> None:
         limit=args.limit,
         synthesize=not args.no_synth,
         rerank=not args.no_rerank,
+        tenant_slug=args.tenant_slug or collections.legacy_slug() or "default",
     )
 
 

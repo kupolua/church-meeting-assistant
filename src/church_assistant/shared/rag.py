@@ -13,6 +13,11 @@ Two APIs:
     - answer(question, ...) → full RAG pipeline, returns AnswerResult
     - retrieve(question, ...) → retrieval-only (for /verbose, dashboards)
 
+Both take a REQUIRED tenant_slug: Qdrant has no row-level security, so isolation
+comes from searching a per-tenant collection (shared/collections.py). There is
+deliberately no default — a caller that forgets it gets a TypeError rather than
+another church's protocols.
+
 The CLI query.py is NOT changed; this module is a parallel async
 implementation for use by web (FastAPI) and worker (background) processes.
 """
@@ -28,29 +33,21 @@ from typing import Any, Optional
 import httpx
 from qdrant_client import AsyncQdrantClient
 
-from church_assistant.shared import local_embed, local_rerank
+from church_assistant.shared import collections, local_embed, local_rerank
+from church_assistant.shared.collections import (
+    KIND_ANALYSES,
+    KIND_PROTOCOL_FULL,
+    KIND_PROTOCOLS,
+    KIND_TURNS,
+)
 
 
 # ─────────────────────────────────────────────────────────────
 # Constants — must match index_meeting.py and query.py
 # ─────────────────────────────────────────────────────────────
-
-COLLECTION_PROTOCOLS = "cma_protocols"
-COLLECTION_ANALYSES = "cma_analyses"
-COLLECTION_TURNS = "cma_turns"
-COLLECTION_PROTOCOL_FULL = "cma_protocol_full"
-
-COLLECTION_ALIASES = {
-    "protocols": COLLECTION_PROTOCOLS,
-    "analyses": COLLECTION_ANALYSES,
-    "turns": COLLECTION_TURNS,
-    "protocol_full": COLLECTION_PROTOCOL_FULL,
-    # Full names also accepted
-    COLLECTION_PROTOCOLS: COLLECTION_PROTOCOLS,
-    COLLECTION_ANALYSES: COLLECTION_ANALYSES,
-    COLLECTION_TURNS: COLLECTION_TURNS,
-    COLLECTION_PROTOCOL_FULL: COLLECTION_PROTOCOL_FULL,
-}
+#
+# Collections are now named per tenant (shared/collections.py), so code branches
+# on the KIND of a hit rather than on a hard-coded collection name.
 
 EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
 RERANK_MODEL = local_rerank.RERANK_MODEL            # local: bge-reranker-v2-m3
@@ -99,9 +96,20 @@ class Hit:
     """
     score: float                     # active score (rerank if reranked, else vector)
     payload: dict[str, Any]
-    collection: str
+    collection: str                  # physical name, e.g. 't_first-baptist_turns'
     vector_score: float = 0.0        # original vector score, always preserved
     reranked: bool = False
+
+    @property
+    def kind(self) -> Optional[str]:
+        """
+        What this hit IS (protocols / analyses / turns / protocol_full).
+
+        Formatting branches on this rather than on `collection`, which now
+        varies per tenant. Rows stored before per-tenant collections existed
+        still resolve, because kind_of() understands the old `cma_*` names too.
+        """
+        return collections.kind_of(self.collection)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSONB storage (must be json-safe)."""
@@ -217,7 +225,7 @@ async def _search_qdrant(
 def _hit_text_for_rerank(hit: Hit) -> str:
     """Build candidate document text for rerank-2. Matches query.py."""
     p = hit.payload
-    if hit.collection == COLLECTION_TURNS:
+    if hit.kind == KIND_TURNS:
         speaker = p.get("speaker", "?")
         return f"{speaker}: {p.get('text', '')}"
     title = p.get("topic_title", "")
@@ -259,7 +267,7 @@ def _format_hit_for_context(hit: Hit, idx: int) -> str:
     p = hit.payload
     date = p.get("meeting_date", "?")
 
-    if hit.collection == COLLECTION_PROTOCOLS:
+    if hit.kind == KIND_PROTOCOLS:
         topic = p.get("topic_title", "?")
         attendees = ", ".join(p.get("attendees", [])[:5])
         return (
@@ -268,7 +276,7 @@ def _format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_ANALYSES:
+    if hit.kind == KIND_ANALYSES:
         topic = p.get("topic_title", "?")
         tr = p.get("time_range", "?")
         return (
@@ -276,7 +284,7 @@ def _format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_TURNS:
+    if hit.kind == KIND_TURNS:
         speaker = p.get("speaker", "?")
         ts = p.get("start_timestamp", "?")
         text = p.get("text", "")
@@ -286,7 +294,7 @@ def _format_hit_for_context(hit: Hit, idx: int) -> str:
             f"  (Score: {hit.score:.3f})"
         )
 
-    if hit.collection == COLLECTION_PROTOCOL_FULL:
+    if hit.kind == KIND_PROTOCOL_FULL:
         return f"[{idx}] Meeting {date} (overview)  (Score: {hit.score:.3f})"
 
     return f"[{idx}] {hit.payload}  (Score: {hit.score:.3f})"
@@ -302,9 +310,9 @@ def _build_gemma_user_prompt(question: str, hits: list[Hit]) -> str:
     body_blocks = []
     for i, hit in enumerate(hits, 1):
         p = hit.payload
-        if hit.collection == COLLECTION_TURNS:
+        if hit.kind == KIND_TURNS:
             body_text = p.get("text", "")
-        elif hit.collection in (COLLECTION_PROTOCOLS, COLLECTION_ANALYSES):
+        elif hit.kind in (KIND_PROTOCOLS, KIND_ANALYSES):
             body_text = p.get("body", "") or p.get("topic_title", "")
             title = p.get("topic_title", "")
             if title and not body_text.startswith(title):
@@ -360,6 +368,7 @@ async def call_gemma(question: str, hits: list[Hit]) -> str:
 async def retrieve(
     question: str,
     *,
+    tenant_slug: str,
     collection: str = "protocols",
     limit: int = DEFAULT_LIMIT,
     rerank: bool = True,
@@ -369,14 +378,18 @@ async def retrieve(
 
     Does NOT call Gemma. Use for /verbose, dashboards, or preview.
 
+    `collection` names a KIND ('protocols', 'turns', …); `tenant_slug` decides
+    WHOSE collection of that kind is searched. The caller therefore cannot pick
+    another church's index by passing a crafted collection name.
+
     Raises:
-        ValueError: if collection invalid
+        UnknownCollectionKind: if collection isn't one of the four kinds
+        InvalidTenantSlug: if tenant_slug is malformed
         httpx.HTTPError: if Ollama (bge-m3) unreachable
         qdrant errors: connection/collection issues
     """
-    full_collection = COLLECTION_ALIASES.get(collection)
-    if full_collection is None:
-        raise ValueError(f"Unknown collection: {collection!r}")
+    kind = collections.resolve_kind(collection)
+    full_collection = collections.collection_name(tenant_slug, kind)
 
     t_total_start = time.perf_counter()
 
@@ -423,15 +436,17 @@ async def retrieve(
 async def answer(
     question: str,
     *,
+    tenant_slug: str,
     collection: str = "protocols",
     limit: int = DEFAULT_LIMIT,
     rerank: bool = True,
 ) -> AnswerResult:
     """
-    Full RAG pipeline: retrieve + Gemma synthesis.
+    Full RAG pipeline: retrieve + Gemma synthesis, within ONE tenant's index.
 
     Raises:
-        ValueError: if collection invalid
+        UnknownCollectionKind: if collection isn't one of the four kinds
+        InvalidTenantSlug: if tenant_slug is malformed
         httpx.HTTPError: if Ollama (bge-m3 / Gemma) unreachable / times out
         qdrant errors: connection/collection issues
 
@@ -439,6 +454,7 @@ async def answer(
     """
     ret = await retrieve(
         question,
+        tenant_slug=tenant_slug,
         collection=collection,
         limit=limit,
         rerank=rerank,
@@ -500,22 +516,22 @@ def format_hit_short(hit: Hit, idx: int) -> str:
     else:
         score_str = f"score {hit.score:.3f}"
 
-    if hit.collection == COLLECTION_PROTOCOLS:
+    if hit.kind == KIND_PROTOCOLS:
         topic = p.get("topic_title", "?")
         return f"[{idx}] [{date}] '{topic}'  ({score_str})"
 
-    if hit.collection == COLLECTION_ANALYSES:
+    if hit.kind == KIND_ANALYSES:
         topic = p.get("topic_title", "?")
         tr = p.get("time_range", "?")
         return f"[{idx}] [{date} chunk {tr}] '{topic}'  ({score_str})"
 
-    if hit.collection == COLLECTION_TURNS:
+    if hit.kind == KIND_TURNS:
         speaker = p.get("speaker", "?")
         ts = p.get("start_timestamp", "?")
         text = p.get("text", "")[:100].replace("\n", " ")
         return f"[{idx}] [{date} {ts}] {speaker}: \"{text}...\"  ({score_str})"
 
-    if hit.collection == COLLECTION_PROTOCOL_FULL:
+    if hit.kind == KIND_PROTOCOL_FULL:
         return f"[{idx}] [{date}] meeting summary  ({score_str})"
 
     return f"[{idx}] [{date}] unknown  ({score_str})"
@@ -558,9 +574,13 @@ async def _smoke_test() -> None:
     from dotenv import load_dotenv
     load_dotenv()
 
+    # Runs against the legacy tenant, whose collections are the existing cma_*.
+    slug = collections.legacy_slug() or "default"
+
     print("=" * 70)
     print("  shared/rag — end-to-end smoke test")
     print("=" * 70)
+    print(f"  tenant: {slug}  →  {collections.all_collections(slug)['protocols']}")
     print()
 
     # Test 1: retrieve() with rerank
@@ -568,6 +588,7 @@ async def _smoke_test() -> None:
     print("-" * 70)
     r = await retrieve(
         "Хто такий Назар?",
+        tenant_slug=slug,
         collection="protocols",
         limit=5,
         rerank=True,
@@ -591,6 +612,7 @@ async def _smoke_test() -> None:
     print("-" * 70)
     r2 = await retrieve(
         "Хто такий Назар?",
+        tenant_slug=slug,
         collection="protocols",
         limit=5,
         rerank=False,
@@ -609,6 +631,7 @@ async def _smoke_test() -> None:
     print("  (this hits Gemma — 10-30 seconds expected)")
     a = await answer(
         "Що вирішили про членство Леоніда?",
+        tenant_slug=slug,
         collection="protocols",
         limit=5,
         rerank=True,

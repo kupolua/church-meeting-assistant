@@ -21,9 +21,9 @@ from fastapi.responses import HTMLResponse
 
 from church_assistant.db import logs_repo, queries_repo, users_repo
 from church_assistant.db.connection import get_pool
-from church_assistant.shared import meetings_index
+from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.web.main import templates
-from church_assistant.web.tenant import current_tenant
+from church_assistant.web.tenant import current_tenant, current_tenant_slug
 
 
 router = APIRouter()
@@ -79,7 +79,8 @@ async def dashboard(request: Request):
     pool = await get_pool()
     tenant_id = current_tenant(request)
     ctx = await _panel_context(pool, tenant_id)
-    ctx["meetings"] = meetings_index.list_all_summaries()
+    meetings_dir = tenant_paths.paths_for(current_tenant_slug(request)).meetings
+    ctx["meetings"] = meetings_index.list_all_summaries(meetings_dir)
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
