@@ -8,10 +8,16 @@ no Qdrant — collection naming is checked, not searched.
 
 SETUP (once per run — recreates the sandbox from scratch):
 
+    ⚠️ NEVER drop or re-password the cma_app ROLE here. Roles are CLUSTER-wide
+    while grants are per-database, so after the live cutover that role is what
+    the four production services log in as: dropping it or setting a test
+    password takes the live system down. The sandbox reuses the existing role
+    and its real password (read from .env) — migration 004 grants it privileges
+    inside cma_mt3, which is per-database and harmless.
+
     DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
     $DOCKER exec cma-postgres psql -U cma -d postgres -q \
       -c "DROP DATABASE IF EXISTS cma_mt3;" \
-      -c "DROP ROLE IF EXISTS cma_app;" \
       -c "CREATE DATABASE cma_mt3;"
 
     # heredoc/stdin NEEDS `docker exec -i` — without -i stdin never arrives
@@ -25,7 +31,6 @@ SETUP (once per run — recreates the sandbox from scratch):
     done
 
     $DOCKER exec cma-postgres psql -U cma -d cma_mt3 -q \
-      -c "ALTER ROLE cma_app PASSWORD 'testpass';" \
       -c "INSERT INTO tenants (slug, name) VALUES
             ('church-a','Церква А'),('church-b','Церква Б'),
             ('church-off','Призупинена церква')
@@ -51,17 +56,23 @@ import tempfile
 from pathlib import Path
 
 # ─── Environment BEFORE any church_assistant import (config is read at import) ─
+#
+# Only DB_NAME is redirected. Host/user/password come from .env, i.e. the same
+# cma_app credentials the live services use — the role is cluster-wide, so
+# inventing a test password here would mean changing the LIVE one. What keeps
+# this safe is the database name: every connection below goes to cma_mt3.
 TMP = Path(tempfile.mkdtemp(prefix="cma_mt3_data_"))
 os.environ.update(
     DB_NAME="cma_mt3",
-    DB_USER="cma_app",
-    DB_PASSWORD="testpass",
-    DB_HOST="127.0.0.1",
-    DB_PORT="5433",
     WEB_SECRET_KEY=secrets.token_urlsafe(48),
     DATA_ROOT=str(TMP),
     LEGACY_TENANT_SLUG="default",
 )
+
+# Refuse to run against anything but the sandbox: this file wipes web_users and
+# revokes sessions, which would be a very bad afternoon on the live database.
+if os.environ["DB_NAME"] != "cma_mt3":
+    raise SystemExit("refusing to run: DB_NAME must be the cma_mt3 sandbox")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

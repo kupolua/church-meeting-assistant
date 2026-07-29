@@ -41,3 +41,6 @@ data/voice_profiles/*
 
 # dev service logs (restart_dev.sh)
 logs/
+
+# Cutover backups (contain the DB and a copy of .env — never commit)
+backups/

@@ -4,8 +4,10 @@
 **наглядовою радою** як моделлю довіри (audit-журнал + non-superuser доступ). Приватність:
 усе локально (Voyage вже прибрано, LLM/embeddings/rerank локальні на M1 → потім Spark).
 
-**Стан гілки:** `feat/multi-tenancy`. **`main` недоторкана**, живий `cma` досі однотенантний,
-4 сервіси працюють. Уся MT-робота — лише на гілці.
+**Стан:** ✅ **CUTOVER ЗРОБЛЕНО** (2026-07-29). Живий `cma` мультитенантний: міграції 003–009
+застосовані, застосунок конектиться як `cma_app` (non-superuser → RLS діє), 4 сервіси працюють.
+Бекап перед cutover: `backups/cma_before_mt_20260729-163749.dump` + `.env` поруч (у `.gitignore`).
+`main` досі не змержена — злити після періоду спостереження.
 
 ---
 
@@ -190,15 +192,33 @@ UI також перевірено в браузері вживу (створе�
 
 ---
 
+## ✅ Cutover (2026-07-29)
+
+Зроблено за рунбуком `scripts/cutover_preflight.py`. Порядок: зупинка 4 сервісів → бекап
+(`pg_dump -Fc` + копія `.env`) → `DROP ROLE cma_app` (стара, з sandbox-паролем; довелося спершу
+дропнути `cma_mt3`, який її тримав) → міграції 003–009 → новий 40-символьний пароль ролі →
+`.env`: `DB_USER=cma_app` + новий `DB_PASSWORD` → preflight (усе ✓) → перший веб-акаунт
+`pavlo`/admin → старт сервісів.
+
+**Провалідовано на живій системі:** дані цілі (users=1, queries=11, logs, errors=36, jobs=3;
+усі рядки на tenant 1); анонім → 303 на `/login`; невірний пароль → 401; вхід → дашборд 200
+під RLS; security-заголовки; 17 зустрічей у сайдбарі (**legacy-фолбек FS працює** — `data/meetings`
+не переносили); RAG-пошук по `cma_protocols` (**переіндексації не було**); воркер підхопив запит
+через крос-tenant `claim_next_query()` і довів його до `completed` (Gemma, 111с); системні логи
+йдуть у tenant 0, церковні — в tenant 1; audit_log пише входи.
+
+**Не перевірено вживу:** Telegram-бот (потрібне реальне повідомлення від whitelisted-користувача).
+Процес запущений і підключений (`@ReChurchAssistant_bot`).
+
+---
+
 ## ⏭️ Що лишилось
 
-1. Вендорити htmx локально → тоді можна ввімкнути CSP (зараз CDN у `base.html`).
-2. **Live cutover (координовано, РУЙНІВНО):** створити роль `cma_app` + пароль → застосувати
-   `003`…`009` до `cma` → у `.env`: `DB_USER=cma_app`, `DB_PASSWORD`,
-   **`WEB_SECRET_KEY`** → створити перший веб-акаунт (`add_web_user --tenant 1 --role admin`)
-   → рестарт 4 сервісів. RLS fail-closed: старий код без tenant-контексту побачить 0 рядків,
-   тож деплой лише разом. `data/` і Qdrant чіпати НЕ треба — legacy-фолбек лишає tenant 1
-   там, де він є; `migrate_tenant_fs.py` — окремим кроком, коли захочеться однорідності.
+1. **Змінити пароль першого акаунта** `pavlo` — він видавався одноразово при створенні.
+2. Помержити `main` після періоду спостереження (зараз усе на `feat/multi-tenancy`).
+3. Вендорити htmx локально → тоді можна ввімкнути CSP (зараз CDN у `base.html`).
+4. `migrate_tenant_fs.py` — коли захочеться однорідної розкладки (не обовʼязково: legacy-фолбек
+   лишає tenant 1 там, де він є).
 
 ---
 
@@ -207,16 +227,21 @@ UI також перевірено в браузері вживу (створе�
 Повний рецепт (створення БД, міграції, сідинг двох церков) — у докстрінгу
 `tests/mt_phase3_smoke.py`. Коротко:
 
+⚠️ **НІКОЛИ не дропати й не переставляти пароль ролі `cma_app` у тестовому рецепті.** Ролі
+кластерні, гранти — на базу. Після cutover саме під цією роллю логіняться 4 живі сервіси, тож
+`DROP ROLE` / `ALTER ROLE … PASSWORD` поклали б продакшн. Sandbox переюзує наявну роль і її
+справжній пароль із `.env`; ізолює саме **імʼя бази** (`cma_mt3`), а тест на старті відмовляється
+працювати, якщо `DB_NAME` не той.
+
 ```bash
 DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
 $DOCKER exec cma-postgres psql -U cma -d postgres -c "DROP DATABASE IF EXISTS cma_mt3;" \
-  -c "DROP ROLE IF EXISTS cma_app;" -c "CREATE DATABASE cma_mt3;"
+  -c "CREATE DATABASE cma_mt3;"
 # heredoc/stdin ПОТРЕБУЄ  docker exec -i  (без -i stdin не доходить!)
 for f in schema.sql migrations/003_multitenancy.sql migrations/004_app_role_and_claim.sql \
          migrations/005_mt_fixups.sql migrations/006_web_auth.sql; do
   $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -v ON_ERROR_STOP=1 < src/church_assistant/db/$f
 done
-$DOCKER exec cma-postgres psql -U cma -d cma_mt3 -c "ALTER ROLE cma_app PASSWORD 'testpass';"
 # + сідинг церков (див. докстрінг), далі:
 uv run python tests/mt_phase3_smoke.py
 ```
