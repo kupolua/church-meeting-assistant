@@ -1,8 +1,9 @@
 # Church Meeting Assistant — Handoff Brief
 
-**Дата:** 22 липня 2026
-**Стан:** MVP-A (foundation + web + bot + worker), MVP-B (dashboard), **MVP-C (ingestion: upload audio → protocol)**, **meeting-detail (стенограма + аудіоплеєр із клікабельними таймкодами)** і **перебудова UI-навігації (топ-меню, дашборд-landing, сайдбар лише в «Зустрічі»)** — код готовий, **закомічено й запушено на GitHub** (`main`). MVP-A/B провалідовані end-to-end; MVP-C провалідований покроково (unit + web-роути через curl + браузер), але **ще не прогнаний на реальному аудіо** (повний ~2-год pipeline через worker).
-**Мета наступної сесії:** прогнати MVP-C на реальному записі + обрати наступний пункт backlog (single-command run стає важливішим — тепер 4 процеси).
+**Дата:** 29 липня 2026
+**Стан:** MVP-A (foundation + web + bot + worker), MVP-B (dashboard), MVP-C (ingestion), meeting-detail (стенограма + аудіоплеєр), UI-навігація, **редагування спікерів зі стенограми + фінгерпринт нових учасників**, **`restart_dev.sh`** і — головне — **повний self-host: Voyage прибрано, embeddings/rerank тепер локальні (bge-m3 + bge-reranker), корпус переіндексовано** — усе закомічено й **запушено на GitHub** (`main`). RAG провалідований end-to-end на локальному стеку.
+**Ключове рішення сесії (приватність):** усе, що торкається даних зустрічей, працює **локально**. Хмарний LLM (SiliconFlow тощо) і хмарний VPS відхилені — транскрипти не мають виходити з машини. Voyage (останню сторонню AI-залежність) прибрано.
+**Мета наступної сесії:** прогнати **MVP-C ingestion на реальному аудіо** (повний ~2-год pipeline + reprocess ще не ганялись живими) + обрати пункт backlog.
 
 ---
 
@@ -19,10 +20,9 @@ Pavlo Kulakovskyi. JS/DevOps 20+ років. Працюю в mentor+pair-coding 
 
 ### Phase 2A/2B (completed, June 2026)
 
-- **14 meetings indexed** у Qdrant (`cma_protocols`, `cma_analyses`, `cma_turns`, `cma_protocol_full`)
-- ~7,886 points total
+- **17 meetings indexed** у Qdrant (`cma_protocols` 512, `cma_analyses` 830, `cma_turns` 8105, `cma_protocol_full` 17)
 - Full audio → polished.md → RAG pipeline working
-- CLI query.py з Voyage rerank-2 (+49% avg precision boost)
+- Embeddings/rerank **тепер локальні** (bge-m3 + bge-reranker-v2-m3) — див. «Self-host: Voyage → local» нижче. *(Voyage rerank-2 давав +49% precision історично; локальний варіант треба калібрувати.)*
 
 ### Phase 3 / MVP-A.1 Foundation (13 липня, 4 commits)
 
@@ -96,8 +96,8 @@ Sidebar (meetings) + query form (sync Gemma) + meeting detail + HTMX search + hi
 
 **Стан-машина:** `pending → transcribing → awaiting_review → queued_analysis → analyzing → indexing → completed | failed | cancelled`
 
-**DB (schema v2 — застосовано через `init_db.py`):**
-- `ingestion_jobs` — черга+історія (unique per meeting_date, `stage`/`progress_note`, timings, `speaker_count`, `indexed`, retry)
+**DB (schema **v3** — застосовано через `init_db.py`, idempotent):**
+- `ingestion_jobs` — черга+історія (unique per meeting_date, `stage`/`progress_note`, timings, `speaker_count`, `indexed`, retry, **`force_reprocess`** — v3)
 - view `v_ingestion_depth`
 - `db/ingestion_jobs_repo.py` — repo у стилі `queries_repo` (+ smoke test); `fetch_next_runnable(allowed_statuses=…)` — щоб транскрипція йшла навіть коли Ollama/Qdrant down
 
@@ -136,6 +136,33 @@ Sidebar (meetings) + query form (sync Gemma) + meeting detail + HTMX search + hi
 - **«Зустрічі»** = стара головна (форма запитів + огляд корпусу), переїхала з `/` на `GET /meetings` (`home.py`).
 - **Сайдбар** (пошук + список зустрічей) — **лише** в розділі «Зустрічі» (`/meetings` + `/meetings/<date>`); на решті сторінок його немає (клас `.no-sidebar` → контент центрується max-width 1100px). Bottom-nav із сайдбара прибрано (тепер у топ-меню).
 
+### ★ Self-host: Voyage → локальні bge-m3 + bge-reranker (29 липня) ✅ `fed06b3`, `132bdf1`
+
+**Остання стороння AI-залежність прибрана — RAG повністю локальний, дані не виходять з машини.**
+- `shared/local_embed.py` — **bge-m3 через Ollama** `/api/embed` (1024-dim = схема Qdrant; симетрична, без query/document split). `ollama pull bge-m3` обовʼязково.
+- `shared/local_rerank.py` — **bge-reranker-v2-m3** через sentence-transformers CrossEncoder (lazy singleton, sigmoid 0-1). `RERANK_DEVICE=auto` → **mps** на M1 (~2с) / cuda / cpu, з graceful fallback.
+- Свопнуто в `rag.py` / `index_meeting.py` / `query.py` (публічні API незмінні). `pyproject`: −voyageai, +sentence-transformers. `.env.example`: `EMBED_MODEL`/`RERANK_MODEL`/`RERANK_DEVICE`, без `VOYAGE_API_KEY`.
+- **Переіндексовано всі 17 зустрічей** (`index_meeting --force`) — Voyage-вектори замінено на bge-m3 (лічильники ті самі). Валідація: full RAG дає точні цитовані відповіді.
+- **⚠ Пороги кольорів rerank** (`RERANK_SCORE_GOOD=0.65 / OK=0.35`) — first-pass калібрація під bge-reranker, дотюнити на реальних запитах. Впливає лише на UI (green/yellow/dim), не на якість.
+- **⚠ У `.env`**: прибрано застаріле `RERANK_MODEL="rerank-2"` (ламало reranker); лишилась мертва `VOYAGE_API_KEY` (не використовується, можна видалити).
+
+### Редагування спікерів зі стенограми + фінгерпринт нових учасників (29 липня) ✅ `b597c36`
+
+Per-cluster (голосовий кластер SPEAKER_XX), у розділі «Стенограма» на `/meetings/<date>`:
+- Кожна репліка показує спікера як **посилання на зміну** (діалог із datalist відомих імен + вільне поле для нового учасника). `meetings_index` виводить `speaker_label` кожної репліки з RTTM (узгоджено з іменем через speakers.json).
+- `ingestion/speaker_review.py` — чернетка змін (`speaker_review.json`) + `save_voice_profile_from_cluster` (.npy з ембедингу кластера, як `add_voice_profile.py`). Голосові профілі: `data/voice_profiles/<Ім'я>.npy`.
+- Окрема кнопка **«🔁 Запустити аналіз»**: для нових учасників зберігає профіль → пише speakers.json → ставить зустріч у **повну переобробку (force)**.
+
+### Редагування голосів обробленої зустрічі → повний re-run (`5344ed0`) + аудіо в редакторі спікерів (`82146ee`)
+
+- «Учасники» на `/meetings/<date>` → кнопка **«🎙️ Редагувати голоси»** → редактор speakers.json; збереження = **force-переобробка** (`ingestion_jobs.force_reprocess`, schema **v3**). Worker регенерує annotated/analysis/protocol **на місці** (bypass skip + `--no-cache` + index `--force`) — стара версія вціліє при збої; сторінка не 404-иться.
+- Бейдж «🔄 Перезбирається» на detail поки активна переобробка.
+- У редакторі спікерів — аудіоплеєр + клікабельні таймкоди-приклади (послухати голос перед підписом).
+
+### `restart_dev.sh` (dev-helper) `cb68e70`
+
+Перевіряє контейнери (Postgres `cma-postgres`, Qdrant `lf-client-qdrant-1`) + Ollama/модель, тоді (пере)запускає 4 сервіси у фоні з `logs/`. Резолвить `docker` (shell-alias Docker Desktop) у реальний бінарник. Режими: `--check`, `--stop` (гасить і сервіси, **і контейнери**), `--help`.
+
 ---
 
 ## Run-модель (важливо — 4 процеси одночасно)
@@ -148,43 +175,44 @@ web /ingest         →  INSERT pending (ingestion_jobs) → ingestion-worker �
                                   dashboard: live-моніторинг + дії
 ```
 
-Для повного циклу підняти **чотири термінали**:
+**Одна команда** піднімає все (перевіряє контейнери+Ollama, рестартує 4 сервіси у фоні):
 ```bash
-uv run uvicorn church_assistant.web.main:app --host 127.0.0.1 --port 8000   # web + dashboard + /ingest
-uv run python -m church_assistant.bot.main                                   # Telegram bot
-uv run python -m church_assistant.worker.main                                # query worker
-uv run python -m church_assistant.ingestion.main                             # ingestion worker (NEW)
+./restart_dev.sh          # web + bot + query-worker + ingestion-worker; логи в logs/
+./restart_dev.sh --stop   # зупинити сервіси + контейнери
 ```
-Без query-worker'а запити висять у `pending`; без ingestion-worker'а завантажене аудіо висить у `pending`. Ollama `gemma4:26b`, Qdrant, Postgres мають бути up.
+Без query-worker'а запити висять у `pending`; без ingestion-worker'а завантажене аудіо висить у `pending`. Мають бути up: **Ollama з `gemma4:26b` ТА `bge-m3`** (`ollama pull bge-m3`), Qdrant, Postgres. `VOYAGE_API_KEY` більше **не потрібен**.
 
-**Відомий tech-debt:** запуск **чотирьох** процесів вручну — single-command run (Makefile/honcho) тепер ще цінніший (план, п.0).
+*(Терміналами вручну — ті самі 4 команди: `uvicorn …web.main:app`, `-m …bot.main`, `-m …worker.main`, `-m …ingestion.main`.)*
+
+**Примітка:** контейнери на M1 інколи «відпадають» після сну машини — `restart_dev.sh` їх піднімає.
 
 ---
 
 ## Що робимо далі — план (backlog, prioritized)
 
 **★ MVP-C validation — прогнати на реальному аудіо** ← **НАСТУПНЕ**
-   Код готовий (Phases 1–5). Завантажити реальний запис через `/ingest`, запустити
-   `ingestion.main`, пройти повний цикл: transcribe → web-редактор speakers → analyze
-   → auto-index. Перевірити, що `polished.md` зʼявляється в `/meetings/<date>` і шукається
-   через RAG. Ймовірні дрібні фікси в командах stages після живого прогону.
+   Увесь код готовий, але **живими на реальному аудіо ще НЕ ганялись**: (а) повний свіжий
+   ingestion (`/ingest` → transcribe → speakers → analyze → auto-index), (б) force-переобробка
+   («Редагувати голоси»/«Запустити аналіз» → merge→analyze→polish→index). У тестах джоби
+   ставились у чергу, але видалялись до обробки (щоб не тригерити 2-год Gemma). Треба живий прогін
+   + перевірка, що `polished.md`/стенограма оновлюються і шукаються через RAG. Ймовірні дрібні фікси в stages.
 
-**0. Ops: single-command run (Makefile / honcho/foreman)** — S ← тепер цінніше (4 процеси!)
-   Один `make dev` піднімає web+bot+query-worker+ingestion-worker. Прибирає footgun «забув worker».
-
-**1. Cache embeddings перед Qdrant upsert** — S (~30 хв)
-   З попередніх ітерацій. Уникнути повторного embed при re-index.
+**1. Калібрування rerank-порогів + якість retrieval на bge** — S
+   Після Voyage→bge звірити релевантність на реальних запитах; підкрутити `RERANK_SCORE_GOOD/OK`.
+   (Voyage давав +49% — переконатись, що локальний не просів.)
 
 **2. Analytics US-3/US-4** — M
    Recurring topics, stale issues. Dashboard-інфра вже є (views + repo).
 
 **3. Multi-query expansion + Hybrid BM25 (Phase 2B.2+)** — L
-   Покращення retrieval-якості. Найбільший вплив на якість, найбільший обсяг.
+   Покращення retrieval-якості. bge-m3 підтримує dense+sparse — природний кандидат на hybrid.
 
-**4. Speakers editor UI** — ✅ **ЗРОБЛЕНО** (злито в MVP-C: `/ingest/{id}/speakers`).
+**4. Cache embeddings перед Qdrant upsert** — S
+   Уникнути повторного embed при re-index (тепер embed локальний, але все одно час).
 
-**5. Manual guest entry в wrapper CLI** — S
-   Ручне додавання гостей у `new_meeting` pipeline (web-редактор уже дозволяє вводити гостей вручну).
+— Ops: single-command run — ✅ **ЗРОБЛЕНО** (`restart_dev.sh`).
+— Speakers editor UI — ✅ **ЗРОБЛЕНО** (MVP-C + `/meetings/<date>/speakers` + стенограма).
+— Manual guest entry — ✅ по суті **ЗРОБЛЕНО** (web-редактори дозволяють вводити нових учасників).
 
 Розмір: S=пів дня, M=1–2 сесії, L=кілька сесій.
 
