@@ -12,7 +12,7 @@
 # Використання:
 #      ./restart_dev.sh              # повний цикл: перевірка + перезапуск
 #      ./restart_dev.sh --check      # лише перевірка інфраструктури, без перезапуску
-#      ./restart_dev.sh --stop       # лише зупинити church_assistant-сервіси
+#      ./restart_dev.sh --stop       # зупинити сервіси + контейнери (Postgres, Qdrant)
 #
 # Перевизначення (env): CMA_PG_CONTAINER, CMA_QDRANT_CONTAINER, CMA_WEB_PORT
 #
@@ -171,6 +171,27 @@ stop_services() {
     sleep 1
 }
 
+# Stop the infra containers this script manages (Postgres + Qdrant).
+# Ollama is a native service, not a container — left untouched.
+stop_containers() {
+    if [[ -z "$DOCKER" ]] || ! "$DOCKER" info >/dev/null 2>&1; then
+        warn "Docker недоступний — контейнери не чіпаю"
+        return
+    fi
+    for spec in "$PG_CONTAINER:Postgres" "$QDRANT_CONTAINER:Qdrant"; do
+        local name="${spec%%:*}" desc="${spec##*:}"
+        if [[ "$("$DOCKER" inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
+            if "$DOCKER" stop "$name" >/dev/null 2>&1; then
+                ok "$desc: '$name' зупинено"
+            else
+                warn "$desc: не вдалося зупинити '$name'"
+            fi
+        else
+            info "$desc: '$name' вже зупинений"
+        fi
+    done
+}
+
 start_services() {
     mkdir -p "$LOG_DIR"
     for label in "${SVC_LABELS[@]}"; do
@@ -197,6 +218,8 @@ case "$MODE" in
     --stop)
         hdr "⏹  Зупинка church_assistant-сервісів"
         stop_services
+        hdr "⏹  Зупинка контейнерів (Postgres + Qdrant)"
+        stop_containers
         ok "готово"
         exit 0
         ;;
