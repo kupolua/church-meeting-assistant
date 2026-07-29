@@ -1,10 +1,10 @@
 """
 Async RAG service — refactored from CLI `query.py` for use in web + worker.
 
-Behavior is a 1-to-1 async port of church_assistant.query, keeping the same:
-    - Voyage voyage-multilingual-2 embeddings (input_type='query')
+Behavior mirrors church_assistant.query, fully local (no third-party APIs):
+    - bge-m3 embeddings via Ollama (local; 1024-dim)
     - Qdrant vector search with 4×limit pool for rerank
-    - Voyage rerank-2 for precise ordering
+    - bge-reranker-v2-m3 for precise ordering (local cross-encoder)
     - Gemma 4 26B synthesis via Ollama /api/chat
     - Same system prompt (Ukrainian, strict citation rules)
     - Same score thresholds
@@ -28,6 +28,8 @@ from typing import Any, Optional
 import httpx
 from qdrant_client import AsyncQdrantClient
 
+from church_assistant.shared import local_embed, local_rerank
+
 
 # ─────────────────────────────────────────────────────────────
 # Constants — must match index_meeting.py and query.py
@@ -50,8 +52,8 @@ COLLECTION_ALIASES = {
     COLLECTION_PROTOCOL_FULL: COLLECTION_PROTOCOL_FULL,
 }
 
-EMBEDDING_MODEL = "voyage-multilingual-2"
-RERANK_MODEL = "rerank-2"
+EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
+RERANK_MODEL = local_rerank.RERANK_MODEL            # local: bge-reranker-v2-m3
 DEFAULT_LIMIT = 5
 RERANK_POOL_MULTIPLIER = 4
 
@@ -156,53 +158,12 @@ class RetrievalResult:
 
 
 # ─────────────────────────────────────────────────────────────
-# Voyage helpers (SDK is sync, wrap in to_thread)
+# Local embedding (bge-m3 via Ollama)
 # ─────────────────────────────────────────────────────────────
 
-def _resolve_voyage_key() -> str:
-    key = os.getenv("VOYAGE_API_KEY")
-    if not key:
-        raise RuntimeError("VOYAGE_API_KEY missing from environment")
-    return key
-
-
-def _voyage_embed_sync(text: str, api_key: str) -> list[float]:
-    """Sync Voyage embed — called via asyncio.to_thread."""
-    import voyageai
-    client = voyageai.Client(api_key=api_key)
-    result = client.embed(
-        texts=[text],
-        model=EMBEDDING_MODEL,
-        input_type="query",
-    )
-    return result.embeddings[0]
-
-
-def _voyage_rerank_sync(
-    question: str,
-    documents: list[str],
-    top_k: int,
-    api_key: str,
-) -> list[tuple[int, float]]:
-    """
-    Sync Voyage rerank — called via asyncio.to_thread.
-    Returns list of (original_index, relevance_score).
-    """
-    import voyageai
-    client = voyageai.Client(api_key=api_key)
-    result = client.rerank(
-        query=question,
-        documents=documents,
-        model=RERANK_MODEL,
-        top_k=min(top_k, len(documents)),
-    )
-    return [(item.index, item.relevance_score) for item in result.results]
-
-
 async def embed_query(question: str) -> list[float]:
-    """Async wrapper around Voyage embed."""
-    api_key = _resolve_voyage_key()
-    return await asyncio.to_thread(_voyage_embed_sync, question, api_key)
+    """Embed the query locally with bge-m3 (Ollama). No API key needed."""
+    return await local_embed.aembed_one(question)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -267,13 +228,12 @@ async def rerank_hits(
     hits: list[Hit],
     top_k: int,
 ) -> list[Hit]:
-    """Async wrapper around Voyage rerank."""
+    """Rerank locally with bge-reranker-v2-m3 (in-process, off the event loop)."""
     if not hits:
         return hits
-    api_key = _resolve_voyage_key()
     documents = [_hit_text_for_rerank(h) for h in hits]
     idx_scores = await asyncio.to_thread(
-        _voyage_rerank_sync, question, documents, top_k, api_key,
+        local_rerank.rerank, question, documents, top_k,
     )
     reranked: list[Hit] = []
     for original_idx, score in idx_scores:
@@ -408,8 +368,8 @@ async def retrieve(
     Does NOT call Gemma. Use for /verbose, dashboards, or preview.
 
     Raises:
-        RuntimeError: if VOYAGE_API_KEY missing
         ValueError: if collection invalid
+        httpx.HTTPError: if Ollama (bge-m3) unreachable
         qdrant errors: connection/collection issues
     """
     full_collection = COLLECTION_ALIASES.get(collection)
@@ -469,9 +429,8 @@ async def answer(
     Full RAG pipeline: retrieve + Gemma synthesis.
 
     Raises:
-        RuntimeError: if VOYAGE_API_KEY missing
         ValueError: if collection invalid
-        httpx.HTTPError: if Ollama unreachable / times out
+        httpx.HTTPError: if Ollama (bge-m3 / Gemma) unreachable / times out
         qdrant errors: connection/collection issues
 
     Callers (web/worker) should catch exceptions and record them via logs_repo.
@@ -581,18 +540,18 @@ def score_color_hint(hit: Hit) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# CLI smoke test — hits real Qdrant + real Voyage + real Gemma
+# CLI smoke test — hits real Qdrant + Ollama (bge-m3 + Gemma), all local
 # ─────────────────────────────────────────────────────────────
 
 async def _smoke_test() -> None:
     """
-    Live end-to-end test against real Ollama/Qdrant/Voyage.
+    Live end-to-end test against real Ollama + Qdrant (all local).
 
     Uses a real question that we know has answers in the corpus.
     Requires:
-        - VOYAGE_API_KEY set
-        - Qdrant docker running
-        - Ollama with gemma4:26b running
+        - Ollama running with gemma4:26b AND bge-m3 (ollama pull bge-m3)
+        - bge-reranker-v2-m3 available (downloads on first rerank)
+        - Qdrant docker running (re-indexed with bge-m3 vectors)
     """
     from dotenv import load_dotenv
     load_dotenv()

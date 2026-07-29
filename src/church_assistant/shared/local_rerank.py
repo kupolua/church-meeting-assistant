@@ -1,0 +1,99 @@
+"""
+Local cross-encoder reranker (bge-reranker-v2-m3) — replaces Voyage rerank-2.
+
+Runs fully on the machine via sentence-transformers. The model (~2.2 GB) is
+loaded lazily as a process-wide singleton on first use and reused thereafter,
+so importing this module is cheap (no torch import until you actually rerank).
+
+bge-reranker-v2-m3 is a multilingual cross-encoder (strong on Ukrainian). It
+scores (query, document) pairs; we sigmoid the logit to a 0-1 relevance score
+to match the previous rerank_score semantics used by the UI.
+
+Config (env):
+    RERANK_MODEL   default 'BAAI/bge-reranker-v2-m3'
+    RERANK_DEVICE  default 'cpu'  ('mps' on Apple Silicon / 'cuda' if available)
+    RERANK_MAX_LEN default 512
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from typing import Optional
+
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_DEVICE = os.getenv("RERANK_DEVICE", "cpu")
+RERANK_MAX_LEN = int(os.getenv("RERANK_MAX_LEN", "512"))
+
+_model = None
+_lock = threading.Lock()
+
+
+def _get_model():
+    """Load the CrossEncoder once (thread-safe lazy singleton)."""
+    global _model
+    if _model is None:
+        with _lock:
+            if _model is None:
+                from sentence_transformers import CrossEncoder  # heavy: lazy
+                _model = CrossEncoder(
+                    RERANK_MODEL, max_length=RERANK_MAX_LEN, device=RERANK_DEVICE
+                )
+    return _model
+
+
+def _sigmoid(x: float) -> float:
+    import math
+    # numerically stable
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+def rerank(
+    query: str,
+    documents: list[str],
+    top_k: Optional[int] = None,
+) -> list[tuple[int, float]]:
+    """
+    Score each document against the query, return [(original_index, score), ...]
+    sorted by score DESC, truncated to top_k. Scores are sigmoid(logit) ∈ (0,1).
+
+    Blocking (CPU/torch) — callers on the event loop should use asyncio.to_thread.
+    """
+    if not documents:
+        return []
+    model = _get_model()
+    pairs = [(query, doc) for doc in documents]
+    raw = model.predict(pairs)  # logits (np.ndarray), one per pair
+    scored = [(i, _sigmoid(float(s))) for i, s in enumerate(raw)]
+    scored.sort(key=lambda t: t[1], reverse=True)
+    if top_k is not None:
+        scored = scored[:top_k]
+    return scored
+
+
+# ─────────────────────────────────────────────────────────────
+# CLI smoke test:  uv run python -m church_assistant.shared.local_rerank
+# ─────────────────────────────────────────────────────────────
+
+def _smoke_test() -> None:
+    print(f"Loading reranker {RERANK_MODEL!r} on {RERANK_DEVICE} (first run downloads ~2.2GB)...")
+    q = "адміністративні питання церкви"
+    docs = [
+        "Обговорення бюджету, реєстрації та адміністративних рішень громади.",
+        "Роздуми над Псалмом 84 про блаженство людини.",
+        "Питання членства та прийняття нових членів церкви.",
+    ]
+    out = rerank(q, docs, top_k=3)
+    print("  ranked:")
+    for idx, score in out:
+        print(f"    [{idx}] {score:.3f}  {docs[idx][:50]}")
+    assert out[0][0] in (0, 2), "expected an admin/membership doc on top"
+    print("  ✓ OK")
+
+
+if __name__ == "__main__":
+    _smoke_test()

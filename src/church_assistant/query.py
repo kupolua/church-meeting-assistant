@@ -4,9 +4,9 @@ Searches the Qdrant `cma_*` collections for content relevant to a question,
 then asks Gemma to synthesize an answer with citations to source meetings.
 
 Architecture:
-    1. Embed the question (Voyage voyage-multilingual-2, input_type=query)
+    1. Embed the question (local bge-m3 via Ollama)
     2. Vector search top K*4 in chosen collection (broad recall)
-    3. Voyage rerank-2 → top K (precise ordering via cross-attention)
+    3. bge-reranker-v2-m3 → top K (local cross-encoder)
     4. Pass to Gemma; generate answer with citations
 
 Disable rerank via --no-rerank to fall back to raw vector ordering.
@@ -43,8 +43,10 @@ COLLECTION_ANALYSES = "cma_analyses"
 COLLECTION_TURNS = "cma_turns"
 COLLECTION_PROTOCOL_FULL = "cma_protocol_full"
 
-EMBEDDING_MODEL = "voyage-multilingual-2"
-RERANK_MODEL = "rerank-2"
+from church_assistant.shared import local_embed, local_rerank  # noqa: E402
+
+EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
+RERANK_MODEL = local_rerank.RERANK_MODEL           # local: bge-reranker-v2-m3
 DEFAULT_LIMIT = 5
 RERANK_POOL_MULTIPLIER = 4   # retrieve 4×limit, rerank to limit
 
@@ -95,19 +97,12 @@ def load_env() -> None:
         )
 
 
-# ----- Voyage embedding -----
+# ----- Local embedding (bge-m3 via Ollama) -----
 
 
-def embed_query(text: str, api_key: str) -> list[float]:
-    """Embed a single query string."""
-    import voyageai
-    client = voyageai.Client(api_key=api_key)
-    result = client.embed(
-        texts=[text],
-        model=EMBEDDING_MODEL,
-        input_type="query",   # critical: queries use different embedding
-    )
-    return result.embeddings[0]
+def embed_query(text: str) -> list[float]:
+    """Embed a single query string locally with bge-m3."""
+    return local_embed.embed([text])[0]
 
 
 # ----- Qdrant retrieval -----
@@ -139,27 +134,19 @@ def rerank_hits(
     question: str,
     hits: list[Hit],
     top_k: int,
-    api_key: str,
 ) -> list[Hit]:
-    """Re-score hits with Voyage rerank-2 and return the new top-k."""
+    """Re-score hits locally with bge-reranker-v2-m3 and return the new top-k."""
     if not hits:
         return hits
-    import voyageai
-    client = voyageai.Client(api_key=api_key)
 
     documents = [hit_text_for_rerank(h) for h in hits]
-    result = client.rerank(
-        query=question,
-        documents=documents,
-        model=RERANK_MODEL,
-        top_k=min(top_k, len(hits)),
-    )
+    idx_scores = local_rerank.rerank(question, documents, top_k=min(top_k, len(hits)))
 
     reranked: list[Hit] = []
-    for item in result.results:
-        original = hits[item.index]
+    for original_idx, score in idx_scores:
+        original = hits[original_idx]
         reranked.append(Hit(
-            score=item.relevance_score,
+            score=score,
             payload=original.payload,
             collection=original.collection,
             vector_score=original.score,
@@ -370,14 +357,9 @@ def run_query(
     log(f"  Rerank:     {rerank}")
     log(f"  Synthesize: {synthesize}")
 
-    # 1. Embed
-    api_key = os.environ.get("VOYAGE_API_KEY")
-    if not api_key:
-        log("\n❌ VOYAGE_API_KEY missing from .env", "red")
-        sys.exit(1)
-
+    # 1. Embed (local — bge-m3 via Ollama)
     log("\n  Embedding query...", "dim")
-    vec = embed_query(question, api_key)
+    vec = embed_query(question)
 
     # 2. Search Qdrant
     # If reranking, pull a wider candidate pool (4×limit) then narrow.
@@ -397,7 +379,7 @@ def run_query(
     if rerank and hits:
         log(f"  Reranking {len(hits)} candidates with {RERANK_MODEL}...",
             "dim")
-        hits = rerank_hits(question, hits, top_k=limit, api_key=api_key)
+        hits = rerank_hits(question, hits, top_k=limit)
     elif not rerank:
         hits = hits[:limit]   # truncate; otherwise pool == limit already
 
@@ -458,7 +440,7 @@ def main() -> None:
     parser.add_argument(
         "--no-rerank",
         action="store_true",
-        help="Skip Voyage rerank-2 (use raw vector scores only)",
+        help="Skip the local reranker (use raw vector scores only)",
     )
     args = parser.parse_args()
 

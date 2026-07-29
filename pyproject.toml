@@ -20,7 +20,7 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "qdrant-client>=1.18.0",
     "uvicorn>=0.51.0",
-    "voyageai>=0.4.0",
+    "sentence-transformers>=3.0.0",
 ]
 
 [build-system]

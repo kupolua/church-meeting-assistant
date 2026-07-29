@@ -1,7 +1,7 @@
 """
 Background worker package (MVP-A.4).
 
-Consumes pending queries from the queue, runs the RAG pipeline (Voyage embed →
+Consumes pending queries from the queue, runs the RAG pipeline (bge-m3 embed →
 Qdrant → rerank → Gemma), stores results, and delivers answers back to Telegram.
 
 Also takes periodic health snapshots of Ollama/Qdrant so the worker can pause

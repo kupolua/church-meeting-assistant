@@ -14,7 +14,7 @@ Indexes 4 levels of granularity, each into its own Qdrant collection:
     cma_protocol_full  — one entry per meeting (Gemma-generated summary)
                          (for meeting-level "summarize the May meeting")
 
-All embeddings use Voyage multilingual-2 (1024-dim, Cosine distance) to
+All embeddings use local bge-m3 (1024-dim, Cosine distance) to
 match the team's existing Qdrant setup (Phase 1 collections also 1024d).
 
 Idempotent: writes data/meetings/YYYY-MM-DD/index_state.json with content
@@ -65,8 +65,10 @@ ALL_COLLECTIONS = [
     COLLECTION_PROTOCOL_FULL,
 ]
 
-EMBEDDING_MODEL = "voyage-multilingual-2"
-EMBEDDING_DIM = 1024
+from church_assistant.shared import local_embed  # noqa: E402
+
+EMBEDDING_MODEL = local_embed.EMBED_MODEL          # local: bge-m3 via Ollama
+EMBEDDING_DIM = local_embed.EMBED_DIM              # 1024 (unchanged)
 EMBEDDING_DISTANCE = "Cosine"
 EMBEDDING_BATCH_SIZE = 128
 
@@ -463,27 +465,16 @@ def build_protocol_full_points(
     return [IndexPoint(text=text, payload=payload)]
 
 
-# ----- Voyage embeddings -----
+# ----- Local embeddings (bge-m3 via Ollama) -----
 
 
-def embed_batch(texts: list[str], api_key: str) -> list[list[float]]:
-    """Call Voyage embeddings API. Returns list of vectors in input order."""
-    if not texts:
-        return []
-
-    import voyageai  # lazy import
-    client = voyageai.Client(api_key=api_key)
-    result = client.embed(
-        texts=texts,
-        model=EMBEDDING_MODEL,
-        input_type="document",
-    )
-    return result.embeddings
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Embed a batch of texts locally via bge-m3 (Ollama). Order preserved."""
+    return local_embed.embed(texts)
 
 
 def embed_points(
     points: list[IndexPoint],
-    api_key: str,
     batch_size: int = EMBEDDING_BATCH_SIZE,
 ) -> list[list[float]]:
     """Embed all points in batches, preserving order."""
@@ -493,7 +484,7 @@ def embed_points(
         batch = points[i:i + batch_size]
         log(f"    Embedding batch {i // batch_size + 1}/{(n + batch_size - 1) // batch_size} "
             f"({len(batch)} items)...")
-        vectors = embed_batch([p.text for p in batch], api_key)
+        vectors = embed_batch([p.text for p in batch])
         embeddings.extend(vectors)
     return embeddings
 
@@ -662,18 +653,13 @@ def index_one_meeting(
         log(f"\n  ✓ Dry run — no embeddings or upserts performed", "yellow")
         return prev_state
 
-    # Embed
-    log(f"\n  Embedding points (Voyage {EMBEDDING_MODEL})...")
-    api_key = os.environ.get("VOYAGE_API_KEY")
-    if not api_key:
-        log(f"  ❌ VOYAGE_API_KEY missing from .env", "red")
-        raise SystemExit(1)
-
+    # Embed (local — bge-m3 via Ollama)
+    log(f"\n  Embedding points (local {EMBEDDING_MODEL} via Ollama)...")
     t0 = time.time()
-    protocol_vecs = embed_points(protocol_points, api_key)
-    analysis_vecs = embed_points(analysis_points, api_key)
-    turn_vecs = embed_points(turn_points, api_key)
-    full_vecs = embed_points(full_points, api_key)
+    protocol_vecs = embed_points(protocol_points)
+    analysis_vecs = embed_points(analysis_points)
+    turn_vecs = embed_points(turn_points)
+    full_vecs = embed_points(full_points)
     log(f"  ✓ Embeddings done in {time.time() - t0:.1f}s", "green")
 
     # Connect Qdrant
