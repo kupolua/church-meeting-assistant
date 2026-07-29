@@ -45,6 +45,7 @@ async def process_query(
         max_retries: attempts allowed before giving up permanently
     """
     query_id = query["id"]
+    tenant_id = query["tenant_id"]
     question = query["question"]
     collection = query.get("collection") or "protocols"
     source = query.get("source")
@@ -54,6 +55,7 @@ async def process_query(
         message=f"processing #{query_id}: {question[:80]}",
         query_id=query_id,
         user_id=query.get("user_id"),
+        tenant_id=tenant_id,
     )
 
     # ─── Run RAG ─────────────────────────────────────────────
@@ -72,6 +74,7 @@ async def process_query(
     try:
         await queries_repo.mark_completed(
             pool,
+            tenant_id,
             query_id,
             hits=result.hits_as_json(),
             synthesis=result.synthesis,
@@ -92,6 +95,7 @@ async def process_query(
         message=f"#{query_id} total={result.timings.total_ms}ms hits={len(result.hits)}",
         query_id=query_id,
         user_id=query.get("user_id"),
+        tenant_id=tenant_id,
         metadata={
             "hits_count": len(result.hits),
             "sources": result.sources,
@@ -108,7 +112,7 @@ async def process_query(
     # ─── Deliver (Telegram) ──────────────────────────────────
     if source == "telegram" and bot is not None:
         # Re-fetch canonical row so delivery sees exactly what was stored.
-        completed = await queries_repo.get_by_id(pool, query_id)
+        completed = await queries_repo.get_by_id(pool, tenant_id, query_id)
         if completed is not None:
             await delivery.send_answer(bot, completed)
 
@@ -125,10 +129,12 @@ async def _handle_failure(
     Record a failure, then requeue (if under cap) or give up + notify.
     """
     query_id = query["id"]
+    tenant_id = query["tenant_id"]
     tb = traceback.format_exc()
 
     retry_count = await queries_repo.mark_failed(
         pool,
+        tenant_id,
         query_id,
         error_message=f"{type(exc).__name__}: {exc}",
         error_traceback=tb,
@@ -141,15 +147,17 @@ async def _handle_failure(
         traceback=tb,
         query_id=query_id,
         user_id=query.get("user_id"),
+        tenant_id=tenant_id,
         metadata={"retry_count": retry_count, "max_retries": max_retries},
     )
 
     if retry_count < max_retries:
-        await queries_repo.requeue_for_retry(pool, query_id)
+        await queries_repo.requeue_for_retry(pool, tenant_id, query_id)
         await _log.warn(
             "query.requeued",
             message=f"#{query_id} failed (attempt {retry_count}/{max_retries}), requeued",
             query_id=query_id,
+            tenant_id=tenant_id,
         )
         return
 
@@ -158,6 +166,7 @@ async def _handle_failure(
         "query.gave_up",
         message=f"#{query_id} failed permanently after {retry_count} attempts",
         query_id=query_id,
+        tenant_id=tenant_id,
     )
 
     if query.get("source") == "telegram" and bot is not None:

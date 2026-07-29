@@ -16,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from church_assistant.bot.formatting import md2, score_emoji
-from church_assistant.bot.middleware.whitelist import USER_KEY
+from church_assistant.bot.middleware.whitelist import USER_KEY, TENANT_KEY
 from church_assistant.db import queries_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import rag
@@ -79,7 +79,8 @@ async def verbose_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     db_user = (context.user_data or {}).get(USER_KEY) or {}
 
     pool = await get_pool()
-    last = await queries_repo.get_last_completed_for_telegram(pool, chat_id)
+    tenant_id = (context.user_data or {}).get(TENANT_KEY)
+    last = await queries_repo.get_last_completed_for_telegram(pool, tenant_id, chat_id)
 
     await _log.info(
         "bot.verbose",

@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from church_assistant.bot.formatting import md2
-from church_assistant.bot.middleware.whitelist import USER_KEY
+from church_assistant.bot.middleware.whitelist import USER_KEY, TENANT_KEY
 from church_assistant.db import queries_repo, users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared.logger import Logger
@@ -46,9 +46,10 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     pool = await get_pool()
-    depth = await queries_repo.get_queue_depth(pool)
-    today = await queries_repo.get_stats_today(pool)
-    active_users = await users_repo.count_active(pool)
+    tenant_id = (context.user_data or {}).get(TENANT_KEY)
+    depth = await queries_repo.get_queue_depth(pool, tenant_id)
+    today = await queries_repo.get_stats_today(pool, tenant_id)
+    active_users = await users_repo.count_active(pool, tenant_id)
 
     await _log.info("bot.stats", message="/stats", user_id=db_user.get("id"))
 

@@ -57,6 +57,7 @@ async def process_job(
         await _log.warn(
             "ingestion.unexpected_status",
             message=f"job #{job['id']} in unexpected status {status!r}",
+            tenant_id=job.get("tenant_id"),
         )
 
 
@@ -72,15 +73,17 @@ async def _run_transcription(
     sequential: bool,
 ) -> None:
     job_id = job["id"]
+    tenant_id = job["tenant_id"]
     paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
 
     await _log.info(
         "ingestion.transcription.started",
         message=f"job #{job_id} ({job['meeting_date']}) diarization + transcription",
+        tenant_id=tenant_id,
     )
 
     async def progress(stage: str, note: str) -> None:
-        await jobs_repo.set_stage(pool, job_id, stage=stage, progress_note=note)
+        await jobs_repo.set_stage(pool, tenant_id, job_id, stage=stage, progress_note=note)
 
     try:
         await stages.run_transcription_phase(
@@ -91,11 +94,12 @@ async def _run_transcription(
         return
 
     speaker_count = stages.count_speakers(paths.speakers)
-    await jobs_repo.mark_awaiting_review(pool, job_id, speaker_count=speaker_count)
+    await jobs_repo.mark_awaiting_review(pool, tenant_id, job_id, speaker_count=speaker_count)
     await _log.info(
         "ingestion.awaiting_review",
         message=f"job #{job_id} transcribed ({speaker_count} speakers) — awaiting review",
         metadata={"speaker_count": speaker_count},
+        tenant_id=tenant_id,
     )
 
 
@@ -111,16 +115,18 @@ async def _run_analysis(
     auto_index: bool,
 ) -> None:
     job_id = job["id"]
+    tenant_id = job["tenant_id"]
     meeting_dir = Path(job["meeting_dir"])
     paths = resolve_paths(meeting_dir, job.get("audio_filename"))
 
     await _log.info(
         "ingestion.analysis.started",
         message=f"job #{job_id} ({job['meeting_date']}) merge → analyze → polish",
+        tenant_id=tenant_id,
     )
 
     async def progress(stage: str, note: str) -> None:
-        await jobs_repo.set_stage(pool, job_id, stage=stage, progress_note=note)
+        await jobs_repo.set_stage(pool, tenant_id, job_id, stage=stage, progress_note=note)
 
     # force=True for a speakers re-edit: regenerate artifacts in place so the
     # corrected names propagate to стенограма, protocol, and the Qdrant index.
@@ -135,11 +141,11 @@ async def _run_analysis(
         )
 
         if auto_index:
-            await jobs_repo.mark_indexing(pool, job_id)
+            await jobs_repo.mark_indexing(pool, tenant_id, job_id)
             await stages.run_index(meeting_dir, progress=progress, force=force)
-            await jobs_repo.mark_completed(pool, job_id, indexed=True)
+            await jobs_repo.mark_completed(pool, tenant_id, job_id, indexed=True)
         else:
-            await jobs_repo.mark_completed(pool, job_id, indexed=False)
+            await jobs_repo.mark_completed(pool, tenant_id, job_id, indexed=False)
     except Exception as e:
         await _handle_failure(
             pool, job, e, requeue_status="queued_analysis", max_retries=max_retries
@@ -150,6 +156,7 @@ async def _run_analysis(
         "ingestion.completed",
         message=f"job #{job_id} ({job['meeting_date']}) done (indexed={auto_index})",
         metadata={"indexed": auto_index, "polished": str(paths.polished)},
+        tenant_id=tenant_id,
     )
 
 
@@ -167,10 +174,12 @@ async def _handle_failure(
 ) -> None:
     """Record the failure, then requeue (if under cap) or give up permanently."""
     job_id = job["id"]
+    tenant_id = job["tenant_id"]
     tb = traceback.format_exc()
 
     retry_count = await jobs_repo.mark_failed(
         pool,
+        tenant_id,
         job_id,
         error_message=f"{type(exc).__name__}: {exc}",
         error_traceback=tb,
@@ -181,6 +190,7 @@ async def _handle_failure(
         error_type=type(exc).__name__,
         error_message=str(exc),
         traceback=tb,
+        tenant_id=tenant_id,
         metadata={
             "job_id": job_id,
             "meeting_date": job.get("meeting_date"),
@@ -191,15 +201,17 @@ async def _handle_failure(
     )
 
     if retry_count < max_retries:
-        await jobs_repo.requeue(pool, job_id, to_status=requeue_status)
+        await jobs_repo.requeue(pool, tenant_id, job_id, to_status=requeue_status)
         await _log.warn(
             "ingestion.requeued",
             message=f"job #{job_id} failed (attempt {retry_count}/{max_retries}), "
                     f"requeued → {requeue_status}",
+            tenant_id=tenant_id,
         )
         return
 
     await _log.error(
         "ingestion.gave_up",
         message=f"job #{job_id} failed permanently after {retry_count} attempts",
+        tenant_id=tenant_id,
     )

@@ -121,6 +121,7 @@ async def send_answer(bot: Bot, query_row: dict) -> bool:
             "bot.delivered",
             message=f"Delivered answer to chat_id={chat_id}",
             query_id=query_id,
+            tenant_id=query_row.get("tenant_id"),
         )
         return True
     except Exception as e:
@@ -129,6 +130,7 @@ async def send_answer(bot: Bot, query_row: dict) -> bool:
             error_message=f"Delivery failed: {e}",
             traceback="",
             query_id=query_id,
+            tenant_id=query_row.get("tenant_id"),
         )
         return False
 
@@ -162,6 +164,7 @@ async def send_failure(bot: Bot, query_row: dict) -> bool:
             "bot.failure_notified",
             message=f"Notified failure to chat_id={chat_id}",
             query_id=query_id,
+            tenant_id=query_row.get("tenant_id"),
         )
         return True
     except Exception as e:
@@ -170,5 +173,6 @@ async def send_failure(bot: Bot, query_row: dict) -> bool:
             error_message=f"Failure notice send failed: {e}",
             traceback="",
             query_id=query_id,
+            tenant_id=query_row.get("tenant_id"),
         )
         return False

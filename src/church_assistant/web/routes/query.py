@@ -31,6 +31,7 @@ from church_assistant.db.connection import get_pool
 from church_assistant.shared import rag
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
+from church_assistant.web.tenant import current_tenant
 
 
 router = APIRouter(prefix="/api")
@@ -77,10 +78,13 @@ async def query_endpoint(
 
     # ─── Insert pending ─────────────────────────────────────
     pool = await get_pool()
+    tenant_id = current_tenant(request)
+    log = Logger("web", tenant_id=tenant_id)
 
     try:
         query_id = await queries_repo.insert_pending(
             pool,
+            tenant_id,
             source="web",
             question=question,
             collection=collection,
@@ -96,7 +100,7 @@ async def query_endpoint(
             status_code=400,
         )
 
-    await _logger.info(
+    await log.info(
         "query.received",
         message=f"web query: {question[:80]}",
         query_id=query_id,
@@ -113,11 +117,12 @@ async def query_endpoint(
     except httpx.ConnectError as e:
         await queries_repo.mark_failed(
             pool,
+            tenant_id,
             query_id,
             error_message=f"Ollama unreachable: {e}",
             error_traceback=traceback.format_exc(),
         )
-        await _logger.error(
+        await log.error(
             "ollama.down",
             message=str(e),
             query_id=query_id,
@@ -137,11 +142,12 @@ async def query_endpoint(
     except httpx.HTTPError as e:
         await queries_repo.mark_failed(
             pool,
+            tenant_id,
             query_id,
             error_message=f"HTTP error: {e}",
             error_traceback=traceback.format_exc(),
         )
-        await _logger.error(
+        await log.error(
             "query.http_error",
             message=str(e),
             query_id=query_id,
@@ -160,11 +166,12 @@ async def query_endpoint(
         tb = traceback.format_exc()
         await queries_repo.mark_failed(
             pool,
+            tenant_id,
             query_id,
             error_message=str(e),
             error_traceback=tb,
         )
-        await _logger.record_error(
+        await log.record_error(
             error_type=type(e).__name__,
             error_message=str(e),
             traceback=tb,
@@ -183,6 +190,7 @@ async def query_endpoint(
     # ─── Save completed ──────────────────────────────────────
     await queries_repo.mark_completed(
         pool,
+        tenant_id,
         query_id,
         hits=result.hits_as_json(),
         synthesis=result.synthesis,
@@ -194,7 +202,7 @@ async def query_endpoint(
         total_time_ms=result.timings.total_ms,
     )
 
-    await _logger.info(
+    await log.info(
         "query.completed",
         message=f"total={result.timings.total_ms}ms, hits={len(result.hits)}",
         query_id=query_id,

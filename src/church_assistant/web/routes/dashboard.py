@@ -23,6 +23,7 @@ from church_assistant.db import logs_repo, queries_repo, users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import meetings_index
 from church_assistant.web.main import templates
+from church_assistant.web.tenant import current_tenant
 
 
 router = APIRouter()
@@ -37,16 +38,16 @@ router = APIRouter()
 _ACTIVE_STATUSES = ("pending", "processing", "failed")
 
 
-async def _panel_context(pool: Any) -> dict[str, Any]:
+async def _panel_context(pool: Any, tenant_id: int) -> dict[str, Any]:
     """Gather everything the refreshable panel needs, in one place."""
-    queue = await queries_repo.get_queue_depth(pool)
-    stats = await queries_repo.get_stats_today(pool)
+    queue = await queries_repo.get_queue_depth(pool, tenant_id)
+    stats = await queries_repo.get_stats_today(pool, tenant_id)
     health = await logs_repo.get_latest_health(pool)
-    users = await users_repo.list_active(pool)
-    errors = await logs_repo.list_unresolved_errors(pool, limit=20)
+    users = await users_repo.list_active(pool, tenant_id)
+    errors = await logs_repo.list_unresolved_errors(pool, tenant_id, limit=20)
 
     # Recent queries that are still actionable (pending/processing/failed).
-    recent = await queries_repo.list_recent(pool, limit=50)
+    recent = await queries_repo.list_recent(pool, tenant_id, limit=50)
     active = [q for q in recent if q["status"] in _ACTIVE_STATUSES]
 
     return {
@@ -76,7 +77,8 @@ def _render_panel(request: Request, ctx: dict[str, Any]) -> HTMLResponse:
 async def dashboard(request: Request):
     """Full dashboard page (sidebar + polling panel shell)."""
     pool = await get_pool()
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    ctx = await _panel_context(pool, tenant_id)
     ctx["meetings"] = meetings_index.list_all_summaries()
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
@@ -85,7 +87,8 @@ async def dashboard(request: Request):
 async def dashboard_panel(request: Request):
     """HTMX poll target — returns only the refreshable panel."""
     pool = await get_pool()
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)
 
 
@@ -97,8 +100,9 @@ async def dashboard_panel(request: Request):
 async def cancel_query(request: Request, query_id: int):
     """Cancel a pending/processing query."""
     pool = await get_pool()
-    await queries_repo.cancel(pool, query_id)
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    await queries_repo.cancel(pool, tenant_id, query_id)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)
 
 
@@ -106,8 +110,9 @@ async def cancel_query(request: Request, query_id: int):
 async def requeue_query(request: Request, query_id: int):
     """Reset a failed query back to pending for another attempt."""
     pool = await get_pool()
-    await queries_repo.requeue_for_retry(pool, query_id)
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    await queries_repo.requeue_for_retry(pool, tenant_id, query_id)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)
 
 
@@ -123,10 +128,11 @@ async def deactivate_user(request: Request, telegram_user_id: int):
     lock management out of the bot, so it's a no-op here.
     """
     pool = await get_pool()
-    target = await users_repo.get_by_telegram_id(pool, telegram_user_id)
+    tenant_id = current_tenant(request)
+    target = await users_repo.get_by_telegram_id(pool, tenant_id, telegram_user_id)
     if target is not None and target["role"] != "admin":
-        await users_repo.deactivate(pool, telegram_user_id)
-    ctx = await _panel_context(pool)
+        await users_repo.deactivate(pool, tenant_id, telegram_user_id)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)
 
 
@@ -134,6 +140,7 @@ async def deactivate_user(request: Request, telegram_user_id: int):
 async def resolve_error(request: Request, error_id: int):
     """Mark an open error as resolved."""
     pool = await get_pool()
-    await logs_repo.mark_error_resolved(pool, error_id)
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    await logs_repo.mark_error_resolved(pool, tenant_id, error_id)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)

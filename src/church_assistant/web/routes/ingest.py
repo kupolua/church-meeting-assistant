@@ -30,6 +30,7 @@ from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
+from church_assistant.web.tenant import current_tenant
 
 
 router = APIRouter()
@@ -50,11 +51,11 @@ ALLOWED_AUDIO_SUFFIXES = {
 # Context helpers
 # ─────────────────────────────────────────────────────────────
 
-async def _panel_context(pool: Any) -> dict[str, Any]:
+async def _panel_context(pool: Any, tenant_id: int) -> dict[str, Any]:
     """Everything the refreshable ingestion panel needs."""
-    depth = await jobs_repo.get_depth(pool)
-    active = await jobs_repo.list_active(pool)
-    recent = await jobs_repo.list_recent(pool, limit=20)
+    depth = await jobs_repo.get_depth(pool, tenant_id)
+    active = await jobs_repo.list_active(pool, tenant_id)
+    recent = await jobs_repo.list_recent(pool, tenant_id, limit=20)
     # "Done" list = terminal jobs (completed/failed/cancelled), newest first.
     done = [j for j in recent if j["status"] in ("completed", "failed", "cancelled")]
     return {"depth": depth, "active": active, "done": done}
@@ -83,7 +84,8 @@ def _requeue_target(job: dict[str, Any]) -> str:
 async def ingest_page(request: Request, error: Optional[str] = None, ok: Optional[str] = None):
     """Full ingestion page: upload form + self-polling job list."""
     pool = await get_pool()
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    ctx = await _panel_context(pool, tenant_id)
     ctx["meetings"] = meetings_index.list_all_summaries()
     ctx["error"] = error
     ctx["ok"] = ok
@@ -94,7 +96,8 @@ async def ingest_page(request: Request, error: Optional[str] = None, ok: Optiona
 async def ingest_panel(request: Request):
     """HTMX poll target — returns only the refreshable panel."""
     pool = await get_pool()
-    ctx = await _panel_context(pool)
+    tenant_id = current_tenant(request)
+    ctx = await _panel_context(pool, tenant_id)
     return _render_panel(request, ctx)
 
 
@@ -106,7 +109,8 @@ async def ingest_detail(request: Request, job_id: int):
     is int-typed — so the poll route above is unambiguous.)
     """
     pool = await get_pool()
-    job = await jobs_repo.get_by_id(pool, job_id)
+    tenant_id = current_tenant(request)
+    job = await jobs_repo.get_by_id(pool, tenant_id, job_id)
     if job is None:
         return RedirectResponse("/ingest?error=Job+не+знайдено", status_code=303)
 
@@ -156,9 +160,10 @@ async def ingest_upload(
         )
 
     pool = await get_pool()
+    tenant_id = current_tenant(request)
 
     # ─── Don't clobber an existing job for this date ─────────
-    existing = await jobs_repo.get_by_date(pool, date)
+    existing = await jobs_repo.get_by_date(pool, tenant_id, date)
     if existing is not None:
         return RedirectResponse(
             f"/ingest?error=Для+{date}+вже+є+job+(%23{existing['id']},+"
@@ -183,6 +188,7 @@ async def ingest_upload(
     # ─── Enqueue job ─────────────────────────────────────────
     job_id = await jobs_repo.insert_job(
         pool,
+        tenant_id,
         meeting_date=date,
         meeting_dir=str(meeting_dir),
         original_filename=src_name,
@@ -193,6 +199,7 @@ async def ingest_upload(
         "ingestion.uploaded",
         message=f"job #{job_id} ({date}) audio uploaded ({size_mb:.1f} MB): {src_name}",
         metadata={"job_id": job_id, "size_mb": round(size_mb, 1)},
+        tenant_id=tenant_id,
     )
 
     return RedirectResponse(
@@ -215,9 +222,10 @@ def _is_htmx(request: Request) -> bool:
 async def cancel_job(request: Request, job_id: int):
     """Cancel an active job (stops it being picked up; in-flight step still finishes)."""
     pool = await get_pool()
-    await jobs_repo.cancel(pool, job_id)
+    tenant_id = current_tenant(request)
+    await jobs_repo.cancel(pool, tenant_id, job_id)
     if _is_htmx(request):
-        return _render_panel(request, await _panel_context(pool))
+        return _render_panel(request, await _panel_context(pool, tenant_id))
     return RedirectResponse(f"/ingest/{job_id}", status_code=303)
 
 
@@ -225,11 +233,12 @@ async def cancel_job(request: Request, job_id: int):
 async def requeue_job(request: Request, job_id: int):
     """Retry a failed job from the phase it stopped at."""
     pool = await get_pool()
-    job = await jobs_repo.get_by_id(pool, job_id)
+    tenant_id = current_tenant(request)
+    job = await jobs_repo.get_by_id(pool, tenant_id, job_id)
     if job is not None and job["status"] == "failed":
-        await jobs_repo.requeue(pool, job_id, to_status=_requeue_target(job))
+        await jobs_repo.requeue(pool, tenant_id, job_id, to_status=_requeue_target(job))
     if _is_htmx(request):
-        return _render_panel(request, await _panel_context(pool))
+        return _render_panel(request, await _panel_context(pool, tenant_id))
     return RedirectResponse(f"/ingest/{job_id}", status_code=303)
 
 
@@ -246,7 +255,8 @@ async def speakers_editor(request: Request, job_id: int):
     flags, so the human can confirm or fix each name before analysis resumes.
     """
     pool = await get_pool()
-    job = await jobs_repo.get_by_id(pool, job_id)
+    tenant_id = current_tenant(request)
+    job = await jobs_repo.get_by_id(pool, tenant_id, job_id)
     if job is None:
         return RedirectResponse("/ingest?error=Job+не+знайдено", status_code=303)
     if job["status"] != "awaiting_review":
@@ -295,7 +305,8 @@ async def speakers_save(request: Request, job_id: int):
     to the label so no speaker is silently dropped.
     """
     pool = await get_pool()
-    job = await jobs_repo.get_by_id(pool, job_id)
+    tenant_id = current_tenant(request)
+    job = await jobs_repo.get_by_id(pool, tenant_id, job_id)
     if job is None:
         return RedirectResponse("/ingest?error=Job+не+знайдено", status_code=303)
     if job["status"] != "awaiting_review":
@@ -321,11 +332,12 @@ async def speakers_save(request: Request, job_id: int):
 
     speakers_util.save_speakers(paths.speakers, meta, new_mapping)
 
-    await jobs_repo.mark_queued_analysis(pool, job_id, speaker_count=len(new_mapping))
+    await jobs_repo.mark_queued_analysis(pool, tenant_id, job_id, speaker_count=len(new_mapping))
     await _logger.info(
         "ingestion.review_submitted",
         message=f"job #{job_id} ({job['meeting_date']}) speakers reviewed — queued for analysis",
         metadata={"job_id": job_id, "speaker_count": len(new_mapping)},
+        tenant_id=tenant_id,
     )
 
     return RedirectResponse(

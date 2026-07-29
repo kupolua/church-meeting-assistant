@@ -24,7 +24,7 @@ from church_assistant.bot.config import (
     MAX_QUESTION_LEN,
     MIN_QUESTION_LEN,
 )
-from church_assistant.bot.middleware.whitelist import USER_KEY
+from church_assistant.bot.middleware.whitelist import USER_KEY, TENANT_KEY
 from church_assistant.db import queries_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared.logger import Logger
@@ -63,6 +63,7 @@ async def query_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # The auth gate guarantees this exists for whitelisted users.
     db_user = (context.user_data or {}).get(USER_KEY) or {}
     user_id = db_user.get("id")
+    tenant_id = (context.user_data or {}).get(TENANT_KEY)
 
     pool = await get_pool()
 
@@ -70,6 +71,7 @@ async def query_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         query_id = await queries_repo.insert_pending(
             pool,
+            tenant_id,
             source="telegram",
             question=question,
             user_id=user_id,
@@ -84,6 +86,7 @@ async def query_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             error_message=str(e),
             traceback=tb,
             user_id=user_id,
+            tenant_id=tenant_id,
         )
         await message.reply_text(
             "⚠️ Не вдалося прийняти питання (проблема з базою). "
@@ -101,6 +104,7 @@ async def query_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "telegram_message_id": message.message_id,
             "length": len(question),
         },
+        tenant_id=tenant_id,
     )
 
     # ─── Immediate ack (reply to the question) ───────────────

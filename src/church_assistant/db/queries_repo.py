@@ -28,8 +28,8 @@ from church_assistant.db.tenant_context import tenant_cursor
 
 async def insert_pending(
     pool: AsyncConnectionPool,
-    *,
     tenant_id: int,
+    *,
     source: str,                          # 'web' | 'telegram'
     question: str,
     user_id: Optional[int] = None,

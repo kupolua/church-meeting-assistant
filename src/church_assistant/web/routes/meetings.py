@@ -24,6 +24,7 @@ from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
+from church_assistant.web.tenant import current_tenant
 
 
 router = APIRouter(prefix="/meetings")
@@ -81,7 +82,8 @@ async def meeting_detail(request: Request, date: str):
     # If a speakers re-edit is currently re-running, surface it (the page still
     # shows the old names until the new protocol is ready).
     pool = await get_pool()
-    active_job = await jobs_repo.get_by_date(pool, date)
+    tenant_id = current_tenant(request)
+    active_job = await jobs_repo.get_by_date(pool, tenant_id, date)
     reprocessing = (
         active_job is not None and active_job["status"] in jobs_repo.ACTIVE_STATUSES
     )
@@ -212,9 +214,10 @@ async def save_speakers(request: Request, date: str):
         )
 
     pool = await get_pool()
+    tenant_id = current_tenant(request)
 
     # Guard: don't re-run while an ingestion job for this meeting is already active.
-    existing = await jobs_repo.get_by_date(pool, date)
+    existing = await jobs_repo.get_by_date(pool, tenant_id, date)
     if existing is not None and existing["status"] in jobs_repo.ACTIVE_STATUSES:
         return RedirectResponse(
             f"/meetings/{date}?error=Зустріч+уже+обробляється+"
@@ -234,6 +237,7 @@ async def save_speakers(request: Request, date: str):
     audio_path = _find_audio(date)
     job_id = await jobs_repo.enqueue_reprocess(
         pool,
+        tenant_id,
         meeting_date=date,
         meeting_dir=str(folder.resolve()),
         audio_filename=audio_path.name if audio_path else None,
@@ -244,6 +248,7 @@ async def save_speakers(request: Request, date: str):
         "meeting.speakers_reprocess",
         message=f"meeting {date} speakers edited → full re-run queued (job #{job_id})",
         metadata={"job_id": job_id, "meeting_date": date, "speaker_count": len(new_mapping)},
+        tenant_id=tenant_id,
     )
 
     return RedirectResponse(
@@ -336,7 +341,8 @@ async def run_analysis(request: Request, date: str):
         )
 
     pool = await get_pool()
-    existing = await jobs_repo.get_by_date(pool, date)
+    tenant_id = current_tenant(request)
+    existing = await jobs_repo.get_by_date(pool, tenant_id, date)
     if existing is not None and existing["status"] in jobs_repo.ACTIVE_STATUSES:
         return RedirectResponse(
             f"/meetings/{date}?error=Зустріч+уже+обробляється+(job+%23{existing['id']})",
@@ -369,6 +375,7 @@ async def run_analysis(request: Request, date: str):
 
     job_id = await jobs_repo.enqueue_reprocess(
         pool,
+        tenant_id,
         meeting_date=date,
         meeting_dir=str(folder.resolve()),
         audio_filename=audio_name,
@@ -384,6 +391,7 @@ async def run_analysis(request: Request, date: str):
             "changes": len(changes), "new_profiles": new_profiles,
             "profile_warnings": profile_warnings,
         },
+        tenant_id=tenant_id,
     )
 
     msg = f"Застосовано+змін:+{len(changes)}"

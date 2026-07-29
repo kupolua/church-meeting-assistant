@@ -23,13 +23,15 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from church_assistant.db import users_repo
 from church_assistant.db.connection import get_pool
+from church_assistant.db.tenant_context import resolve_tenant_for_telegram
 from church_assistant.shared.logger import Logger
 
 
 _log = Logger(process="bot")
 
-# Key under which the authenticated DB user row is cached per-user.
+# Keys under which the authenticated context is cached per-user.
 USER_KEY = "db_user"
+TENANT_KEY = "tenant_id"
 
 
 async def auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -57,9 +59,14 @@ async def auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raise ApplicationHandlerStop
 
     pool = await get_pool()
-    db_user = await users_repo.get_by_telegram_id(pool, user.id)
+    # Bootstrap: which church (tenant) is this user on? (bypasses RLS)
+    tenant_id = await resolve_tenant_for_telegram(pool, user.id)
+    db_user = (
+        await users_repo.get_by_telegram_id(pool, tenant_id, user.id)
+        if tenant_id is not None else None
+    )
 
-    if db_user is None or not db_user.get("is_active", False):
+    if tenant_id is None or db_user is None or not db_user.get("is_active", False):
         # Silent ignore — do NOT reveal the bot exists to strangers.
         await _log.warn(
             "bot.unauthorized",
@@ -75,5 +82,6 @@ async def auth_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         raise ApplicationHandlerStop
 
-    # Authorized — cache the row for downstream handlers, then fall through.
+    # Authorized — cache tenant + row for downstream handlers, then fall through.
     context.user_data[USER_KEY] = db_user
+    context.user_data[TENANT_KEY] = tenant_id

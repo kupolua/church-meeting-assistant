@@ -39,6 +39,7 @@ async def cmd_add(args: argparse.Namespace) -> int:
         try:
             user_id = await users_repo.add_user(
                 pool,
+                args.tenant,
                 telegram_user_id=args.telegram_id,
                 full_name=args.name,
                 role=args.role,
@@ -53,7 +54,7 @@ async def cmd_add(args: argparse.Namespace) -> int:
             print(f"❌ Invalid input: {e}", file=sys.stderr)
             return 2
 
-        user = await users_repo.get_by_id(pool, user_id)
+        user = await users_repo.get_by_id(pool, args.tenant, user_id)
         assert user is not None
 
         print(f"✓ User added:")
@@ -75,7 +76,7 @@ async def cmd_list(args: argparse.Namespace) -> int:
     """List all active users."""
     pool = await get_pool()
     try:
-        users = await users_repo.list_active(pool)
+        users = await users_repo.list_active(pool, args.tenant)
 
         if not users:
             print("(no active users)")
@@ -98,7 +99,7 @@ async def cmd_deactivate(args: argparse.Namespace) -> int:
     """Deactivate a user (soft delete)."""
     pool = await get_pool()
     try:
-        updated = await users_repo.deactivate(pool, args.telegram_id)
+        updated = await users_repo.deactivate(pool, args.tenant, args.telegram_id)
         if not updated:
             print(f"❌ No user found with telegram_user_id={args.telegram_id}",
                   file=sys.stderr)
@@ -113,7 +114,7 @@ async def cmd_reactivate(args: argparse.Namespace) -> int:
     """Re-activate a previously deactivated user."""
     pool = await get_pool()
     try:
-        updated = await users_repo.reactivate(pool, args.telegram_id)
+        updated = await users_repo.reactivate(pool, args.tenant, args.telegram_id)
         if not updated:
             print(f"❌ No user found with telegram_user_id={args.telegram_id}",
                   file=sys.stderr)
@@ -151,6 +152,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Common
+    p.add_argument(
+        "--tenant", type=int, default=1,
+        help="Tenant id (church). Default 1 (the default church).",
+    )
     p.add_argument(
         "--telegram-id", type=int,
         help="Numeric Telegram user ID (from message.from.id)",
