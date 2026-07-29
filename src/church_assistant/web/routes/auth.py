@@ -33,7 +33,7 @@ from church_assistant.db import (
 from church_assistant.db.connection import get_pool
 from church_assistant.db.tenant_context import resolve_tenant_for_web_user
 from church_assistant.shared.logger import Logger
-from church_assistant.web import auth, security
+from church_assistant.web import auth, headers, security
 from church_assistant.web.main import templates
 
 
@@ -240,7 +240,7 @@ async def login_submit(
     await web_sessions_repo.purge_expired(pool)
 
     response = RedirectResponse(next_url, status_code=303)
-    auth.set_session_cookie(response, token)
+    auth.set_session_cookie(response, token, secure=headers.cookie_secure(request))
     return response
 
 

@@ -1,0 +1,65 @@
+{% if error %}
+<p role="alert" class="admin-msg is-error">⚠️ {{ error }}</p>
+{% elif ok %}
+<p role="status" class="admin-msg is-ok">✓ {{ ok }}</p>
+{% endif %}
+
+{% set live = sessions | selectattr('revoked_at', 'none') | list %}
+
+<section class="dash-section">
+    <h5 class="dash-section-label">Активні сесії</h5>
+    <table class="dash-table">
+        <thead>
+            <tr><th>пристрій</th><th>адреса</th><th>остання активність</th><th>діє до</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for s in sessions %}
+            {% set is_current = s.id == me.session_id %}
+            {% set is_live = s.revoked_at is none %}
+            {% if is_live or loop.index0 < 10 %}
+            <tr class="{{ '' if is_live else 'is-disabled' }}">
+                <td>
+                    {% if is_current %}<strong>цей браузер</strong>{% else %}
+                    <small>{{ (s.user_agent or 'невідомий пристрій')[:70] }}</small>
+                    {% endif %}
+                </td>
+                <td><small>{{ s.ip or '—' }}</small></td>
+                <td><small>{{ s.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</small></td>
+                <td>
+                    <small>
+                        {% if not is_live %}закрито{% else %}{{ s.expires_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+                    </small>
+                </td>
+                <td class="dash-actions">
+                    {% if is_live %}
+                    <button class="dash-btn is-cancel"
+                            hx-post="/account/sessions/{{ s.id }}/revoke"
+                            hx-target="#account-sessions-panel" hx-swap="innerHTML"
+                            hx-confirm="{% if is_current %}Закрити поточну сесію? Вас поверне на сторінку входу.{% else %}Закрити цю сесію?{% endif %}">
+                        ⊘ закрити
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if live | length > 1 %}
+    <p>
+        <button class="dash-btn"
+                hx-post="/account/sessions/revoke-others"
+                hx-target="#account-sessions-panel" hx-swap="innerHTML"
+                hx-confirm="Закрити всі інші сесії ({{ live | length - 1 }})? Цей браузер лишиться.">
+            ⏻ Вийти на всіх інших пристроях
+        </button>
+    </p>
+    {% endif %}
+
+    <p><small>
+        Сесія діє щонайбільше {{ ttl_hours }} год від входу{% if idle_hours %}
+        і закривається після {{ idle_hours }} год без активності{% endif %}.
+        Якщо бачите незнайомий пристрій — закрийте його й змініть пароль.
+    </small></p>
+</section>

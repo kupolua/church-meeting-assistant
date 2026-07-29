@@ -18,7 +18,8 @@ SETUP (once per run — recreates the sandbox from scratch):
     for f in schema.sql migrations/003_multitenancy.sql \
              migrations/004_app_role_and_claim.sql \
              migrations/005_mt_fixups.sql migrations/006_web_auth.sql \
-             migrations/007_system_tenant.sql migrations/008_web_sessions.sql; do
+             migrations/007_system_tenant.sql migrations/008_web_sessions.sql \
+             migrations/009_session_idle_timeout.sql; do
       $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -q -v ON_ERROR_STOP=1 \
         < src/church_assistant/db/$f
     done
@@ -705,6 +706,172 @@ def test_sessions() -> None:
     ok("resolver: own church only; expired, unknown and suspended-church → nobody")
 
 
+# ─────────────────────────────────────────────────────────────
+# 9. Idle timeout, Secure cookie, and the self-service sessions page
+# ─────────────────────────────────────────────────────────────
+
+def test_hardening() -> None:
+    print("\n9. Idle timeout / Secure cookie / «мої сесії»")
+    print("-" * 66)
+
+    import asyncio as _asyncio
+    from fastapi.testclient import TestClient
+    from psycopg_pool import AsyncConnectionPool
+    from church_assistant.db import web_sessions_repo, web_users_repo
+    from church_assistant.db.connection import _build_conninfo
+    from church_assistant.web import headers
+    from church_assistant.web.main import app
+
+    async def _db(fn):
+        pool = AsyncConnectionPool(conninfo=_build_conninfo(), min_size=1,
+                                   max_size=2, open=False)
+        await pool.open()
+        try:
+            return await fn(pool)
+        finally:
+            await pool.close()
+
+    # ─── Idle timeout ────────────────────────────────────────
+    async def idle_rules(pool):
+        u = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
+        token = security.new_session_token()
+        h = security.hash_token(token)
+        sid = await web_sessions_repo.create(
+            pool, TENANT_A, web_user_id=int(u["id"]), token_hash=h,
+            ttl_seconds=12 * 3600,        # absolute cap: far away
+        )
+        # Fresh session: fine under any idle window.
+        assert await web_sessions_repo.resolve(pool, h, idle_seconds=3600)
+
+        # Age last_seen_at past the window without touching expires_at, so the
+        # ONLY thing that can reject it is the idle rule.
+        async with tenant_cursor(pool, TENANT_A) as cur:
+            await cur.execute(
+                "UPDATE web_sessions SET last_seen_at = NOW() - interval '3 hours' "
+                "WHERE id = %s", (sid,),
+            )
+        assert await web_sessions_repo.resolve(pool, h, idle_seconds=2 * 3600) is None
+        # …and the same row is still valid when the idle check is off, which
+        # proves the absolute cap did not quietly do the work.
+        assert await web_sessions_repo.resolve(pool, h, idle_seconds=0) is not None
+        return sid
+
+    _asyncio.run(_db(idle_rules))
+    ok("idle timeout rejects an untouched session; absolute cap unaffected")
+
+    # The two limits are independent: expiry fires even inside the idle window.
+    async def absolute_still_applies(pool):
+        u = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
+        token = security.new_session_token()
+        h = security.hash_token(token)
+        await web_sessions_repo.create(
+            pool, TENANT_A, web_user_id=int(u["id"]), token_hash=h,
+            ttl_seconds=-60,              # already past the absolute cap
+        )
+        assert await web_sessions_repo.resolve(pool, h, idle_seconds=24 * 3600) is None
+
+    _asyncio.run(_db(absolute_still_applies))
+    ok("absolute cap still fires for a session used seconds ago")
+
+    # Misconfiguration is called out rather than silently logging people out.
+    import os as _os
+    saved = _os.environ.get("WEB_SESSION_IDLE_TIMEOUT")
+    try:
+        import importlib
+        _os.environ["WEB_SESSION_IDLE_TIMEOUT"] = "30"
+        importlib.reload(security)
+        assert any("close to the" in p for p in security.check_session_config())
+        _os.environ["WEB_SESSION_IDLE_TIMEOUT"] = str(24 * 3600)
+        importlib.reload(security)
+        assert any("never does anything" in p for p in security.check_session_config())
+    finally:
+        if saved is None:
+            _os.environ.pop("WEB_SESSION_IDLE_TIMEOUT", None)
+        else:
+            _os.environ["WEB_SESSION_IDLE_TIMEOUT"] = saved
+        importlib.reload(security)
+    ok("startup warns on an idle window that is too short, or pointless")
+
+    # ─── Secure cookie ───────────────────────────────────────
+    assert security.cookie_secure_for("https") is True
+    assert security.cookie_secure_for("http") is False       # auto
+    _os.environ["WEB_COOKIE_SECURE"] = "true"
+    assert security.cookie_secure_for("http") is True        # forced (TLS proxy)
+    assert headers.hsts_enabled() is True
+    _os.environ["WEB_COOKIE_SECURE"] = "false"
+    assert security.cookie_secure_for("https") is False      # explicitly off
+    assert headers.hsts_enabled() is False
+    _os.environ.pop("WEB_COOKIE_SECURE")
+    ok("Secure flag follows scheme, and can be forced on/off for a TLS proxy")
+
+    # ─── Live: headers, and the self-service page ────────────
+    with TestClient(app, follow_redirects=False) as client:
+        r = client.get("/login")
+        assert r.headers.get("X-Content-Type-Options") == "nosniff"
+        assert r.headers.get("X-Frame-Options") == "DENY"
+        assert "Strict-Transport-Security" not in r.headers   # plain http
+        ok("baseline headers on every response; no HSTS over plain http")
+
+        r = client.get("/dashboard")     # anonymous → redirect from middleware
+        assert r.status_code == 303 and r.headers.get("X-Frame-Options") == "DENY"
+        ok("headers also on middleware responses that never reach a handler")
+
+        # A member — not just an admin — can manage their own sessions.
+        r = client.post("/login", data={"username": "borys", "password": PASSWORD_B})
+        assert r.status_code == 303
+        page = client.get("/account/sessions")
+        assert page.status_code == 200 and "цей браузер" in page.text
+        assert "/admin/users" not in page.text        # still not an admin
+        ok("member reaches /account/sessions (no admin role needed)")
+
+        # A second sign-in for the same account, then "sign out others".
+        # Clear borys's earlier sessions first (section 8 left some live) so the
+        # count below is exact rather than "whatever accumulated".
+        assert client.post("/logout").status_code == 303
+
+        async def clear_borys(pool):
+            u = await web_users_repo.get_by_username(pool, TENANT_B, "borys")
+            await web_sessions_repo.revoke_all_for_user(pool, TENANT_B, int(u["id"]))
+        _asyncio.run(_db(clear_borys))
+
+        client.cookies.clear()
+        client.post("/login", data={"username": "borys", "password": PASSWORD_B})
+        first = client.cookies[security.SESSION_COOKIE]
+        client.cookies.clear()
+        client.post("/login", data={"username": "borys", "password": PASSWORD_B})
+        second = client.cookies[security.SESSION_COOKIE]
+
+        r = client.post("/account/sessions/revoke-others")
+        assert r.status_code == 200 and "Закрито інших сесій: 1" in r.text, r.text[:300]
+        ok("«вийти на всіх інших» closes the others and keeps this one")
+
+        assert client.get("/dashboard").status_code == 200       # still signed in
+        client.cookies.set(security.SESSION_COOKIE, first)
+        assert client.get("/dashboard").status_code == 303       # the other one died
+        ok("current session survives; the other browser is signed out")
+
+        # One member must not close another member's session.
+        client.cookies.clear()
+        client.cookies.set(security.SESSION_COOKIE, second)
+        mine = client.get("/account/sessions").text
+        import re as _re
+        my_ids = {int(m) for m in _re.findall(r"/account/sessions/(\d+)/revoke", mine)}
+
+        async def anna_session(pool):
+            u = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
+            token = security.new_session_token()
+            return await web_sessions_repo.create(
+                pool, TENANT_A, web_user_id=int(u["id"]),
+                token_hash=security.hash_token(token), ttl_seconds=600,
+            )
+
+        foreign = _asyncio.run(_db(anna_session))
+        assert foreign not in my_ids
+        r = client.post(f"/account/sessions/{foreign}/revoke")
+        assert "не знайдено" in r.text
+        ok("cannot close someone else's session by id (ownership checked)")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -740,6 +907,7 @@ def main() -> int:
         test_http()              # owns its pool via the app's lifespan
         test_admin_ui()          # ditto
         test_sessions()
+        test_hardening()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

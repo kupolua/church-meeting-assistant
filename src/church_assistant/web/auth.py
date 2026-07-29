@@ -83,15 +83,22 @@ class SessionUser:
 # Cookie helpers
 # ─────────────────────────────────────────────────────────────
 
-def set_session_cookie(response: Response, token: str) -> None:
-    """Hand the browser a signed pointer to its web_sessions row."""
+def set_session_cookie(response: Response, token: str, *, secure: bool) -> None:
+    """
+    Hand the browser a signed pointer to its web_sessions row.
+
+    `secure` is decided per request from the scheme (security.cookie_secure_for)
+    rather than fixed at import: the same build runs on plain HTTP on a church
+    LAN and behind TLS on the shared server, and hard-coding either one makes
+    the other either impossible to log into or quietly insecure.
+    """
     response.set_cookie(
         security.SESSION_COOKIE,
         security.sign_session({"sid": token}),
         max_age=security.SESSION_TTL_SECONDS,
         httponly=True,          # not readable from JS → XSS can't lift the session
         samesite="lax",         # blocks cross-site POSTs while keeping normal nav
-        secure=False,           # served over plain HTTP on the LAN; flip with TLS
+        secure=secure,
         path="/",
     )
 
@@ -120,7 +127,11 @@ async def read_session(request: Request) -> Optional[SessionUser]:
     if token is None:
         return None
     pool = await get_pool()
-    row = await web_sessions_repo.resolve(pool, security.hash_token(token))
+    row = await web_sessions_repo.resolve(
+        pool,
+        security.hash_token(token),
+        idle_seconds=security.SESSION_IDLE_SECONDS,
+    )
     if row is None:
         return None
     return SessionUser.from_row(row)

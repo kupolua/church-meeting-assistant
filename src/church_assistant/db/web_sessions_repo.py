@@ -86,15 +86,22 @@ async def create(
 # ─────────────────────────────────────────────────────────────
 
 async def resolve(
-    pool: AsyncConnectionPool, token_hash: str,
+    pool: AsyncConnectionPool,
+    token_hash: str,
+    *,
+    idle_seconds: int = 0,
 ) -> Optional[dict[str, Any]]:
     """
     Who, if anyone, does this token authorize right now? None if it doesn't.
 
-    None covers every reason at once — unknown, revoked, expired, account
-    disabled, church suspended — and deliberately does not distinguish them: the
-    caller's response is the same in all cases, and the difference is not the
-    browser's business.
+    None covers every reason at once — unknown, revoked, expired, idle too long,
+    account disabled, church suspended — and deliberately does not distinguish
+    them: the caller's response is the same in all cases, and the difference is
+    not the browser's business.
+
+    `idle_seconds` is the operator's idle window (0 = no idle limit); the
+    absolute cap is baked into each row's expires_at at sign-in. Both are
+    checked inside resolve_web_session, never here.
 
     The returned role and full_name are read live, so a demotion or a rename
     takes effect on the next request rather than at the next sign-in.
@@ -104,7 +111,8 @@ async def resolve(
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT * FROM resolve_web_session(%s)", (token_hash,)
+                "SELECT * FROM resolve_web_session(%s, %s)",
+                (token_hash, int(idle_seconds)),
             )
             row = await cur.fetchone()
             return dict(row) if row else None

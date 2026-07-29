@@ -42,7 +42,8 @@
         {% if _user %}
         <div class="top-nav-user">
             <span class="top-nav-tenant" title="Церква (tenant)">⛪ {{ _user.tenant_slug }}</span>
-            <span class="top-nav-who" title="{{ _user.username }}">{{ _user.full_name or _user.username }}</span>
+            <a href="/account/sessions" class="top-nav-who"
+               title="{{ _user.username }} — мої сесії">{{ _user.full_name or _user.username }}</a>
             <form method="post" action="/logout">
                 <button type="submit" class="top-nav-logout">Вийти</button>
             </form>

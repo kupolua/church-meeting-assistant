@@ -1353,6 +1353,12 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
 
 .top-nav-who {
     color: #cdd5e6;
+    text-decoration: none;
+}
+
+.top-nav-who:hover {
+    color: #fff;
+    text-decoration: underline;
 }
 
 .top-nav-user form {

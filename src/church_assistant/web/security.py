@@ -58,13 +58,74 @@ SALT_BYTES = 16
 SCRYPT_MAXMEM = 128 * SCRYPT_N * SCRYPT_R * 2
 
 SESSION_COOKIE = "cma_session"
-# 12 h — long enough for a working day, short enough that a forgotten open
-# browser doesn't stay authorized indefinitely.
+
+# Two independent limits, both enforced in resolve_web_session():
+#
+#   SESSION_TTL_SECONDS  — ABSOLUTE cap, measured from sign-in and never
+#       extended. A session dies at this point however actively it is used.
+#   SESSION_IDLE_SECONDS — idle timeout, measured from last use. Covers the case
+#       the absolute cap cannot: someone walks away from a shared machine.
+#
+# The idle window must stay well above web_sessions_repo.TOUCH_INTERVAL_SECONDS
+# (last_seen_at is refreshed at most that often, so a shorter window would
+# expire sessions that are actually in use). 0 disables the idle check.
 SESSION_TTL_SECONDS = int(os.getenv("WEB_SESSION_TTL", str(12 * 3600)))
+SESSION_IDLE_SECONDS = int(os.getenv("WEB_SESSION_IDLE_TIMEOUT", str(2 * 3600)))
 
 
 class SecretKeyMissing(RuntimeError):
     """WEB_SECRET_KEY is not configured — refuse to run with a guessable key."""
+
+
+def check_session_config() -> list[str]:
+    """
+    Config problems worth saying out loud at startup (empty list = fine).
+
+    Warnings rather than a refusal to start: a mistuned timeout logs people out
+    too often, which is annoying and self-announcing — unlike a missing secret
+    key, which is silent and unsafe and therefore does abort.
+    """
+    from church_assistant.db.web_sessions_repo import TOUCH_INTERVAL_SECONDS
+
+    problems: list[str] = []
+    if SESSION_IDLE_SECONDS and SESSION_IDLE_SECONDS <= TOUCH_INTERVAL_SECONDS * 5:
+        problems.append(
+            f"WEB_SESSION_IDLE_TIMEOUT={SESSION_IDLE_SECONDS}s is close to the "
+            f"{TOUCH_INTERVAL_SECONDS}s last_seen_at refresh interval — active "
+            f"users will be signed out mid-session. Use hours."
+        )
+    if SESSION_IDLE_SECONDS and SESSION_IDLE_SECONDS >= SESSION_TTL_SECONDS:
+        problems.append(
+            f"WEB_SESSION_IDLE_TIMEOUT={SESSION_IDLE_SECONDS}s >= "
+            f"WEB_SESSION_TTL={SESSION_TTL_SECONDS}s — the absolute cap always "
+            f"fires first, so the idle timeout never does anything."
+        )
+    return problems
+
+
+def cookie_secure_for(scheme: str) -> bool:
+    """
+    Should the session cookie carry the Secure flag for a request on `scheme`?
+
+    WEB_COOKIE_SECURE:
+        auto (default) — Secure exactly when the request arrived over https.
+        true           — always. Correct behind a TLS proxy that this app cannot
+                         see through; a plain-http client then cannot log in AT
+                         ALL, which is the intended failure (better than sending
+                         a session cookie in the clear).
+        false          — never. The LAN/HTTP setup this project ships with.
+
+    'auto' is honest only if the app actually knows the outward scheme: behind a
+    reverse proxy that means running uvicorn with --proxy-headers (and
+    --forwarded-allow-ips), otherwise every request looks like plain http and
+    the flag silently never appears. That is precisely why 'true' exists.
+    """
+    raw = os.getenv("WEB_COOKIE_SECURE", "auto").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return scheme == "https"
 
 
 def _b64e(raw: bytes) -> str:

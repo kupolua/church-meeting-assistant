@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Мої сесії — Church Meeting Assistant{% endblock %}
+
+{% block main %}
+<article class="dashboard-page">
+    <header class="dashboard-header">
+        <h1>🔐 Мої сесії</h1>
+        <p><small>
+            Де ви зараз увійшли під логіном <strong>{{ me.username }}</strong>.
+            Закриття сесії діє одразу — з наступного запиту той браузер
+            повертає на сторінку входу.
+        </small></p>
+    </header>
+
+    {# No polling: the list only changes when someone acts on it, and a refresh
+       mid-click would swap the row out from under the confirm dialog. #}
+    <div id="account-sessions-panel">
+        {% include "partials/account_sessions_panel.html" %}
+    </div>
+</article>
+{% endblock %}

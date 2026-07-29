@@ -9,6 +9,7 @@ Run with:
 
 from __future__ import annotations
 
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from fastapi.templating import Jinja2Templates
 
 from church_assistant.db.connection import close_pool, get_pool
 from church_assistant.web.auth import AuthMiddleware
-from church_assistant.web.security import get_secret_key
+from church_assistant.web.headers import SecurityHeadersMiddleware
+from church_assistant.web.security import check_session_config, get_secret_key
 
 
 # ─────────────────────────────────────────────────────────────
@@ -47,6 +49,8 @@ async def lifespan(app: FastAPI):
     # session cookie would be forgeable, and a forged cookie means a forged
     # tenant_id — i.e. one church reading another's protocols.
     get_secret_key()
+    for problem in check_session_config():
+        print(f"[config] WARNING: {problem}", file=sys.stderr, flush=True)
     await get_pool()
     yield
     await close_pool()
@@ -69,12 +73,17 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # because a request without a session has no tenant and must not reach a repo.
 app.add_middleware(AuthMiddleware)
 
+# Added last → runs OUTERMOST, so the headers land on everything, including the
+# redirects and 401s AuthMiddleware returns without calling a handler.
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 # ─────────────────────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────────────────────
 
 from church_assistant.web.routes import (  # noqa: E402
+    account,
     admin,
     auth,
     home,
@@ -87,6 +96,7 @@ from church_assistant.web.routes import (  # noqa: E402
 )
 
 app.include_router(auth.router)
+app.include_router(account.router)
 app.include_router(admin.router)
 app.include_router(home.router)
 app.include_router(meetings.router)
