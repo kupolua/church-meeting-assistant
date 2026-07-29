@@ -57,9 +57,10 @@ GEMMA_HOST = "http://localhost:11434"
 SCORE_GOOD = 0.55
 SCORE_OK = 0.40
 
-# Rerank scores have different distribution (0-1 generally)
-RERANK_SCORE_GOOD = 0.50
-RERANK_SCORE_OK = 0.20
+# bge-reranker-v2-m3 sigmoid scores: ~0.65+ confidently relevant, ~0.35-0.65
+# moderate, <0.35 weak. (First-pass calibration — retune on real queries.)
+RERANK_SCORE_GOOD = 0.65
+RERANK_SCORE_OK = 0.35
 
 
 # ----- Logging -----

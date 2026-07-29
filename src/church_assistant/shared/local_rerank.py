@@ -11,34 +11,63 @@ to match the previous rerank_score semantics used by the UI.
 
 Config (env):
     RERANK_MODEL   default 'BAAI/bge-reranker-v2-m3'
-    RERANK_DEVICE  default 'cpu'  ('mps' on Apple Silicon / 'cuda' if available)
+    RERANK_DEVICE  default 'auto'  → mps (Apple Silicon) / cuda / cpu, whichever
+                   is available. Set explicitly to force ('cpu' | 'mps' | 'cuda').
     RERANK_MAX_LEN default 512
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Optional
 
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_DEVICE = os.getenv("RERANK_DEVICE", "cpu")
+RERANK_DEVICE = os.getenv("RERANK_DEVICE", "auto")
 RERANK_MAX_LEN = int(os.getenv("RERANK_MAX_LEN", "512"))
 
+_std = logging.getLogger("church_assistant.rerank")
 _model = None
 _lock = threading.Lock()
 
 
+def _resolve_device(pref: str) -> str:
+    """Resolve 'auto' → mps / cuda / cpu; honor an explicit choice as-is."""
+    if pref and pref != "auto":
+        return pref
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _load(device: str):
+    from sentence_transformers import CrossEncoder  # heavy: lazy
+    return CrossEncoder(RERANK_MODEL, max_length=RERANK_MAX_LEN, device=device)
+
+
 def _get_model():
-    """Load the CrossEncoder once (thread-safe lazy singleton)."""
+    """Load the CrossEncoder once (thread-safe lazy singleton), with cpu fallback."""
     global _model
     if _model is None:
         with _lock:
             if _model is None:
-                from sentence_transformers import CrossEncoder  # heavy: lazy
-                _model = CrossEncoder(
-                    RERANK_MODEL, max_length=RERANK_MAX_LEN, device=RERANK_DEVICE
-                )
+                device = _resolve_device(RERANK_DEVICE)
+                try:
+                    _model = _load(device)
+                    _std.info("reranker loaded on %s", device)
+                except Exception as e:
+                    if device != "cpu":
+                        _std.warning("reranker on %s failed (%s) — falling back to cpu", device, e)
+                        _model = _load("cpu")
+                    else:
+                        raise
     return _model
 
 

@@ -67,8 +67,10 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 # (kept for downstream UI to show green/yellow/dim)
 SCORE_GOOD = 0.55
 SCORE_OK = 0.40
-RERANK_SCORE_GOOD = 0.50
-RERANK_SCORE_OK = 0.20
+# bge-reranker-v2-m3 sigmoid scores: ~0.65+ confidently relevant, ~0.35-0.65
+# moderate, <0.35 weak. (First-pass calibration — retune on real queries.)
+RERANK_SCORE_GOOD = 0.65
+RERANK_SCORE_OK = 0.35
 
 
 # ─────────────────────────────────────────────────────────────
