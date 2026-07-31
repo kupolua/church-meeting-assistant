@@ -85,9 +85,18 @@
         <h4>Стенограма{% if detail.transcript %} ({{ detail.transcript | length }} реплік){% endif %}</h4>
 
         {% if detail.transcript %}
-        {# pending speaker-change queue + "run analysis" button (HTMX target) #}
+        {# pending speaker-change queue + "run analysis" button (HTMX target).
+           The partial builds its URLs from `date`, which this page calls
+           `current_date` — bind it explicitly rather than relying on the route
+           to happen to pass both names. It did not, and Jinja renders an
+           undefined variable as empty, so the form posted to
+           "/meetings//run-analysis" → 404. Only on a full page load: the HTMX
+           re-render passes `date` itself, so the button worked right up until
+           the page was reloaded. #}
         <div id="speaker-review-panel">
-            {% include "partials/speaker_review_panel.html" %}
+            {% with date = current_date %}
+                {% include "partials/speaker_review_panel.html" %}
+            {% endwith %}
         </div>
 
         <details class="transcript-details">
