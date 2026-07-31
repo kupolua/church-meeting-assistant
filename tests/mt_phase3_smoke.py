@@ -910,6 +910,14 @@ def test_hardening() -> None:
         for pattern, what in (
             (r'(src|href)="https?://', "external origin (CDN)"),
             (r"\bon(click|change|submit|input|load)=", "inline event handler"),
+            # A <script> with no src= is an inline block. This one is the
+            # reason the check exists in its current form: the first version
+            # listed <style> and forgot <script>, and three inline blocks
+            # shipped — the meeting page's timestamp links are BUILT by one of
+            # them, so under the CSP they stopped appearing at all, with
+            # nothing in any log to say why.
+            (r"<script(?![^>]*\ssrc=)[^>]*>", "inline <script> block"),
+            (r'"javascript:', "javascript: URL"),
             (r"<style[ >]", "inline <style> block"),
             (r'\sstyle="', "inline style attribute"),
         ):

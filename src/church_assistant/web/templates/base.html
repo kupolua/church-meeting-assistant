@@ -67,5 +67,10 @@
 
 </div>
 
+{# Page-specific scripts. Must be FILES, never inline blocks — the CSP is
+   script-src 'self' (web/headers.py) and an inline block is silently not
+   executed. #}
+{% block scripts %}{% endblock %}
+
 </body>
 </html>

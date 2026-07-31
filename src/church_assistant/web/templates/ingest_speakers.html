@@ -93,35 +93,8 @@
     </form>
 </article>
 
-{% if has_audio %}
-<script>
-(function () {
-    "use strict";
-    var audio = document.getElementById('speaker-audio');
-    if (!audio) return;
+{% endblock %}
 
-    function seekTo(secs) {
-        function doSeek() {
-            try { audio.currentTime = secs; } catch (e) {}
-            var p = audio.play();
-            if (p && p.catch) p.catch(function () {});
-        }
-        if (audio.readyState >= 1) doSeek();
-        else {
-            audio.addEventListener('loadedmetadata', doSeek, { once: true });
-            audio.load();
-        }
-        audio.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-
-    document.addEventListener('click', function (e) {
-        var link = e.target.closest ? e.target.closest('.ts-link') : null;
-        if (!link) return;
-        e.preventDefault();
-        var secs = parseFloat(link.dataset.seconds);
-        if (!isNaN(secs)) seekTo(secs);
-    });
-})();
-</script>
-{% endif %}
+{% block scripts %}
+{% if has_audio %}<script src="/static/audio-seek.js" defer></script>{% endif %}
 {% endblock %}
