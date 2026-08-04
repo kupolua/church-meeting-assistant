@@ -1,6 +1,7 @@
 """
 Meetings routes:
     GET  /meetings/{date}           — meeting detail page (attendees + topics + стенограма)
+    GET  /meetings/{date}/topics.pdf — the Теми section as a printable PDF
     GET  /meetings/{date}/audio     — stream the meeting recording (HTTP Range support)
     GET  /meetings/{date}/speakers  — edit speaker→name mapping for a processed meeting
     POST /meetings/{date}/speakers  — save speakers.json + queue a full re-run
@@ -13,15 +14,17 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import speaker_review as review
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
-from church_assistant.shared import meetings_index, tenant_paths
+from church_assistant.shared import meetings_index, pdf_export, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
 from church_assistant.web.tenant import current_tenant, current_tenant_slug
@@ -121,6 +124,41 @@ async def meeting_detail(request: Request, date: str):
             "known_names": known_names,
             "changes": review.load_changes(detail.folder),
         },
+    )
+
+
+@router.get("/{date}/topics.pdf")
+async def meeting_topics_pdf(request: Request, date: str):
+    """
+    The Розглянуті питання section as a printable PDF.
+
+    Built from the same parsed topics the page renders, so the document cannot
+    drift from what the user sees. Timestamps are dropped — they exist to seek
+    the recording, which paper cannot do.
+    """
+    detail = meetings_index.load_detail(_tenant_paths(request).meetings, date)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
+
+    try:
+        pdf = pdf_export.build_topics_pdf(detail.date, detail.topics)
+    except pdf_export.FontNotFound as e:
+        # A server without a Cyrillic font would otherwise emit a protocol of
+        # black boxes; say what to install instead.
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    filename = pdf_export.pdf_filename(detail.date)
+    # The name is Cyrillic, which a bare filename= cannot carry. RFC 5987
+    # filename* does; the ASCII filename= stays as a fallback for old clients.
+    ascii_name = f"meeting-{detail.date}-topics.pdf"
+    disposition = (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": disposition},
     )
 
 

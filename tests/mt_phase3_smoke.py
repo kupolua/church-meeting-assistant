@@ -933,6 +933,77 @@ def test_hardening() -> None:
     ok("every front-end asset the UI loads is vendored in static/")
 
 
+# ─────────────────────────────────────────────────────────────
+# 10. Topics → PDF export
+# ─────────────────────────────────────────────────────────────
+
+def test_pdf_export() -> None:
+    print("\n10. Теми → PDF")
+    print("-" * 66)
+
+    import re as _re
+    from fastapi.testclient import TestClient
+    from church_assistant.shared import meetings_index, pdf_export
+    from church_assistant.web.main import app
+
+    # Timestamps go; anything that merely looks like one does not.
+    for src, want in [
+        ("Пункт (01:51)", "Пункт"),
+        ("Список (24:11, 28:16)", "Список"),
+        ("Крапка з комою (31:30; 33:52)", "Крапка з комою"),
+        ("Години (1:02:03)", "Години"),
+        ("Псалом 84:6 лишається", "Псалом 84:6 лишається"),
+        ("Дужки (не таймкод) лишаються", "Дужки (не таймкод) лишаються"),
+    ]:
+        got = meetings_index.strip_timestamps(src)
+        assert got == want, f"{src!r} -> {got!r}"
+    ok("strip_timestamps removes only timestamp parentheticals")
+
+    a = tenant_paths.paths_for("church-a")
+    detail = meetings_index.load_detail(a.meetings, "2026-06-15")
+    assert detail is not None
+    pdf = pdf_export.build_topics_pdf(detail.date, detail.topics)
+    assert pdf.startswith(b"%PDF-")
+    ok(f"builds a PDF for a church-a meeting ({len(pdf) / 1024:.0f} KB)")
+
+    assert pdf_export.document_title("2026-06-15") == "Пасторська зустріч 15.06.2026"
+    assert pdf_export.build_topics_pdf("2026-01-01", []).startswith(b"%PDF-")
+    ok("title format, and a meeting with no topics still renders")
+
+    with TestClient(app, follow_redirects=False) as client:
+        # Anonymous must not reach it — it is meeting content like any other.
+        r = client.get("/meetings/2026-06-15/topics.pdf")
+        assert r.status_code == 303, r.status_code
+        ok("PDF route is behind the auth gate")
+
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+
+        r = client.get("/meetings/2026-06-15/topics.pdf")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/pdf"
+        assert r.content.startswith(b"%PDF-")
+        # Cyrillic filename must survive as RFC 5987, with an ASCII fallback.
+        cd = r.headers["content-disposition"]
+        assert "filename*=UTF-8''" in cd and 'filename="meeting-' in cd
+        ok("served as application/pdf with an RFC 5987 Cyrillic filename")
+
+        # church-b's meeting of the SAME date must not be reachable from A.
+        r = client.get("/meetings/2026-06-22/topics.pdf")   # exists only in B
+        assert r.status_code == 404
+        ok("another church's meeting is 404, not a PDF of their protocol")
+
+    # The document itself: title present, no timestamps, text extractable.
+    import pdfplumber, io
+    with pdfplumber.open(io.BytesIO(pdf)) as doc:
+        text = "\n".join(p.extract_text() or "" for p in doc.pages)
+    assert "Пасторська зустріч" in text
+    assert not _re.search(r"\(\s*\d{1,2}:\d{2}(?::\d{2})?\s*[;,)]", text), "timestamp leaked"
+    assert "(cid:" not in text, "bullet drawn in a non-embedded font"
+    ok("rendered text: title present, no timestamps, no cid artefacts")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -969,6 +1040,7 @@ def main() -> int:
         test_admin_ui()          # ditto
         test_sessions()
         test_hardening()
+        test_pdf_export()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

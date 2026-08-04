@@ -21,6 +21,7 @@ dependencies = [
     "qdrant-client>=1.18.0",
     "uvicorn>=0.51.0",
     "sentence-transformers>=3.0.0",
+    "reportlab>=5.0.0",
 ]
 
 [build-system]

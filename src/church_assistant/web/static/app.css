@@ -1249,6 +1249,18 @@ tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
     color: #fff;
 }
 
+/* Section heading with an action on the right (Теми + PDF download). */
+.topics-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.topics-head h4 {
+    margin-bottom: 0;
+}
+
 /* ── Web account management (/admin/users) ───────────────────────────── */
 
 .admin-msg {

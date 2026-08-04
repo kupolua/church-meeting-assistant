@@ -191,6 +191,30 @@ def _parse_topics_from_polished(text: str) -> list[Topic]:
     return topics
 
 
+# A parenthetical made up PURELY of timestamps: "(01:51)", "(24:11, 28:16)",
+# "(31:30; 33:52; 34:42)". The "purely" is what makes this safe to delete — a
+# Bible reference like "Псалом 84:6" is not parenthesised like this and survives.
+#
+# Same rule as the linkifier in static/meeting-detail.js. The two are separate
+# implementations of one decision: keep them in step.
+_TS = r"\d{1,2}:\d{2}(?::\d{2})?"
+_TS_PARENS_RE = re.compile(rf"\s*\(\s*{_TS}\s*(?:[;,]\s*{_TS}\s*)*\)")
+
+
+def strip_timestamps(text: str) -> str:
+    """
+    Remove the audio timestamps the analysis appends to each point.
+
+    They exist to seek the recording, which a printed document cannot do — there
+    they are just noise at the end of every line.
+    """
+    cleaned = _TS_PARENS_RE.sub("", text)
+    # Deleting a trailing "(01:51)" can leave a stranded space before the
+    # newline or before punctuation.
+    cleaned = re.sub(r"[ \t]+$", "", cleaned, flags=re.MULTILINE)
+    return re.sub(r"[ \t]+([,.;:!?])", r"\1", cleaned)
+
+
 def _count_action_items(text: str) -> int:
     """
     Count action items in polished.md.

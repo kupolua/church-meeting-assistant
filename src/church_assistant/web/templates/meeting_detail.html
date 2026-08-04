@@ -55,7 +55,15 @@
 
     {# ─── Topics ─── #}
     <section class="topics-block">
-        <h4>Теми ({{ detail.topics | length }})</h4>
+        <div class="topics-head">
+            <h4>Теми ({{ detail.topics | length }})</h4>
+            {% if detail.topics %}
+            {# Plain link, not htmx: the response is a file download, and htmx
+               would try to swap the PDF bytes into the page. #}
+            <a class="dash-btn" href="/meetings/{{ current_date }}/topics.pdf"
+               title="Завантажити теми у PDF (без таймкодів)">⤓ PDF</a>
+            {% endif %}
+        </div>
 
         {% if detail.topics %}
         <div class="topics-list">
