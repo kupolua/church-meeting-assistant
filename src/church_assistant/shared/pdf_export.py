@@ -10,9 +10,10 @@ of tofu is worse than a message saying which package to install.
 Timestamps are stripped (meetings_index.strip_timestamps): they exist to seek
 the recording, which paper cannot do.
 
-Layout mirrors what polished.md actually contains — a topic heading, an intro
-paragraph, then one or two levels of bullets — rather than being a general
-Markdown renderer, because that is the only shape the analysis produces.
+Layout: a header block (title + who was present), then the topics. Each topic
+is a heading, an intro paragraph and one or two levels of bullets — mirroring
+what polished.md actually contains rather than being a general Markdown
+renderer, because that is the only shape the analysis produces.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
-    BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer,
+    BaseDocTemplate, Frame, HRFlowable, PageTemplate, Paragraph, Spacer,
 )
 
 from church_assistant.shared.meetings_index import Topic, strip_timestamps
@@ -144,6 +145,24 @@ def _escape(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+# Gemma emits Markdown emphasis inside the points — 15-30 lines per meeting
+# across the corpus. The web page shows the body in a <pre>, where raw markers
+# read as "this is the analysis text verbatim"; on a printed protocol they are
+# just noise, so they become real bold here.
+_BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+
+
+def _inline_markup(text: str) -> str:
+    """
+    Escape, then turn **bold** into reportlab's <b> tag.
+
+    Escaping first means the conversion cannot be used to inject markup: by the
+    time this runs, any < > & in the protocol are already entities. Unmatched or
+    empty `**` is left alone — better a stray marker than eaten text.
+    """
+    return _BOLD_RE.sub(r"<b>\1</b>", _escape(text))
+
+
 def format_meeting_date(meeting_date: str) -> str:
     """'2026-07-30' → '30.07.2026'. Anything unexpected passes through."""
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", meeting_date)
@@ -158,9 +177,17 @@ def document_title(meeting_date: str) -> str:
 # Rendering
 # ─────────────────────────────────────────────────────────────
 
-def build_topics_pdf(meeting_date: str, topics: Iterable[Topic]) -> bytes:
+def build_topics_pdf(
+    meeting_date: str,
+    topics: Iterable[Topic],
+    attendees: Iterable[str] = (),
+) -> bytes:
     """
     Render the meeting's topics to PDF bytes.
+
+    `attendees` is rendered as a header block under the title — who was present
+    is part of what makes the document a record rather than a set of notes.
+    Empty is fine: the block is simply omitted.
 
     Raises FontNotFound if no Cyrillic font is available.
     """
@@ -168,6 +195,7 @@ def build_topics_pdf(meeting_date: str, topics: Iterable[Topic]) -> bytes:
 
     title = document_title(meeting_date)
     topics = list(topics)
+    attendees = [a.strip() for a in attendees if a and a.strip()]
 
     base = ParagraphStyle(
         "cma-base", fontName=FONT_NAME, fontSize=10.5, leading=15,
@@ -188,6 +216,13 @@ def build_topics_pdf(meeting_date: str, topics: Iterable[Topic]) -> bytes:
             leading=17, alignment=0, spaceBefore=6 * mm, spaceAfter=1.5 * mm,
             textColor=colors.HexColor("#1f2a44"),
         ),
+        # Deliberately NOT styled like a topic heading: it sits under the title
+        # as part of the document header, and a second blue bold heading there
+        # would read as "topic zero".
+        "attendees": ParagraphStyle(
+            "cma-attendees", parent=base, alignment=0, fontSize=10, leading=14,
+            spaceAfter=3 * mm, textColor=colors.HexColor("#333333"),
+        ),
         "intro": ParagraphStyle("cma-intro", parent=base, spaceAfter=1.5 * mm),
         "bullet": ParagraphStyle(
             "cma-bullet", parent=base, leftIndent=6 * mm, bulletIndent=1.5 * mm,
@@ -201,17 +236,31 @@ def build_topics_pdf(meeting_date: str, topics: Iterable[Topic]) -> bytes:
     }
 
     story: list = [Paragraph(_escape(title), styles["title"])]
+
+    if attendees:
+        names = ", ".join(_escape(a) for a in attendees)
+        story.append(Paragraph(
+            f"<b>Присутні ({len(attendees)}):</b> {names}", styles["attendees"]
+        ))
+
+    # Rule closing the header block, so the first topic does not read as a
+    # continuation of the attendee list.
+    story.append(HRFlowable(
+        width="100%", thickness=0.6, color=colors.HexColor("#cccccc"),
+        spaceBefore=1 * mm, spaceAfter=0,
+    ))
+
     if not topics:
         story.append(Paragraph(
             "У протоколі цієї зустрічі немає розглянутих тем.", styles["intro"]
         ))
 
     for index, topic in enumerate(topics, 1):
-        heading = f"{index}. {_escape(strip_timestamps(topic.title).strip())}"
+        heading = f"{index}. {_inline_markup(strip_timestamps(topic.title).strip())}"
         story.append(Paragraph(heading, styles["topic"]))
 
         for line in _shape_body(strip_timestamps(topic.body)):
-            text = _escape(line.text)
+            text = _inline_markup(line.text)
             if line.depth < 0:
                 story.append(Paragraph(text, styles["intro"]))
             elif line.depth == 0:
@@ -292,14 +341,15 @@ def _smoke_test() -> None:
     detail = meetings_index.load_detail(meetings_dir, summaries[0].date)
     assert detail is not None
 
-    pdf = build_topics_pdf(detail.date, detail.topics)
+    pdf = build_topics_pdf(detail.date, detail.topics, detail.attendees)
     assert pdf.startswith(b"%PDF-"), "not a PDF"
-    print(f"3. built {detail.date}: {len(detail.topics)} topics, "
-          f"{len(pdf) / 1024:.0f} KB ✓")
+    print(f"3. built {detail.date}: {len(detail.attendees)} attendees, "
+          f"{len(detail.topics)} topics, {len(pdf) / 1024:.0f} KB ✓")
 
     # An empty meeting must still produce a valid document, not a traceback.
     assert build_topics_pdf("2026-01-01", []).startswith(b"%PDF-")
-    print("4. meeting with no topics still renders ✓")
+    assert build_topics_pdf("2026-01-01", [], []).startswith(b"%PDF-")
+    print("4. meeting with no topics and no attendees still renders ✓")
 
     print(f"5. title: {document_title(detail.date)!r} ✓")
     print("=" * 66)

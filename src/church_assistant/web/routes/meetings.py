@@ -141,7 +141,9 @@ async def meeting_topics_pdf(request: Request, date: str):
         raise HTTPException(status_code=404, detail=f"Meeting {date!r} not found")
 
     try:
-        pdf = pdf_export.build_topics_pdf(detail.date, detail.topics)
+        pdf = pdf_export.build_topics_pdf(
+            detail.date, detail.topics, detail.attendees
+        )
     except pdf_export.FontNotFound as e:
         # A server without a Cyrillic font would otherwise emit a protocol of
         # black boxes; say what to install instead.

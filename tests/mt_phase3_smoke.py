@@ -959,16 +959,32 @@ def test_pdf_export() -> None:
         assert got == want, f"{src!r} -> {got!r}"
     ok("strip_timestamps removes only timestamp parentheticals")
 
+    # Markdown emphasis becomes real bold; escaping runs FIRST, so the
+    # conversion cannot be used to inject reportlab markup.
+    for src, want in [
+        ("**Проблема розриву**", "<b>Проблема розриву</b>"),
+        ("текст **жирний** далі", "текст <b>жирний</b> далі"),
+        ("2 ** 3 непара", "2 ** 3 непара"),
+        ("**незакритий", "**незакритий"),
+        ("<b>вже тег</b>", "&lt;b&gt;вже тег&lt;/b&gt;"),
+        ("**<b>вкладений</b>**", "<b>&lt;b&gt;вкладений&lt;/b&gt;</b>"),
+    ]:
+        got = pdf_export._inline_markup(src)
+        assert got == want, f"{src!r} -> {got!r}"
+    ok("**bold** becomes <b>, and escaping happens before conversion")
+
     a = tenant_paths.paths_for("church-a")
     detail = meetings_index.load_detail(a.meetings, "2026-06-15")
     assert detail is not None
-    pdf = pdf_export.build_topics_pdf(detail.date, detail.topics)
+    assert detail.attendees, "fixture should have an attendee"
+    pdf = pdf_export.build_topics_pdf(detail.date, detail.topics, detail.attendees)
     assert pdf.startswith(b"%PDF-")
     ok(f"builds a PDF for a church-a meeting ({len(pdf) / 1024:.0f} KB)")
 
     assert pdf_export.document_title("2026-06-15") == "Пасторська зустріч 15.06.2026"
     assert pdf_export.build_topics_pdf("2026-01-01", []).startswith(b"%PDF-")
-    ok("title format, and a meeting with no topics still renders")
+    assert pdf_export.build_topics_pdf("2026-01-01", [], []).startswith(b"%PDF-")
+    ok("title format; no topics and no attendees still renders")
 
     with TestClient(app, follow_redirects=False) as client:
         # Anonymous must not reach it — it is meeting content like any other.
@@ -1001,7 +1017,11 @@ def test_pdf_export() -> None:
     assert "Пасторська зустріч" in text
     assert not _re.search(r"\(\s*\d{1,2}:\d{2}(?::\d{2})?\s*[;,)]", text), "timestamp leaked"
     assert "(cid:" not in text, "bullet drawn in a non-embedded font"
-    ok("rendered text: title present, no timestamps, no cid artefacts")
+    assert "**" not in text, "raw Markdown emphasis left in the document"
+    assert "<b>" not in text, "markup leaked as literal text"
+    # Who was present is part of the record, so it has to be IN the document.
+    assert "Присутні" in text and detail.attendees[0] in text
+    ok("rendered text: title, attendees, no timestamps / ** / cid artefacts")
 
 
 async def phase_db() -> None:
