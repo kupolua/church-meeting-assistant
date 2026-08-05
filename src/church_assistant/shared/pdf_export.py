@@ -183,19 +183,43 @@ def build_topics_pdf(
     attendees: Iterable[str] = (),
 ) -> bytes:
     """
-    Render the meeting's topics to PDF bytes.
+    Render one meeting's topics to PDF bytes.
 
-    `attendees` is rendered as a header block under the title — who was present
-    is part of what makes the document a record rather than a set of notes.
-    Empty is fine: the block is simply omitted.
+    `attendees` becomes a header note under the title — who was present is part
+    of what makes the document a record rather than a set of notes.
+
+    Raises FontNotFound if no Cyrillic font is available.
+    """
+    attendees = [a.strip() for a in attendees if a and a.strip()]
+    note = (
+        f"<b>Присутні ({len(attendees)}):</b> " + ", ".join(_escape(a) for a in attendees)
+        if attendees else None
+    )
+    return build_document_pdf(
+        document_title(meeting_date), topics, header_note=note,
+        empty_message="У протоколі цієї зустрічі немає розглянутих тем.",
+    )
+
+
+def build_document_pdf(
+    title: str,
+    sections: Iterable[Topic],
+    header_note: Optional[str] = None,
+    empty_message: str = "Документ порожній.",
+) -> bytes:
+    """
+    Render a title + numbered sections to PDF bytes.
+
+    The meeting protocol is one instance of this shape, not the only one — the
+    accountant requirements are another. `header_note` is pre-escaped reportlab
+    markup (the caller may want <b> in it); `sections` reuses Topic purely as a
+    (title, body) pair.
 
     Raises FontNotFound if no Cyrillic font is available.
     """
     _register_fonts()
 
-    title = document_title(meeting_date)
-    topics = list(topics)
-    attendees = [a.strip() for a in attendees if a and a.strip()]
+    sections = list(sections)
 
     base = ParagraphStyle(
         "cma-base", fontName=FONT_NAME, fontSize=10.5, leading=15,
@@ -216,11 +240,11 @@ def build_topics_pdf(
             leading=17, alignment=0, spaceBefore=6 * mm, spaceAfter=1.5 * mm,
             textColor=colors.HexColor("#1f2a44"),
         ),
-        # Deliberately NOT styled like a topic heading: it sits under the title
-        # as part of the document header, and a second blue bold heading there
-        # would read as "topic zero".
-        "attendees": ParagraphStyle(
-            "cma-attendees", parent=base, alignment=0, fontSize=10, leading=14,
+        # Deliberately NOT styled like a section heading: it sits under the
+        # title as part of the document header, and a second bold blue heading
+        # there would read as "section zero".
+        "note": ParagraphStyle(
+            "cma-note", parent=base, alignment=0, fontSize=10, leading=14,
             spaceAfter=3 * mm, textColor=colors.HexColor("#333333"),
         ),
         "intro": ParagraphStyle("cma-intro", parent=base, spaceAfter=1.5 * mm),
@@ -237,25 +261,20 @@ def build_topics_pdf(
 
     story: list = [Paragraph(_escape(title), styles["title"])]
 
-    if attendees:
-        names = ", ".join(_escape(a) for a in attendees)
-        story.append(Paragraph(
-            f"<b>Присутні ({len(attendees)}):</b> {names}", styles["attendees"]
-        ))
+    if header_note:
+        story.append(Paragraph(header_note, styles["note"]))
 
-    # Rule closing the header block, so the first topic does not read as a
-    # continuation of the attendee list.
+    # Rule closing the header block, so the first section does not read as a
+    # continuation of the note.
     story.append(HRFlowable(
         width="100%", thickness=0.6, color=colors.HexColor("#cccccc"),
         spaceBefore=1 * mm, spaceAfter=0,
     ))
 
-    if not topics:
-        story.append(Paragraph(
-            "У протоколі цієї зустрічі немає розглянутих тем.", styles["intro"]
-        ))
+    if not sections:
+        story.append(Paragraph(empty_message, styles["intro"]))
 
-    for index, topic in enumerate(topics, 1):
+    for index, topic in enumerate(sections, 1):
         heading = f"{index}. {_inline_markup(strip_timestamps(topic.title).strip())}"
         story.append(Paragraph(heading, styles["topic"]))
 
