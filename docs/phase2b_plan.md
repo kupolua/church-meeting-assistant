@@ -1,8 +1,24 @@
 # Phase 2B: RAG over historical meeting protocols
 
-**Status:** planning (no code yet)
+**Status:** ✅ **delivered** — історичний планувальний документ, лишається як опис задуму
+та джерело невиконаних user stories. **Не редагувати як опис поточного стану** — для нього
+є `docs/handoff_brief.md`.
 **Author:** Pavlo Kulakovskyi
 **Created:** 2026-06-12
+**Reviewed:** 2026-08-18
+
+**Що з цього плану зроблено (станом на 18.08.2026):**
+- Пайплайн і RAG — ✅, але на **локальних** bge-m3 + bge-reranker-v2-m3, а не Voyage
+  (приватність: транскрипти не виходять з машини).
+- Корпус — **20 зустрічей** проіндексовано, замість 11 запланованих; нові додаються через
+  веб-форму `/ingest`, а не запуском `new_meeting.py` вручну.
+- US-1, US-2, US-5, US-6 (retrieval-запити) — ✅ працюють через веб і Telegram-бот.
+- **US-3 (unresolved topics) і US-4 (stale topics) — НЕ зроблені.** Це і є пункт «Analytics
+  US-3/US-4» у backlog'у брифу: агрегація над корпусом, а не класичний RAG.
+- US-7 (action-item workflow) — і далі поза скоупом; натомість збудовано те, чого тут не було:
+  дашборд, ingestion-воркер, мультитенантність (`docs/mt_handoff.md`), PDF-експорт.
+- ⚠️ Шляхи `data/meetings/YYYY-MM-DD/` по всьому документу застарілі — після MT це
+  `data/tenants/<slug>/meetings/YYYY-MM-DD/`.
 
 ---
 

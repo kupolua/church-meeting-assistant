@@ -1,14 +1,20 @@
-# Multi-tenancy (MT) — Handoff (branch `feat/multi-tenancy`)
+# Multi-tenancy (MT) — Handoff *(у продакшні; робота ведеться в `main`)*
 
 **Мета:** один сервер (план — DGX Spark, централізовано) обслуговує багато церков, із
 **наглядовою радою** як моделлю довіри (audit-журнал + non-superuser доступ). Приватність:
 усе локально (Voyage вже прибрано, LLM/embeddings/rerank локальні на M1 → потім Spark).
 
-**Стан:** ✅ **CUTOVER + FS-МІГРАЦІЯ ЗРОБЛЕНІ** (2026-07-29). Живий `cma` мультитенантний: міграції 003–009
-застосовані, застосунок конектиться як `cma_app` (non-superuser → RLS діє), 4 сервіси працюють.
+**Стан (оновлено 2026-08-18):** ✅ **CUTOVER + FS-МІГРАЦІЯ ЗРОБЛЕНІ** (2026-07-29), **три тижні в
+експлуатації без відкату**. Живий `cma` мультитенантний: міграції 003–009 застосовані, застосунок
+конектиться як `cma_app` (non-superuser → RLS діє), 4 сервіси працюють.
 Бекап перед cutover: `backups/cma_before_mt_20260729-163749.dump` + `.env` поруч (у `.gitignore`).
 Змержено в `main` (fast-forward, 11 комітів) — гілка `feat/multi-tenancy` лишається як
-покажчик на ту саму точку.
+покажчик на ту саму точку; **подальша робота йде в `main`**.
+
+**Що підтвердила експлуатація:** через мультитенантний застосунок пройшли 4 нові зустрічі
+(`2026-06-27`, `2026-07-30`, `2026-08-03`, `2026-08-17`) — повний ingestion пише в
+`data/tenants/default/meetings/…`, індексує в `cma_*` (legacy-виняток) і читається через RAG.
+Тобто per-tenant FS і крос-tenant claim воркерів працюють не лише в тесті.
 
 ---
 
@@ -29,7 +35,7 @@
 
 ---
 
-## ✅ Phase 3 — web-auth + FS + Qdrant (ця сесія)
+## ✅ Phase 3 — web-auth + FS + Qdrant (29 липня)
 
 ### Web-auth (логін → сесія → tenant)
 - **`006_web_auth.sql`** — таблиця `web_users` (tenant_id; `username` **глобально
@@ -214,9 +220,9 @@ UI також перевірено в браузері вживу (створе�
    сміттєвих cookie; ротація ключа й далі розлогінює всіх (аварійний важіль).
 6. **Усе про «сесія ще дійсна?» — лише в `resolve_web_session`.** Додаєш умову (напр. стелю
    життя) — там, і ніде більше; інакше зʼявиться другий екземпляр правил.
-6. **Qdrant не має RLS.** Ізоляція там — виключно окремі колекції. Тому `tenant_slug` у
+7. **Qdrant не має RLS.** Ізоляція там — виключно окремі колекції. Тому `tenant_slug` у
    `rag.*` без дефолту, а `resolve_kind()` навмисно НЕ приймає фізичну назву колекції.
-7. Slug потрапляє і в шлях, і в назву колекції → `validate_slug()` перед обома.
+8. Slug потрапляє і в шлях, і в назву колекції → `validate_slug()` перед обома.
 
 ---
 
@@ -240,12 +246,49 @@ UI також перевірено в браузері вживу (створе�
 
 ---
 
+## 🔧 Після cutover (31 липня — 5 серпня)
+
+### Дві регресії від строгої CSP — полагоджені
+Обидві з `5587b75`. Сервер віддавав 200, тести проходили — ламалося **лише в браузері**.
+
+- **`43df9d7`** — сканер шаблонів перевіряв inline-обробники та inline-`<style>`, але **не**
+  inline-`<script>`. Три блоки тихо перестали виконуватись під `script-src 'self'`: клікабельні
+  таймкоди й діалог зміни спікера на `/meetings/<date>`, seek-хендлер на редакторі спікерів.
+  Переїхали у `static/audio-seek.js` (спільний — код був продубльований) + `static/meeting-detail.js`;
+  у `base.html` доданий блок `scripts`. ⚠️ Він мусить бути **сиблінгом `main`, а не вкладеним**:
+  блок, оголошений усередині іншого, рендериться і на місці вкладення, і в плейсхолдері батька —
+  файли вантажились двічі, обробники реєструвались двічі. Сканер тепер ловить і `<script` без
+  `src=`, і `javascript:`-URL.
+- **`4b949d0`** — «🔁 Запустити аналіз» постив на `/meetings//run-analysis`. Партіал будує URL із
+  `date`, а роут `meeting_detail` передавав те саме значення як `current_date`; Jinja рендерить
+  невизначену змінну порожнім рядком. Виглядало як «іноді працює»: HTMX-шлях перерендерював панель
+  правильно, а перезавантаження сторінки — ні. Звʼязано на місці include (`{% with date = current_date %}`),
+  а не додаванням другого ключа в контекст роуту — щоб два шляхи рендерингу не розʼїхались знову.
+
+### PDF-експорт (4–5 серпня) — дотичне до MT
+`shared/pdf_export.py` + `GET /meetings/{date}/topics.pdf` + `scripts/markdown_to_pdf.py`
+(деталі — у `docs/handoff_brief.md`). Для MT важливе одне: роут **за auth-гейтом**, і зустріч чужої
+церкви віддає **404, а не PDF чужого протоколу** — окрема перевірка в smoke-тесті.
+
+**Регресійний набір виріс:** `tests/mt_phase3_smoke.py` — **80 перевірок** (було 69 на момент
+cutover'а): +сканер inline-`<script>`, +правила вирізання таймкодів, +PDF-роут під auth, +крос-tenant
+404, +текст у зрендереному PDF.
+
+---
+
 ## ⏭️ Що лишилось
 
-1. Прибрати акаунт `test`, якщо він випадковий (`/admin/users`).
+*(Перевірено на живій БД 18.08.2026 — обидва пункти досі відкриті.)*
+
+1. **Акаунт `test`** (`web_users` id=2, tenant 1, role `member`, `is_active = true`) — досі активний.
+   Прибрати через `/admin/users`, якщо він був випадковий.
 2. **Переіндексація Qdrant у `t_default_*`** — єдине, що лишилось від legacy-винятку, і воно
    дороге (години локального bge-m3). Робити тільки якщо потрібна повна однорідність; поки що
    `LEGACY_TENANT_SLUG=default` мапить корпус на `cma_*` без жодних витрат.
+   Станом на 18.08 у Qdrant: `cma_protocols` 597, `cma_analyses` 960, `cma_turns` 9279,
+   `cma_protocol_full` 20 — тобто ціна переіндексації з часом лише росте.
+3. **Telegram-бот після cutover'а вживу так і не перевірений** — потрібне реальне повідомлення від
+   whitelisted-користувача. Процес запущений і підключений (`@ReChurchAssistant_bot`).
 
 ---
 
@@ -265,8 +308,12 @@ DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
 $DOCKER exec cma-postgres psql -U cma -d postgres -c "DROP DATABASE IF EXISTS cma_mt3;" \
   -c "CREATE DATABASE cma_mt3;"
 # heredoc/stdin ПОТРЕБУЄ  docker exec -i  (без -i stdin не доходить!)
+# ⚠️ УСІ міграції, включно з 007–009 (без них тести сесій/системного тенанта впадуть).
+# Актуальний перелік — у докстрінгу tests/mt_phase3_smoke.py, він і є джерелом істини.
 for f in schema.sql migrations/003_multitenancy.sql migrations/004_app_role_and_claim.sql \
-         migrations/005_mt_fixups.sql migrations/006_web_auth.sql; do
+         migrations/005_mt_fixups.sql migrations/006_web_auth.sql \
+         migrations/007_system_tenant.sql migrations/008_web_sessions.sql \
+         migrations/009_session_idle_timeout.sql; do
   $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -v ON_ERROR_STOP=1 < src/church_assistant/db/$f
 done
 # + сідинг церков (див. докстрінг), далі:
@@ -281,10 +328,13 @@ uv run python tests/mt_phase3_smoke.py
 
 ## Стартовий крок у новому вікні
 
-> Продовжуємо мультитенантність Church Meeting Assistant на гілці `feat/multi-tenancy`.
-> Прочитай `docs/mt_handoff.md`. Робимо [cutover / CSP+вендоринг htmx].
+> Продовжуємо Church Meeting Assistant. Загальний стан — `docs/handoff_brief.md`;
+> цей файл читай, якщо чіпаємо БД, auth, сесії або Qdrant. Робимо [пункт].
 
-**Перед cutover:** `uv run python -m church_assistant.scripts.cutover_preflight` — він нічого
-не змінює, друкує стан живої БД і покроковий рунбук із бекапом та відкатом.
+**Cutover уже позаду — комітимо в `main`**, гілка `feat/multi-tenancy` лишилась історичним
+покажчиком. `scripts/cutover_preflight.py` і далі корисний як READ-ONLY знімок стану живої БД
+(нічого не змінює) — наприклад перед наступною міграцією.
 
-**Джерело істини — гілка на GitHub.** Комітити далі в `feat/multi-tenancy`; `main` не чіпати до cutover.
+**Наступна церква** (перший реальний multi-tenant): створити рядок у `tenants`, потім
+`scripts/add_web_user.py --tenant <slug>` для її адміна. Тека `data/tenants/<slug>/` і колекції
+`t_<slug>_*` створяться самі — legacy-виняток стосується **лише** slug `default`.
