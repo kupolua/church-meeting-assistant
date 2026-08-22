@@ -20,12 +20,14 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import get_pool
+from church_assistant.ingestion import manual_speakers
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index, tenant_paths
@@ -289,6 +291,11 @@ async def speakers_editor(request: Request, job_id: int):
         "ingest_speakers.html",
         {
             "page_title": f"Ревʼю спікерів {job['meeting_date']}",
+            "error": request.query_params.get("error"),
+            "ok": request.query_params.get("ok"),
+            "next_label": manual_speakers.next_free_label(
+                mapping, manual_speakers.load_entries(meta)
+            ),
             "header": f"✏️ Ревʼю спікерів — {job['meeting_date']}",
             "subtitle": f"Job #{job['id']}",
             "rows": rows,
@@ -311,7 +318,8 @@ async def speakers_save(request: Request, job_id: int):
 
     Reads one form field per known speaker label (`name_SPEAKER_XX`); values are
     taken verbatim as the final names. _meta is preserved. Empty fields fall back
-    to the label so no speaker is silently dropped.
+    to the label so no speaker is silently dropped. Manual rows (a speaker added
+    by timestamp) are applied on top — see ingestion/manual_speakers.py.
     """
     pool = await get_pool()
     tenant_id = current_tenant(request)
@@ -339,13 +347,30 @@ async def speakers_save(request: Request, job_id: int):
         submitted = str(form.get(f"name_{label}", "")).strip()
         new_mapping[label] = submitted or label  # keep the label if left blank
 
+    # A participant diarization never clustered can be added here by timestamp;
+    # nothing is written until the whole submission parses (manual_speakers.py).
+    manual = manual_speakers.apply_edits(
+        paths.transcript, meta, new_mapping,
+        manual_speakers.inputs_from_form(form, manual_speakers.manual_labels(meta)),
+    )
+    if manual.error:
+        return RedirectResponse(
+            f"/ingest/{job_id}/speakers?error={quote(manual.error)}", status_code=303
+        )
+    meta, new_mapping = manual.meta, manual.mapping
+
     speakers_util.save_speakers(paths.speakers, meta, new_mapping)
+    if manual.changed:
+        manual_speakers.rebuild_rttm(paths.rttm, manual.entries)
 
     await jobs_repo.mark_queued_analysis(pool, tenant_id, job_id, speaker_count=len(new_mapping))
     await _logger.info(
         "ingestion.review_submitted",
         message=f"job #{job_id} ({job['meeting_date']}) speakers reviewed — queued for analysis",
-        metadata={"job_id": job_id, "speaker_count": len(new_mapping)},
+        metadata={
+            "job_id": job_id, "speaker_count": len(new_mapping),
+            "manual_speakers": manual.notes,
+        },
         tenant_id=tenant_id,
     )
 

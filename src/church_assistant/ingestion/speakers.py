@@ -29,6 +29,8 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
+from church_assistant.ingestion import manual_speakers
+
 META_KEY = "_meta"
 REVIEW_SUFFIX = " [REVIEW]"
 
@@ -85,14 +87,9 @@ def strip_review(name: str) -> tuple[str, bool]:
 # RTTM talk-time hints
 # ─────────────────────────────────────────────────────────────
 
-def _fmt_mmss(seconds: float) -> str:
-    """Seconds → 'M:SS' (or 'H:MM:SS' past an hour)."""
-    total = int(round(seconds))
-    h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
+#: One implementation of the timestamp format, shared with manual_speakers so a
+#: hand-typed time reads back exactly as the machine-derived ones do.
+_fmt_mmss = manual_speakers.format_hms
 
 
 def rttm_speaker_stats(rttm_path: Path) -> dict[str, dict[str, Any]]:
@@ -138,19 +135,25 @@ def build_review_rows(
     """
     Combine mapping + _meta flags + RTTM stats into render-ready rows.
 
-    Row flag (most severe first): 'invalid' | 'no_match' | 'review' | None.
+    Row flag: 'manual' (human-added — see manual_speakers) or, for the machine's
+    own clusters, most severe first: 'invalid' | 'no_match' | 'review' | None.
     Rows are ordered by talk time DESC (loudest speakers first — easier to place).
     """
     needs_review = set(meta.get("needs_review", []))
     no_match = set(meta.get("no_match", []))
     invalid = set(meta.get("invalid_embedding", []))
+    manual = {e.label: e for e in manual_speakers.load_entries(meta)}
 
     rows: list[dict[str, Any]] = []
     for label in mapping:
         raw = mapping[label]
         name, had_review = strip_review(raw)
 
-        if label in invalid:
+        if label in manual:
+            # A human put this row there; the machine's confidence flags do not
+            # apply to it, and showing "невідомий голос" would be nonsense.
+            flag = "manual"
+        elif label in invalid:
             flag = "invalid"
         elif label in no_match or name == label:
             flag = "no_match"
@@ -163,6 +166,10 @@ def build_review_rows(
         total_s = float(st.get("total_s", 0.0))
         rows.append({
             "label": label,
+            # Manual rows keep the time the human typed, so the editor shows it
+            # back verbatim rather than the windows it was snapped to.
+            "manual": label in manual,
+            "spec": manual[label].spec if label in manual else "",
             # For no_match rows the "name" is often the label itself — show blank
             # so the human types a real name into an empty field.
             "name": "" if name == label else name,

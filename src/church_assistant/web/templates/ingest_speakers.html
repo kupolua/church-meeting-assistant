@@ -4,6 +4,13 @@
 
 {% block main %}
 <article class="dashboard-page speakers-editor">
+    {% if error %}
+    <div class="flash flash-error" role="alert">⚠ {{ error }}</div>
+    {% endif %}
+    {% if ok %}
+    <div class="flash flash-ok" role="status">✓ {{ ok }}</div>
+    {% endif %}
+
     <header class="dashboard-header">
         <h1>{{ header }}</h1>
         <p><small>
@@ -32,6 +39,7 @@
             <span class="sp-badge sp-review">⚠ слабкий збіг</span>
             <span class="sp-badge sp-no_match">❓ невідомий голос</span>
             <span class="sp-badge sp-invalid">🚫 мало мовлення</span>
+            <span class="sp-badge sp-manual">✋ доданий вручну</span>
         </div>
     </section>
 
@@ -54,11 +62,23 @@
                             {% if r.flag == 'review' %}<span class="sp-badge sp-review" title="слабкий збіг — перевір">⚠</span>
                             {% elif r.flag == 'no_match' %}<span class="sp-badge sp-no_match" title="невідомий голос — введи імʼя">❓</span>
                             {% elif r.flag == 'invalid' %}<span class="sp-badge sp-invalid" title="замало мовлення для фінгерпринту">🚫</span>
+                            {% elif r.flag == 'manual' %}<span class="sp-badge sp-manual" title="доданий вручну — діаризація його не почула">✋</span>
+                            {% endif %}
+                            {% if r.manual %}
+                            <label class="sp-remove"><input type="checkbox" name="remove_{{ r.label }}" value="1"> прибрати</label>
                             {% endif %}
                         </td>
                         <td class="sp-time">
                             <strong>{{ r.total_hms }}</strong>
                             <small>· {{ r.segments }} сегм.</small>
+                            {% if r.manual %}
+                            <input type="text"
+                                   class="sp-time-input"
+                                   name="time_{{ r.label }}"
+                                   value="{{ r.spec }}"
+                                   title="Коли ця людина говорила"
+                                   autocomplete="off">
+                            {% endif %}
                         </td>
                         <td class="sp-samples">
                             {% if r.samples %}
@@ -78,9 +98,44 @@
                         </td>
                     </tr>
                     {% endfor %}
+
+                    {# ── Add a participant diarization never heard ──────────── #}
+                    <tr class="sp-flag-manual sp-add-row">
+                        <td class="sp-label">
+                            <code>{{ next_label }}</code>
+                            <span class="sp-badge sp-manual" title="новий голос, доданий вручну">✋</span>
+                        </td>
+                        <td class="sp-time">
+                            <input type="text"
+                                   class="sp-time-input"
+                                   name="manual_new_time"
+                                   placeholder="1:23:45"
+                                   title="Час, коли він говорив: 12:34, або діапазон 12:34-12:50"
+                                   autocomplete="off">
+                        </td>
+                        <td class="sp-samples">
+                            <small>заповниться після збереження</small>
+                        </td>
+                        <td class="sp-name">
+                            <input type="text"
+                                   name="manual_new_name"
+                                   placeholder="імʼя учасника, якого немає в списку"
+                                   autocomplete="off">
+                        </td>
+                    </tr>
                 </tbody>
             </table>
         </div>
+
+        <p class="speakers-manual-help"><small>
+            <strong>✋ Немає когось у списку?</strong> Якщо людина сказала лише пару фраз,
+            діаризація могла не виділити її голос окремо. Впиши <strong>час</strong>, коли вона
+            говорила, і <strong>імʼя</strong> — в останньому рядку таблиці. Формат:
+            <code>1:23:45</code> (одна мітка), <code>12:30, 47:05</code> (декілька) або
+            <code>12:30-12:50</code> (діапазон). Ці репліки перейдуть до неї, і вона потрапить
+            у «Присутні» навіть з кількома секундами мовлення.
+            За раз додається один учасник — збережи й повтори, якщо їх кілька.
+        </small></p>
 
         <div class="speakers-actions">
             <button type="submit">{{ submit_label }}</button>

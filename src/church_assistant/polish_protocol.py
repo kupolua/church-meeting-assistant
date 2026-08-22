@@ -2,6 +2,7 @@
 
 Adds to v2:
 - Detects attendees from RTTM: anyone speaking >= MIN_SPEECH_SECONDS
+  (plus anyone a human added by hand — see ingestion/manual_speakers.py)
 - Excludes SPEAKER_05 (known artifact)
 - Lists attendees in order of first appearance in the meeting
 - Maps SPEAKER_XX → canonical name via speakers.json + aliases
@@ -308,7 +309,10 @@ def detect_attendees(
     Steps:
         1. Read speakers.json _meta.invalid_embedding (list of bad labels)
         2. Load RTTM, sum speech time per label (skipping invalid ones)
-        3. Filter labels below min_speech_seconds
+        3. Filter labels below min_speech_seconds — EXCEPT labels a human
+           added by hand (_meta.manual_speakers). Someone who said two
+           sentences never clears a 30s threshold, and the whole point of
+           adding them manually is that a person asserts they were there.
         4. Sort by first appearance in audio
         5. Map SPEAKER_XX → name via speakers.json, then canonical via aliases
     """
@@ -317,6 +321,7 @@ def detect_attendees(
 
     # Step 1: read excluded labels from speakers.json metadata
     exclude_labels: set[str] = set()
+    always_labels: set[str] = set()
     speakers_map: dict[str, str] = {}
     if speakers_map_path.exists():
         with speakers_map_path.open("r", encoding="utf-8") as f:
@@ -324,6 +329,11 @@ def detect_attendees(
         # Extract meta-driven exclusions
         meta = speakers_data.get("_meta", {})
         exclude_labels = set(meta.get("invalid_embedding", []))
+        always_labels = {
+            str(e["label"])
+            for e in (meta.get("manual_speakers") or [])
+            if isinstance(e, dict) and e.get("label")
+        }
         # Speaker-XX → name (without _meta)
         speakers_map = {
             k: v for k, v in speakers_data.items() if not k.startswith("_")
@@ -347,7 +357,7 @@ def detect_attendees(
     # Step 3: filter by min speech
     qualified = [
         speaker for speaker, total in speech_total.items()
-        if total >= min_speech_seconds
+        if total >= min_speech_seconds or speaker in always_labels
     ]
 
     # Step 4: sort by first appearance

@@ -1024,6 +1024,142 @@ def test_pdf_export() -> None:
     ok("rendered text: title, attendees, no timestamps / ** / cid artefacts")
 
 
+def test_manual_speaker() -> None:
+    """
+    A participant diarization never heard: added by hand from a timestamp.
+
+    The point of the feature is that the typed time becomes a REAL diarization
+    segment — so the checks are about the RTTM, not about the form round-trip.
+    """
+    print("\n11. Ручне додавання спікера")
+    print("-" * 66)
+
+    import json as _json
+    from fastapi.testclient import TestClient
+    from church_assistant import polish_protocol
+    from church_assistant.ingestion import manual_speakers, speakers as speakers_util
+    from church_assistant.web.main import app
+
+    a = tenant_paths.paths_for("church-a")
+    folder = a.meeting_dir("2026-06-15")
+    rttm = folder / "diarization.rttm"
+    speakers_json = folder / "speakers.json"
+    pristine = folder / manual_speakers.PRISTINE_NAME
+    for stale in (pristine,):
+        stale.unlink(missing_ok=True)
+
+    # Two clustered speakers; the guest spoke inside SPEAKER_01's stretch.
+    rttm.write_text(
+        "SPEAKER audio 1 0.000 40.000 <NA> <NA> SPEAKER_00 <NA> <NA>\n"
+        "SPEAKER audio 1 40.000 40.000 <NA> <NA> SPEAKER_01 <NA> <NA>\n",
+        encoding="utf-8",
+    )
+    (folder / "audio_transcript.json").write_text(_json.dumps({"segments": [
+        {"start": 0.0, "end": 40.0, "text": "довга репліка"},
+        {"start": 40.0, "end": 52.0, "text": "ще одна"},
+        {"start": 52.0, "end": 60.0, "text": "пара фраз гостя"},
+        {"start": 60.0, "end": 80.0, "text": "далі знову"},
+    ]}), encoding="utf-8")
+    speakers_json.write_text(_json.dumps({
+        "_meta": {"needs_review": [], "no_match": [], "invalid_embedding": []},
+        "SPEAKER_00": "Анна А", "SPEAKER_01": "Богдан Б",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    # A previous run may have left a job for this date; the route refuses to
+    # re-run a meeting that is already being processed.
+    async def _clear_jobs() -> None:
+        pool = await get_pool()
+        try:
+            async with tenant_cursor(pool, TENANT_A) as cur:
+                await cur.execute(
+                    "DELETE FROM ingestion_jobs WHERE meeting_date = %s", ("2026-06-15",)
+                )
+        finally:
+            await close_pool()
+
+    asyncio.run(_clear_jobs())
+
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+
+        r = client.get("/meetings/2026-06-15/speakers")
+        assert r.status_code == 200
+        assert 'name="manual_new_time"' in r.text and 'name="manual_new_name"' in r.text
+        assert "SPEAKER_02" in r.text, "the row must offer the next free label"
+        ok("editor offers an empty row with the next free SPEAKER_XX")
+
+        # A time nobody can parse must not save anything and must not queue a
+        # multi-hour re-run — it comes back with the message instead.
+        before = speakers_json.read_text()
+        r = client.post("/meetings/2026-06-15/speakers", data={
+            "name_SPEAKER_00": "Анна А", "name_SPEAKER_01": "Богдан Б",
+            "manual_new_time": "колись по обіді", "manual_new_name": "Гість",
+        })
+        assert r.status_code == 303 and "/speakers?error=" in r.headers["location"]
+        assert speakers_json.read_text() == before, "nothing may be written on error"
+        ok("an unparsable timestamp refuses the whole submission")
+
+        r = client.post("/meetings/2026-06-15/speakers", data={
+            "name_SPEAKER_00": "Анна А", "name_SPEAKER_01": "Богдан Б",
+            "manual_new_time": "0:55", "manual_new_name": "Гість Іван",
+        })
+        assert r.status_code == 303, r.status_code
+        assert "/ingest?ok=" in r.headers["location"], r.headers["location"]
+        ok("saving a manual speaker queues the re-run like any other edit")
+
+    meta, mapping = speakers_util.load_speakers(speakers_json)
+    assert mapping["SPEAKER_02"] == "Гість Іван"
+    entries = manual_speakers.load_entries(meta)
+    assert [e.label for e in entries] == ["SPEAKER_02"]
+    # 0:55 fell inside the 52–60 phrase, so the WHOLE phrase moves: attribution
+    # is per Whisper segment and half a phrase cannot change speaker.
+    assert entries[0].windows == [(52.0, 60.0)], entries[0].windows
+    ok("the typed moment snapped to the phrase spoken at it (52–60s)")
+
+    assert pristine.exists(), "pyannote's own diarization must be preserved"
+    stats = speakers_util.rttm_speaker_stats(rttm)
+    assert stats["SPEAKER_02"]["total_s"] == 8.0
+    # Subtracted, not merely inserted: merge_transcript picks the DOMINANT
+    # speaker, so an added segment sharing the window would lose 12s to 8s.
+    assert stats["SPEAKER_01"]["total_s"] == 32.0, stats["SPEAKER_01"]
+    assert stats["SPEAKER_00"]["total_s"] == 40.0, "other speakers untouched"
+    ok("RTTM rewritten: window given to the guest and taken from SPEAKER_01")
+
+    # Eight seconds is far below polish_protocol's 30s attendance threshold —
+    # a machine heuristic that must not overrule a person saying "he was there".
+    attendees = polish_protocol.detect_attendees(rttm, speakers_json, {})
+    assert attendees == ["Анна А", "Богдан Б", "Гість Іван"], attendees
+    ok("manual speaker counts as an attendee despite the 30s minimum")
+
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+        r = client.get("/meetings/2026-06-15/speakers")
+        assert r.status_code == 200
+        assert 'name="time_SPEAKER_02"' in r.text and 'value="0:55"' in r.text
+        assert 'name="remove_SPEAKER_02"' in r.text
+        assert "SPEAKER_03" in r.text, "the add-row moves on to the next label"
+        ok("saved row comes back editable (time + remove) with samples filled")
+
+        # Another church cannot reach it — same guard as every meeting route.
+        assert client.post("/meetings/2026-06-22/speakers", data={}).status_code == 404
+        ok("another church's meeting is 404, not an editable speakers.json")
+
+    # Removing restores pyannote's file exactly — the edit was never destructive.
+    gone = manual_speakers.apply_edits(
+        folder / "audio_transcript.json", meta, mapping,
+        [manual_speakers.ManualInput(label="SPEAKER_02", spec="0:55",
+                                     name="Гість Іван", remove=True)],
+    )
+    manual_speakers.rebuild_rttm(rttm, gone.entries)
+    assert rttm.read_text() == pristine.read_text()
+    assert manual_speakers.META_KEY not in gone.meta
+    ok("removing the manual speaker restores the original diarization")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -1061,6 +1197,7 @@ def main() -> int:
         test_sessions()
         test_hardening()
         test_pdf_export()
+        test_manual_speaker()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

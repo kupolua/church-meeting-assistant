@@ -1033,6 +1033,7 @@ a.dash-btn {
 .sp-badge.sp-review   { background: #fff3cd; color: #7a5c00; }
 .sp-badge.sp-no_match { background: #e7e0ff; color: #4b2fa0; }
 .sp-badge.sp-invalid  { background: #fdecea; color: #a02622; }
+.sp-badge.sp-manual   { background: #dff3e4; color: #1d6b3a; }
 
 .speakers-table td { vertical-align: middle; }
 
@@ -1049,6 +1050,38 @@ a.dash-btn {
 tr.sp-flag-review   { background: rgba(255, 243, 205, 0.35); }
 tr.sp-flag-no_match { background: rgba(231, 224, 255, 0.40); }
 tr.sp-flag-invalid  { background: rgba(253, 236, 234, 0.45); }
+tr.sp-flag-manual   { background: rgba(223, 243, 228, 0.45); }
+
+/* Manually added speakers: a typed timestamp instead of a diarized cluster */
+
+.speakers-table .sp-time-input {
+    margin: 0.25rem 0 0 0;
+    width: 100%;
+    min-width: 7rem;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.speakers-table .sp-remove {
+    display: block;
+    margin: 0.25rem 0 0 0;
+    font-size: 0.75rem;
+    color: #a02622;
+    cursor: pointer;
+}
+
+.speakers-table .sp-remove input {
+    margin: 0 0.2rem 0 0;
+    vertical-align: middle;
+}
+
+/* The add-row is a form, not a record — dashed to say "nothing here yet". */
+tr.sp-add-row td { border-top: 2px dashed #b9d9c4; }
+
+.speakers-manual-help {
+    margin: 0.75rem 0 0 0;
+    color: #555;
+}
 
 .speakers-actions {
     display: flex;
