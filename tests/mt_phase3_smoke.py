@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -317,6 +318,32 @@ def test_portable_meeting_dir() -> None:
         f"(tenant, date): {', '.join(offenders)}"
     )
     ok("source scan: no module reads the stored meeting_dir column")
+
+    # 4b. Same tactic, different silent failure: a module that reads config with
+    #     a bare os.getenv at import level is correct only while something else
+    #     happened to call load_dotenv() earlier in the import chain. That is not
+    #     a style question — shared/health.py did exactly this, and after the
+    #     split it health-checked the laptop's leftover Qdrant on localhost:6333
+    #     instead of the VPS's, looking healthy only because the leftover was
+    #     still up. The worker would have kept indexing into nothing.
+    stale: list[str] = []
+    for py in sorted(src_root.rglob("*.py")):
+        text = py.read_text(encoding="utf-8")
+        head = text.split("\ndef ", 1)[0].split("\nclass ", 1)[0]
+        if not re.search(r"^[A-Z_]+ *= *(int\()?os\.getenv", head, re.M):
+            continue
+        # An actual call at the start of a line — not the string appearing in a
+        # comment. The first version of this check was fooled by its own
+        # explanatory comment mentioning load_dotenv(), and passed with the bug
+        # deliberately put back.
+        if re.search(r"^load_dotenv\(\)", head, re.M):
+            continue
+        stale.append(str(py.relative_to(tenant_paths.REPO_ROOT)))
+    assert not stale, (
+        "these read configuration at import without loading .env first, so their "
+        f"values depend on import order: {', '.join(stale)}"
+    )
+    ok("source scan: no module reads config at import without load_dotenv()")
 
     # 5. And the same thing through the real routes. The three readers in
     #    web/routes/ingest.py had no coverage, which is exactly how the CSP

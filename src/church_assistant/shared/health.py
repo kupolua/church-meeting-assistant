@@ -21,11 +21,21 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
+from dotenv import load_dotenv
 
 
 # ─────────────────────────────────────────────────────────────
 # Config (from .env, with sensible defaults)
 # ─────────────────────────────────────────────────────────────
+
+# Load .env before reading it. Without this the constants below take whatever is
+# in the real environment, so they are correct only when something else happened
+# to call load_dotenv() earlier in the import chain. That order dependency hid a
+# live bug after the split: this module kept health-checking the laptop's
+# leftover Qdrant at localhost:6333 instead of the VPS's, and looked fine only
+# because the leftover was still running. load_dotenv() never overrides an
+# existing variable, so anything that sets os.environ first is unaffected.
+load_dotenv()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")

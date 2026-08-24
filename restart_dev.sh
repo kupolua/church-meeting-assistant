@@ -44,10 +44,11 @@ if [[ -z "$DOCKER" ]]; then
     done
 fi
 
-# defaults; overridden from .env below if present
-OLLAMA_URL="http://localhost:11434"
-QDRANT_URL="http://localhost:6333"
-OLLAMA_MODEL="gemma4:26b"
+# Defaults live at the point of use (cfg … then ${…:-default}), NOT as variables
+# assigned here. cfg() uses indirect expansion, which sees the script's OWN
+# variables and not just the environment — so pre-assigning a default made it
+# win over .env every time, and the script cheerfully health-checked
+# localhost:6333 while the services talked to the VPS.
 
 # Which half of the system this machine runs.
 #   all    — one machine holds everything (the laptop, as it has always been)
@@ -65,8 +66,8 @@ env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/#.
 
 # Exported variable first, .env second — the same precedence the application
 # gets from load_dotenv(), which does not override an existing environment.
-# Reading only .env here would let the script report health for an endpoint the
-# services are not using.
+# NOTE the indirect expansion caveat above: never pre-assign a variable this is
+# called for, or that assignment silently becomes the answer.
 cfg() { local v="${!1:-}"; [[ -n "$v" ]] && { echo "$v"; return; }; env_val "$1"; }
 
 ROLE="$(cfg CMA_ROLE)"; ROLE="${ROLE:-$CMA_ROLE_DEFAULT}"

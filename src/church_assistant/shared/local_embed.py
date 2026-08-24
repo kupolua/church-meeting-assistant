@@ -19,7 +19,12 @@ from __future__ import annotations
 import os
 
 import httpx
+from dotenv import load_dotenv
 
+
+# Load .env before reading it — see shared/health.py for why these constants
+# must not depend on someone else having called load_dotenv() first.
+load_dotenv()
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 EMBED_DIM = 1024

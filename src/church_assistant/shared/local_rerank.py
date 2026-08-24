@@ -21,7 +21,13 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load .env before reading it — see shared/health.py for why these constants
+# must not depend on someone else having called load_dotenv() first.
+load_dotenv()
 
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_DEVICE = os.getenv("RERANK_DEVICE", "auto")
@@ -94,9 +100,27 @@ def rerank(
     """
     if not documents:
         return []
+
+    # Timed in two parts on purpose. A rerank that is slow because the model is
+    # loading for the first time and one that is slow every single call are
+    # different problems, and the single number the query row records cannot
+    # tell them apart — which is exactly how a tenfold gap between this call in
+    # the worker and the same call in a one-off process stayed unexplained.
+    t0 = time.perf_counter()
     model = _get_model()
+    t_load = time.perf_counter() - t0
+
     pairs = [(query, doc) for doc in documents]
+    t1 = time.perf_counter()
     raw = model.predict(pairs)  # logits (np.ndarray), one per pair
+    t_predict = time.perf_counter() - t1
+
+    _std.info(
+        "rerank: %d pairs, %d chars → load %.2fs + predict %.2fs (device=%s)",
+        len(pairs), sum(len(d) for d in documents), t_load, t_predict,
+        getattr(getattr(model, "model", None), "device", "?"),
+    )
+
     scored = [(i, _sigmoid(float(s))) for i, s in enumerate(raw)]
     scored.sort(key=lambda t: t[1], reverse=True)
     if top_k is not None:

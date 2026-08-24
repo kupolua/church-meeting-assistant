@@ -69,6 +69,10 @@ SESSION_COOKIE = "cma_session"
 # The idle window must stay well above web_sessions_repo.TOUCH_INTERVAL_SECONDS
 # (last_seen_at is refreshed at most that often, so a shorter window would
 # expire sessions that are actually in use). 0 disables the idle check.
+# Load .env before reading it — see shared/health.py for why these constants
+# must not depend on someone else having called load_dotenv() first.
+load_dotenv()
+
 SESSION_TTL_SECONDS = int(os.getenv("WEB_SESSION_TTL", str(12 * 3600)))
 SESSION_IDLE_SECONDS = int(os.getenv("WEB_SESSION_IDLE_TIMEOUT", str(2 * 3600)))
 
