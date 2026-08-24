@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 import httpx
+from dotenv import load_dotenv
 from qdrant_client import AsyncQdrantClient
 
 from church_assistant.shared import collections, local_embed, local_rerank
@@ -54,9 +55,31 @@ RERANK_MODEL = local_rerank.RERANK_MODEL            # local: bge-reranker-v2-m3
 DEFAULT_LIMIT = 5
 RERANK_POOL_MULTIPLIER = 4
 
+# Load .env before reading any of it. Without this the constants below take
+# whatever is in the real environment, which means they are only correct when
+# something else happened to call load_dotenv() earlier in the import chain —
+# true for the worker, false for a bare `from shared import rag`. That order
+# dependency is why GEMMA_KEEP_ALIVE below read as empty in the worker while
+# QDRANT_URL, three lines away, resolved fine. load_dotenv() never overrides an
+# existing variable, so tests that set os.environ first are unaffected.
+load_dotenv()
+
 GEMMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))
+
+# How long Ollama keeps Gemma resident after answering. Empty = do not send the
+# field at all, i.e. Ollama's own default (5m) — so nothing changes for anyone
+# who has not set this.
+#
+# Why it is worth setting on a machine that also reranks: Gemma is 17 GB of
+# unified memory, and while it sits there the cross-encoder fights it for the
+# rest. Measured on the M1, 20 candidates: 0.27s with Gemma unloaded, 15.47s
+# with it resident — 58× on nothing but memory pressure. Unloading between
+# queries trades ~17s of reload for that, which is roughly even on the clock and
+# much better for everything else on the machine: the same laptop is running a
+# three-hour transcription, and 31 GB of pageouts is what the swapping cost.
+GEMMA_KEEP_ALIVE = os.getenv("GEMMA_KEEP_ALIVE", "").strip()
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
@@ -369,22 +392,25 @@ async def call_gemma(question: str, hits: list[Hit]) -> str:
     """
     user_prompt = _build_gemma_user_prompt(question, hits)
 
+    payload: dict[str, Any] = {
+        "model": GEMMA_MODEL,
+        "messages": [
+            {"role": "system", "content": GEMMA_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_ctx": 16384,
+        },
+    }
+    # Omitted entirely when unset — sending "keep_alive": null would mean
+    # something to Ollama, and it is not what "leave the default alone" means.
+    if GEMMA_KEEP_ALIVE:
+        payload["keep_alive"] = GEMMA_KEEP_ALIVE
+
     async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-        response = await client.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": GEMMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": GEMMA_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_ctx": 16384,
-                },
-            },
-        )
+        response = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
         return data.get("message", {}).get("content", "(empty response)")
