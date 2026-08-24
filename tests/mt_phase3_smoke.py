@@ -1536,6 +1536,20 @@ def test_artifact_sync() -> None:
             "the reviewer's edit did not reach the worker"
         ok("a speakers.json edited on the web wins the pull before analysis")
 
+        # ── A folder the control plane has never seen ─────────
+        # rsync creates no intermediate directories and reports the omission as
+        # a bare "error in file IO" (exit 11). The first version of this test
+        # missed it because the fixture created the remote folder first — which
+        # is exactly the assumption that does not hold on a real server.
+        fresh = Path("tenants") / "church-a" / "meetings" / "2026-11-02"
+        (local / fresh).mkdir(parents=True)
+        (local / fresh / "polished.md").write_text("новий протокол\n", encoding="utf-8")
+        assert not (remote / fresh).exists()
+        asyncio.run(artifact_sync.push_meeting(local / fresh))
+        assert (remote / fresh / "polished.md").exists(), \
+            "push did not create the remote path"
+        ok("push creates a remote folder that does not exist yet")
+
         # ── Failure surfaces, it does not pass silently ───────
         os.environ["ARTIFACT_SYNC_REMOTE"] = str(remote / "does-not-exist")
         try:
@@ -1546,7 +1560,10 @@ def test_artifact_sync() -> None:
         ok("a failed copy raises SyncError → the job requeues")
 
         # ── Disabled is the default ───────────────────────────
-        del os.environ["ARTIFACT_SYNC_REMOTE"]
+        # Empty, not deleted: load_dotenv() would refill a deleted variable from
+        # .env, which on this machine now configures a real remote. An empty
+        # variable still exists, so it wins — and empty IS the disabled state.
+        os.environ["ARTIFACT_SYNC_REMOTE"] = ""
         assert not artifact_sync.enabled()
         untouched = local / "tenants" / "church-a" / "meetings" / "2026-10-05"
         asyncio.run(artifact_sync.pull_meeting(untouched))

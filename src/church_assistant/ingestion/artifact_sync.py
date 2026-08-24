@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -77,7 +78,13 @@ def _relative(path: Path) -> str:
         ) from e
 
 
-async def _rsync(src: str, dst: str, *, label: str) -> None:
+def _is_remote(target: str) -> bool:
+    """True for user@host:/path — false for a plain local path (used in tests)."""
+    head = target.split("/", 1)[0]
+    return ":" in head
+
+
+async def _rsync(src: str, dst: str, *, label: str, mkdir_remote: bool = False) -> None:
     """Run one rsync, stream its output, raise on failure."""
     ssh = get_artifact_sync_ssh()
     cmd = [
@@ -86,8 +93,20 @@ async def _rsync(src: str, dst: str, *, label: str) -> None:
         # rewrites files, and a mis-scoped --delete against the folder holding
         # a church's only copy of a recording is not a mistake worth risking.
         "-e", ssh,
-        src, dst,
     ]
+    if mkdir_remote:
+        # rsync does not create intermediate directories, and fails with a bare
+        # "error in file IO" (exit 11) when they are missing. --mkpath would say
+        # this properly, but macOS ships openrsync (protocol 29), which has no
+        # such flag — so create the path in the remote shell rsync is about to
+        # start anyway. Portable across both implementations, and no extra
+        # round trip.
+        if _is_remote(dst):
+            path = dst.split(":", 1)[1]
+            cmd += ["--rsync-path", f"mkdir -p {shlex.quote(path)} && rsync"]
+        else:
+            Path(dst).mkdir(parents=True, exist_ok=True)
+    cmd += [src, dst]
     _std.info("→ [%s] $ %s", label, " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -128,7 +147,10 @@ async def push_meeting(meeting_dir: Path) -> None:
         return
     rel = _relative(meeting_dir)
     remote = get_artifact_sync_remote().rstrip("/")
-    await _rsync(f"{str(meeting_dir).rstrip('/')}/", f"{remote}/{rel}", label=f"push {rel}")
+    await _rsync(
+        f"{str(meeting_dir).rstrip('/')}/", f"{remote}/{rel}",
+        label=f"push {rel}", mkdir_remote=True,
+    )
 
 
 async def pull_voice_profiles(profiles_dir: Path) -> None:
@@ -162,7 +184,9 @@ def _smoke_test() -> None:
 
     with tempfile.TemporaryDirectory() as d:
         os.environ["DATA_ROOT"] = d
-        os.environ.pop("ARTIFACT_SYNC_REMOTE", None)
+        # Empty rather than absent: load_dotenv() refills an absent variable
+        # from .env, and empty is what "disabled" actually means.
+        os.environ["ARTIFACT_SYNC_REMOTE"] = ""
         root = Path(d).resolve()
 
         assert not enabled()
@@ -193,7 +217,7 @@ def _smoke_test() -> None:
             pass
         print("5. path outside DATA_ROOT refused ✓")
 
-        os.environ.pop("ARTIFACT_SYNC_REMOTE", None)
+        os.environ["ARTIFACT_SYNC_REMOTE"] = ""
 
     print("=" * 66)
     print("  ✓ ALL ARTIFACT_SYNC SMOKE TESTS PASSED")
