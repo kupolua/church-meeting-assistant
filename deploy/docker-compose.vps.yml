@@ -1,0 +1,61 @@
+# The VPS's data services: Postgres and Qdrant, one command.
+#
+#   docker compose -f deploy/docker-compose.vps.yml up -d
+#
+# BOTH bind to the WireGuard address (10.10.0.1) and nothing else. They have no
+# authentication worth relying on from the internet — Postgres has a password,
+# Qdrant has none at all — so reachability is the access control. A port scan of
+# the VPS's public address must find neither.
+#
+# If a container fails to start with "cannot assign requested address", wg0 is
+# not up yet. See the boot-order note in docs/vps_deploy.md step 3: docker needs
+# `After=wg-quick@wg0.service`, or it will race the tunnel on every reboot.
+#
+# Versions are PINNED, both because the M1's data is restored into these (a
+# 1.18 Qdrant snapshot is not guaranteed to load into whatever is `latest` that
+# morning) and because a church's archive is not the place to find out.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cma-postgres
+    restart: unless-stopped
+    ports:
+      # 5432 here, not the M1's 5433 — that port only exists because langfuse
+      # already held 5432 on the laptop. Nothing competes for it on the VPS.
+      - "10.10.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: cma
+      # `cma`, not `postgres`: the M1's container was created this way, and the
+      # dump names cma as the owner of every table and in every grant. A
+      # differently-named superuser here restores objects owned by a role the
+      # RLS policies never mention.
+      POSTGRES_USER: cma
+      # From deploy/env/vps.env — never inline here.
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./backup:/backup          # where dumps land; see deploy/migrate/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cma -d cma"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.1
+    container_name: cma-qdrant
+    restart: unless-stopped
+    ports:
+      - "10.10.0.1:6333:6333"
+      - "10.10.0.1:6334:6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+      - ./snapshots:/qdrant/snapshots
+    environment:
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/snapshots
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

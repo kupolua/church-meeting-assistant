@@ -1,0 +1,50 @@
+# The web tier, on the VPS.
+#
+#   sudo cp deploy/systemd/*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cma-web
+#
+# Deliberately NOT restart_dev.sh: that script assumes one machine holding
+# everything, starts four services, and runs uvicorn with --reload because it is
+# a laptop helper. A church's web tier should come back after a reboot without
+# anyone logging in, and should not restart itself because a file changed.
+
+[Unit]
+Description=CMA web (FastAPI)
+# Postgres lives in a container behind the tunnel-bound address, so both have to
+# exist before this is worth starting. It would survive them being late — the
+# pool connects lazily — but failing fast reads better in `systemctl status`.
+After=network-online.target wg-quick@wg0.service docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=cma
+Group=cma
+WorkingDirectory=/srv/cma
+EnvironmentFile=/srv/cma/.env
+
+# No --reload: production. Bound to localhost because a TLS terminator (caddy
+# or nginx) sits in front — see docs/vps_deploy.md step 6. Binding 0.0.0.0 here
+# would put an un-TLS'd login form on the public internet.
+ExecStart=/usr/local/bin/uv run uvicorn church_assistant.web.main:app \
+    --host 127.0.0.1 --port 8000
+
+Restart=on-failure
+RestartSec=5s
+
+# The archive and the session keys are the whole asset. Give the unit the least
+# it can work with.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/cma/data /srv/cma/logs
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cma-web
+
+[Install]
+WantedBy=multi-user.target

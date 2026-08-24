@@ -49,12 +49,35 @@ OLLAMA_URL="http://localhost:11434"
 QDRANT_URL="http://localhost:6333"
 OLLAMA_MODEL="gemma4:26b"
 
+# Which half of the system this machine runs.
+#   all    — one machine holds everything (the laptop, as it has always been)
+#   worker — Postgres and Qdrant answer across the tunnel and the web lives on
+#            the VPS; this box keeps Ollama and the two workers
+# Set CMA_ROLE=worker in .env after the split (deploy/env/m1.env.example).
+CMA_ROLE_DEFAULT="all"
+
 # read a KEY=value from .env, stripping quotes / inline comments / whitespace
 env_val() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/#.*//' | tr -d '"' | xargs; }
+
+# Exported variable first, .env second — the same precedence the application
+# gets from load_dotenv(), which does not override an existing environment.
+# Reading only .env here would let the script report health for an endpoint the
+# services are not using.
+cfg() { local v="${!1:-}"; [[ -n "$v" ]] && { echo "$v"; return; }; env_val "$1"; }
+
+ROLE="$(cfg CMA_ROLE)"; ROLE="${ROLE:-$CMA_ROLE_DEFAULT}"
+case "$ROLE" in all|worker) : ;; *) echo "невідома CMA_ROLE: $ROLE (all|worker)" >&2; exit 1 ;; esac
+
+# Follow .env rather than assuming localhost: in the worker role these point
+# across the tunnel, and checking the wrong endpoint would report health for a
+# service nobody is using.
+QDRANT_URL="$(cfg QDRANT_URL)"; QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
+OLLAMA_URL="$(cfg OLLAMA_URL)"; OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+OLLAMA_MODEL="$(cfg OLLAMA_MODEL)"; OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 if [[ -f .env ]]; then
-    OLLAMA_URL="$(env_val OLLAMA_URL)";   OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-    QDRANT_URL="$(env_val QDRANT_URL)";   QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
-    OLLAMA_MODEL="$(env_val OLLAMA_MODEL)"; OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+    OLLAMA_URL="$(cfg OLLAMA_URL)";   OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+    QDRANT_URL="$(cfg QDRANT_URL)";   QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
+    OLLAMA_MODEL="$(cfg OLLAMA_MODEL)"; OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -80,6 +103,10 @@ check_prereqs() {
     for bin in curl uv; do
         command -v "$bin" >/dev/null 2>&1 || { err "не знайдено '$bin' у PATH"; exit 1; }
     done
+    # In the worker role Postgres and Qdrant live on the VPS; there is nothing
+    # local for docker to manage, and demanding Docker Desktop here would block
+    # transcription for no reason.
+    [[ "$ROLE" == "worker" ]] && return 0
     [[ -n "$DOCKER" ]] || { err "не знайдено бінарник 'docker' (Docker Desktop встановлено?)"; exit 1; }
     if ! "$DOCKER" info >/dev/null 2>&1; then
         err "Docker daemon не запущений. Запусти Docker Desktop і повтори."
@@ -108,6 +135,19 @@ ensure_container() {
 }
 
 check_postgres() {
+    if [[ "$ROLE" == "worker" ]]; then
+        local host port; host="$(cfg DB_HOST)"; port="$(cfg DB_PORT)"
+        host="${host:-127.0.0.1}"; port="${port:-5432}"
+        # No pg_isready without a local container, so ask the socket. A closed
+        # port here almost always means wg0 is down, not that Postgres died.
+        if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
+            ok "Postgres відповідає ($host:$port, через тунель)"
+        else
+            err "Postgres недоступний на $host:$port — підніми тунель: sudo wg-quick up wg0"
+            INFRA_OK=0
+        fi
+        return
+    fi
     ensure_container "$PG_CONTAINER" "Postgres" || { INFRA_OK=0; return; }
     if "$DOCKER" exec "$PG_CONTAINER" pg_isready -U "$(env_val DB_USER || echo cma)" >/dev/null 2>&1; then
         ok "Postgres приймає зʼєднання (:$(env_val DB_PORT || echo 5433))"
@@ -117,6 +157,14 @@ check_postgres() {
 }
 
 check_qdrant() {
+    if [[ "$ROLE" == "worker" ]]; then
+        if curl -sf -o /dev/null --max-time 4 "$QDRANT_URL/collections"; then
+            ok "Qdrant відповідає ($QDRANT_URL, через тунель)"
+        else
+            warn "Qdrant не відповідає ($QDRANT_URL) — індексація чекатиме"
+        fi
+        return
+    fi
     ensure_container "$QDRANT_CONTAINER" "Qdrant" || { warn "Qdrant недоступний — аналіз/індекс чекатимуть (worker health-гейтить)"; return; }
     if curl -sf -o /dev/null --max-time 4 "$QDRANT_URL/collections"; then
         ok "Qdrant відповідає ($QDRANT_URL)"
@@ -145,7 +193,13 @@ check_ollama() {
 # church_assistant services
 # ─────────────────────────────────────────────────────────────
 # label | pkill-pattern | command…
-SVC_LABELS=(web query-worker ingestion-worker telegram-bot)
+# The worker role runs only what needs the models. web and telegram-bot moved
+# to the VPS so the church can upload and ask at any hour without this laptop.
+if [[ "$ROLE" == "worker" ]]; then
+    SVC_LABELS=(query-worker ingestion-worker)
+else
+    SVC_LABELS=(web query-worker ingestion-worker telegram-bot)
+fi
 svc_pattern() {
     case "$1" in
         web)              echo "uvicorn church_assistant.web.main:app" ;;
@@ -247,12 +301,17 @@ case "$MODE" in
     --stop)
         hdr "⏹  Зупинка church_assistant-сервісів"
         stop_services
-        hdr "⏹  Зупинка контейнерів"
-        stop_containers
+        if [[ "$ROLE" == "worker" ]]; then
+            info "контейнери не чіпав — Postgres і Qdrant на VPS"
+        else
+            hdr "⏹  Зупинка контейнерів"
+            stop_containers
+        fi
         ok "готово"
         exit 0
         ;;
     --check) : ;;                 # just run infra checks below, then exit
+    --role)  echo "$ROLE"; exit 0 ;;
     --help|-h)
         # print the contiguous header comment block (lines after the shebang)
         awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
@@ -283,7 +342,12 @@ stop_services
 start_services
 
 hdr "📋 Підсумок"
-echo "  web:       http://$WEB_HOST:$WEB_PORT/   (дашборд)"
-echo "  логи:      tail -f logs/{web,query-worker,ingestion-worker,telegram-bot}.log"
+if [[ "$ROLE" == "worker" ]]; then
+    echo "  роль:      worker (web і бот — на VPS)"
+    echo "  логи:      tail -f logs/{query-worker,ingestion-worker}.log"
+else
+    echo "  web:       http://$WEB_HOST:$WEB_PORT/   (дашборд)"
+    echo "  логи:      tail -f logs/{web,query-worker,ingestion-worker,telegram-bot}.log"
+fi
 echo "  зупинити:  ./restart_dev.sh --stop"
 echo

@@ -1,0 +1,43 @@
+# The Telegram bot, on the VPS.
+#
+# It belongs here rather than on the M1 for the same reason the web does: the
+# bot only ACCEPTS questions (INSERT pending) and hands delivery to the worker.
+# Running it on the laptop would mean a question asked at 23:00 is not even
+# received until the laptop wakes; running it here means it is received
+# immediately and answered when the M1 gets to it.
+#
+# It does need the bot token in /srv/cma/.env — the one secret on this box that
+# is not about the church's own data.
+
+[Unit]
+Description=CMA Telegram bot (polling)
+After=network-online.target wg-quick@wg0.service docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+User=cma
+Group=cma
+WorkingDirectory=/srv/cma
+EnvironmentFile=/srv/cma/.env
+
+ExecStart=/usr/local/bin/uv run python -m church_assistant.bot.main
+
+# Telegram polling drops on any network blip and the process exits; always is
+# right here, unlike the web where a crash loop should stay visible.
+Restart=always
+RestartSec=10s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/cma/logs
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cma-telegram-bot
+
+[Install]
+WantedBy=multi-user.target

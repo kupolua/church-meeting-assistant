@@ -50,3 +50,6 @@ logs/
 
 # Cutover backups (contain the DB and a copy of .env — never commit)
 backups/
+
+# Migration export (deploy/migrate/export_from_m1.sh) — dumps, snapshots, ~2 GB
+migrate-out/

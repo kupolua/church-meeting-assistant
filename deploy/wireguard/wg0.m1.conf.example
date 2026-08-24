@@ -1,0 +1,25 @@
+# WireGuard on the M1 — the processing node, behind NAT.
+#
+#   cp wg0.m1.conf.example /opt/homebrew/etc/wireguard/wg0.conf
+#   chmod 600 /opt/homebrew/etc/wireguard/wg0.conf
+#   sudo wg-quick up wg0
+#
+# On macOS wg-quick creates a utun device; `wg show` still calls it wg0.
+
+[Interface]
+Address    = 10.10.0.2/24
+PrivateKey = <M1_PRIVATE_KEY>
+
+[Peer]
+PublicKey  = <VPS_PUBLIC_KEY>
+Endpoint   = <VPS_PUBLIC_IP>:51820
+
+# ONLY the tunnel subnet. 0.0.0.0/0 here would send every packet the laptop
+# sends — browsing, updates, everything — through the VPS, which is neither
+# wanted nor what this is for.
+AllowedIPs = 10.10.0.0/24
+
+# The laptop sits behind NAT, so the mapping has to be kept warm or the VPS
+# loses the way back and a running transcription stops being able to report
+# progress. 25s is the WireGuard convention.
+PersistentKeepalive = 25

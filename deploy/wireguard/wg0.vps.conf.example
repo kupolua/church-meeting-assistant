@@ -1,0 +1,25 @@
+# WireGuard on the VPS — the side with a public address.
+#
+# This tunnel is the ONLY way the M1 reaches Postgres and Qdrant. Neither is
+# exposed publicly: they bind to the tunnel address below (10.10.0.1), so a
+# port scan of the VPS's public IP finds nothing to talk to.
+#
+#   cp wg0.vps.conf.example /etc/wireguard/wg0.conf   (on the VPS)
+#   chmod 600 /etc/wireguard/wg0.conf
+#
+# Fill in the two keys — see docs/vps_deploy.md step 1 for generating them.
+
+[Interface]
+Address    = 10.10.0.1/24
+ListenPort = 51820
+PrivateKey = <VPS_PRIVATE_KEY>
+
+# No PostUp NAT rules on purpose: the M1 is not routing its internet through
+# here, it only needs to reach 10.10.0.1. Adding masquerade would turn this
+# box into an exit node nobody asked for.
+
+[Peer]
+# The M1 — the processing node. It has no fixed address, so it always dials
+# out and this side never initiates.
+PublicKey  = <M1_PUBLIC_KEY>
+AllowedIPs = 10.10.0.2/32
