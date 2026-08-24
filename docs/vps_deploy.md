@@ -184,6 +184,19 @@ systemctl daemon-reload
 *(Ротацію обох паролів на свіжі роби **після** cutover'а, окремим заходом: воркери на M1
 логіняться як `cma_app` саме в цю базу, тож міняти треба з двох боків синхронно.)*
 
+⚠️ **Жодних коментарів після значення.** systemd (`EnvironmentFile=` у юнітах) вважає
+`#` коментарем **лише** на початку рядка. `DB_PORT=5432  # примітка` виставить порт у
+весь цей рядок разом із приміткою, і web упаде з
+`missing "=" after "#" in connection info string`. Капкан у тому, що на M1 такий самий
+рядок працює: `python-dotenv` інлайнові коментарі вирізає, але `load_dotenv()` **не
+перезаписує** оточення, яке systemd уже зіпсував. Значення з `#` усередині (наприклад
+пароль) брати в лапки: `DB_PASSWORD='pa#ssword'`.
+
+Перевірити після заповнення:
+```bash
+grep -nE '^[A-Z_]+=.*#' /srv/cma/.env    # має бути порожньо
+```
+
 ```bash
 cp deploy/env/vps.env.example /srv/cma/.env    # заповнити три плейсхолдери
 chmod 600 /srv/cma/.env && chown cma:cma /srv/cma/.env
@@ -330,16 +343,34 @@ systemctl status cma-web --no-pager
 
 Веб слухає `127.0.0.1:8000`. Назовні — термінатор TLS:
 
+Спершу переконатись, що 80/443 вільні — Caddy, піднятий колись руками повз
+systemd, тримає порти й не дає юніту стартувати, а `systemctl reload` при цьому
+каже «not active» і збиває з пантелику:
+
+```bash
+ss -tlnp | grep -E ':80|:443'
+caddy stop 2>/dev/null || pkill -x caddy
+```
+
 ```bash
 apt install -y caddy
 cat > /etc/caddy/Caddyfile <<'EOF'
-cma.example.org {
+cma.rechurch.org.ua {
     reverse_proxy 127.0.0.1:8000
-    request_body { max_size 500MB }   # аудіо зустрічі — 65–106 МБ
+    request_body {
+        max_size 500MB
+    }
 }
 EOF
-systemctl reload caddy
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+systemctl enable --now caddy
 ```
+
+**Домен — справжній, не плейсхолдер.** Caddy бере сертифікат через ACME, тож
+`A`-запис має вказувати на VPS, а 80 і 443 — бути відкритими ззовні. Інакше на
+443 отримаєш `tlsv1 alert internal error`, а на 80 — редірект на голу IP.
+
+`enable --now`, а не `reload`: юніт ще жодного разу не стартував.
 
 `max_size` не забути: дефолт відріже завантаження запису, і форма впаде на
 файлі, який церква щойно 20 хвилин вантажила.
