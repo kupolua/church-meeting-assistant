@@ -63,3 +63,30 @@ def get_auto_index() -> bool:
     """Auto-run index_meeting into Qdrant after polish (full cycle)."""
     load_dotenv()
     return _bool_env("INGESTION_AUTO_INDEX", True)
+
+
+def get_artifact_sync_remote() -> str:
+    """
+    Where the authoritative copy of the artifacts lives, as an rsync target
+    (e.g. 'cma@10.10.0.1:/srv/cma/data'). Empty = this machine holds them.
+
+    Set on the processing node only. See ingestion/artifact_sync.py for why the
+    folder is copied at phase boundaries rather than mounted.
+    """
+    load_dotenv()
+    return (os.getenv("ARTIFACT_SYNC_REMOTE") or "").strip()
+
+
+def get_artifact_sync_ssh() -> str:
+    """
+    The `rsync -e` transport.
+
+    BatchMode by default: a worker that gets a passphrase prompt would hang on
+    an invisible question instead of failing the job, and a hung transcription
+    looks exactly like a slow one. Fail fast, requeue, be visible.
+    """
+    load_dotenv()
+    return (
+        os.getenv("ARTIFACT_SYNC_SSH")
+        or "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30"
+    ).strip()

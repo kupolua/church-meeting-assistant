@@ -58,13 +58,22 @@ from typing import Any
 
 # ─── Environment BEFORE any church_assistant import (config is read at import) ─
 #
-# Only DB_NAME is redirected. Host/user/password come from .env, i.e. the same
-# cma_app credentials the live services use — the role is cluster-wide, so
-# inventing a test password here would mean changing the LIVE one. What keeps
-# this safe is the database name: every connection below goes to cma_mt3.
+# DB_NAME is redirected, and so are host and port. User and password still come
+# from .env — the same cma_app credentials the live services use, because the
+# role is cluster-wide and inventing a test password here would mean changing
+# the LIVE one. What keeps this safe is the database name: every connection
+# below goes to cma_mt3.
+#
+# Host and port are pinned to the LOCAL container rather than followed from
+# .env, because after the split (docs/vps_deploy.md) .env points at the VPS and
+# the sandbox does not live there — nor should it. The suite must never open a
+# connection to the machine a church is being served from. Override with
+# CMA_SANDBOX_DB_HOST / _PORT if the sandbox moves.
 TMP = Path(tempfile.mkdtemp(prefix="cma_mt3_data_"))
 os.environ.update(
     DB_NAME="cma_mt3",
+    DB_HOST=os.environ.get("CMA_SANDBOX_DB_HOST", "127.0.0.1"),
+    DB_PORT=os.environ.get("CMA_SANDBOX_DB_PORT", "5433"),
     WEB_SECRET_KEY=secrets.token_urlsafe(48),
     DATA_ROOT=str(TMP),
     LEGACY_TENANT_SLUG="default",
@@ -90,6 +99,9 @@ from church_assistant.web import security  # noqa: E402
 TENANT_A, TENANT_B, TENANT_OFF = 2, 3, 4
 PASSWORD_A = "pravylnyi-parol-A"
 PASSWORD_B = "pravylnyi-parol-B"
+
+SPEAKERS_STALE = '{"SPEAKER_00": "старе"}'
+SPEAKERS_FIXED = '{"SPEAKER_00": "виправлене"}'
 
 passed: list[str] = []
 
@@ -1453,6 +1465,103 @@ def test_query_queue() -> None:
         ok("another church polling this query gets 404, not the answer")
 
 
+# ─────────────────────────────────────────────────────────────
+# 13. Artifact sync between the processing node and the control plane
+# ─────────────────────────────────────────────────────────────
+
+def test_artifact_sync() -> None:
+    """
+    The worker copies a meeting folder instead of mounting it.
+
+    rsync happily takes a local path where a remote one goes, so the real
+    transfer semantics can be exercised with no SSH and no VPS — which matters,
+    because the thing that actually breaks here is trailing slashes: get one
+    wrong and the pull lands in <date>/<date>/ while every path check still
+    passes.
+    """
+    print("\n13. Синхронізація артефактів (worker ↔ control plane)")
+    print("-" * 66)
+
+    from church_assistant.ingestion import artifact_sync
+
+    local = Path(tempfile.mkdtemp(prefix="cma_sync_local_"))
+    remote = Path(tempfile.mkdtemp(prefix="cma_sync_remote_"))
+    prev_root = os.environ["DATA_ROOT"]
+    prev_remote = os.environ.get("ARTIFACT_SYNC_REMOTE")
+
+    try:
+        os.environ["DATA_ROOT"] = str(local)
+        os.environ["ARTIFACT_SYNC_REMOTE"] = str(remote)
+        rel = Path("tenants") / "church-a" / "meetings" / "2026-09-21"
+        profiles = Path("tenants") / "church-a" / "voice_profiles"
+
+        # What the control plane has after an upload: audio and nothing else.
+        (remote / rel).mkdir(parents=True)
+        (remote / rel / "audio.m4a").write_bytes(b"pretend this is 68 MB")
+        (remote / profiles).mkdir(parents=True)
+        (remote / profiles / "Анна А.npy").write_bytes(b"\x00\x01")
+
+        # ── Pull ──────────────────────────────────────────────
+        asyncio.run(artifact_sync.pull_meeting(local / rel))
+        assert (local / rel / "audio.m4a").exists(), "audio did not arrive"
+        assert not (local / rel / "2026-09-21").exists(), "pull nested the folder in itself"
+        ok("pull brings the audio into the folder, not into a copy of it")
+
+        asyncio.run(artifact_sync.pull_voice_profiles(local / profiles))
+        assert (local / profiles / "Анна А.npy").exists()
+        ok("voice profiles arrive before diarization matches against them")
+
+        # ── Push ──────────────────────────────────────────────
+        (local / rel / "polished.md").write_text("## Присутні\n\n- Анна А\n", encoding="utf-8")
+        (local / rel / "annotated.md").write_text("[00:01] Анна А: слово\n", encoding="utf-8")
+        asyncio.run(artifact_sync.push_meeting(local / rel))
+        assert (remote / rel / "polished.md").exists(), "protocol did not come back"
+        assert (remote / rel / "annotated.md").exists()
+        assert not (remote / rel / "2026-09-21").exists(), "push nested the folder in itself"
+        ok("push returns what the pipeline produced")
+
+        # No --delete in either direction: the recording is the church's only
+        # copy, and the pipeline never has a reason to remove it.
+        assert (remote / rel / "audio.m4a").exists(), "push deleted the recording"
+        ok("push leaves the recording alone (no --delete, either way)")
+
+        # ── The review round-trip ─────────────────────────────
+        # speakers.json edited on the web must win over the worker's older copy,
+        # or analysis would put the pre-review names into the protocol.
+        (local / rel / "speakers.json").write_text(SPEAKERS_STALE, encoding="utf-8")
+        (remote / rel / "speakers.json").write_text(SPEAKERS_FIXED, encoding="utf-8")
+        os.utime(remote / rel / "speakers.json", (2_000_000_000, 2_000_000_000))
+        asyncio.run(artifact_sync.pull_meeting(local / rel))
+        assert "виправлене" in (local / rel / "speakers.json").read_text(encoding="utf-8"), \
+            "the reviewer's edit did not reach the worker"
+        ok("a speakers.json edited on the web wins the pull before analysis")
+
+        # ── Failure surfaces, it does not pass silently ───────
+        os.environ["ARTIFACT_SYNC_REMOTE"] = str(remote / "does-not-exist")
+        try:
+            asyncio.run(artifact_sync.pull_meeting(local / rel))
+            raise AssertionError("a broken remote must raise, not return quietly")
+        except artifact_sync.SyncError:
+            pass
+        ok("a failed copy raises SyncError → the job requeues")
+
+        # ── Disabled is the default ───────────────────────────
+        del os.environ["ARTIFACT_SYNC_REMOTE"]
+        assert not artifact_sync.enabled()
+        untouched = local / "tenants" / "church-a" / "meetings" / "2026-10-05"
+        asyncio.run(artifact_sync.pull_meeting(untouched))
+        assert not untouched.exists(), "a disabled pull must not create anything"
+        ok("no remote configured → every call is a no-op (single-machine setup)")
+    finally:
+        os.environ["DATA_ROOT"] = prev_root
+        if prev_remote is None:
+            os.environ.pop("ARTIFACT_SYNC_REMOTE", None)
+        else:
+            os.environ["ARTIFACT_SYNC_REMOTE"] = prev_remote
+        shutil.rmtree(local, ignore_errors=True)
+        shutil.rmtree(remote, ignore_errors=True)
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -1493,6 +1602,7 @@ def main() -> int:
         test_pdf_export()
         test_manual_speaker()
         test_query_queue()
+        test_artifact_sync()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

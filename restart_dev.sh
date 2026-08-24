@@ -57,7 +57,11 @@ OLLAMA_MODEL="gemma4:26b"
 CMA_ROLE_DEFAULT="all"
 
 # read a KEY=value from .env, stripping quotes / inline comments / whitespace
-env_val() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/#.*//' | tr -d '"' | xargs; }
+# tail -1, not head -1: python-dotenv keeps the LAST definition of a duplicated
+# key, and .env grows by appending (the split-plane overrides go at the bottom
+# over the originals). Reading the first one would make this script report
+# health for a server the services are not using.
+env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/#.*//' | tr -d '"' | xargs; }
 
 # Exported variable first, .env second — the same precedence the application
 # gets from load_dotenv(), which does not override an existing environment.
@@ -195,10 +199,11 @@ check_ollama() {
 # label | pkill-pattern | command…
 # The worker role runs only what needs the models. web and telegram-bot moved
 # to the VPS so the church can upload and ask at any hour without this laptop.
+ALL_SVC_LABELS=(web query-worker ingestion-worker telegram-bot)
 if [[ "$ROLE" == "worker" ]]; then
     SVC_LABELS=(query-worker ingestion-worker)
 else
-    SVC_LABELS=(web query-worker ingestion-worker telegram-bot)
+    SVC_LABELS=("${ALL_SVC_LABELS[@]}")
 fi
 svc_pattern() {
     case "$1" in
@@ -217,8 +222,12 @@ svc_cmd() {
     esac
 }
 
+# Stops EVERY service, not just this role's. Switching a machine to the worker
+# role leaves a web and a bot behind from when it ran everything, and those keep
+# serving whatever config they started with — a laptop quietly answering from
+# the database the rest of the system has already left.
 stop_services() {
-    for label in "${SVC_LABELS[@]}"; do
+    for label in "${ALL_SVC_LABELS[@]}"; do
         local pat; pat="$(svc_pattern "$label")"
         if pgrep -f "$pat" >/dev/null 2>&1; then
             pkill -f "$pat" 2>/dev/null || true

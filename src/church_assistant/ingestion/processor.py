@@ -17,6 +17,13 @@ That tenant then decides three things: where the meeting folder itself is
 worker may run on different machines), which voice-profile library diarization
 matches against, and which Qdrant collections the result is indexed into.
 
+On a split deployment (docs/vps_deploy.md) the artifacts live on the control
+plane, so each phase pulls the folder before it starts and pushes it back when
+it ends — see ingestion/artifact_sync.py. Those calls are inside the try, so a
+tunnel that drops mid-copy fails the job into the same retry path as a stage
+that failed, rather than leaving a half-written folder behind. With everything
+on one machine they are no-ops.
+
 Never raises — the caller's loop must survive any single job.
 """
 
@@ -29,7 +36,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db import tenants_repo
-from church_assistant.ingestion import stages
+from church_assistant.ingestion import artifact_sync, stages
 from church_assistant.ingestion.paths import meeting_dir_for
 from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.ingestion.paths import resolve_for
@@ -98,12 +105,25 @@ async def _run_transcription(
         await jobs_repo.set_stage(pool, tenant_id, job_id, stage=stage, progress_note=note)
 
     try:
+        # Bring the folder here first — on a split deployment this is where the
+        # audio actually arrives, and the profile library has to be current or
+        # diarization matches against fingerprints the web has since added to.
+        # A no-op when everything lives on one machine.
+        await progress("sync", "Отримую аудіо та голосові профілі")
+        await artifact_sync.pull_meeting(paths.meeting_dir)
+        await artifact_sync.pull_voice_profiles(profiles_dir)
+
         await stages.run_transcription_phase(
             paths,
             profiles_dir=profiles_dir,
             sequential=sequential,
             progress=progress,
         )
+
+        # Push BEFORE awaiting_review: the reviewer opens speakers.json on the
+        # web, so it has to be over there before the job says it is ready.
+        await progress("sync", "Відправляю транскрипт")
+        await artifact_sync.push_meeting(paths.meeting_dir)
     except Exception as e:
         await _handle_failure(pool, job, e, requeue_status="pending", max_retries=max_retries)
         return
@@ -149,12 +169,23 @@ async def _run_analysis(
     force = bool(job.get("force_reprocess"))
 
     try:
+        # Pull again: the review just happened on the web, so speakers.json here
+        # is the pre-review copy. Analysing it would put the old names into the
+        # protocol and quietly undo the correction someone just made.
+        await progress("sync", "Отримую правки спікерів")
+        await artifact_sync.pull_meeting(meeting_dir)
+
         await stages.run_analysis_phase(
             paths,
             polish_date=_polish_date(job["meeting_date"]),
             progress=progress,
             force=force,
         )
+
+        # Push before indexing: index_meeting reads the artifacts, and if this
+        # fails the retry should re-run against a folder the web can already show.
+        await progress("sync", "Відправляю протокол")
+        await artifact_sync.push_meeting(meeting_dir)
 
         if auto_index:
             await jobs_repo.mark_indexing(pool, tenant_id, job_id)
