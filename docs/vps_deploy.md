@@ -165,8 +165,27 @@ EOF
 systemctl daemon-reload
 ```
 
+**Три плейсхолдери — і лише один із них вільний.**
+
+| Змінна | Звідки |
+|---|---|
+| `DB_PASSWORD` | пароль `cma_app` **із M1** (`grep '^DB_PASSWORD=' .env`) |
+| `POSTGRES_SUPERUSER_PASSWORD` | пароль суперюзера **із M1** (`docker inspect cma-postgres … \| grep POSTGRES_PASSWORD`) |
+| `WEB_SECRET_KEY` | **новий**, згенерувати тут: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
+
+Обидва паролі БД **не вигадуються**: `roles.sql` містить `ALTER ROLE … PASSWORD '<хеш>'`
+і для `cma_app`, і для `cma`. Для `cma` контейнер уже створив роль, тож `CREATE ROLE`
+впаде нешкідливо — а `ALTER ROLE` **пройде** і перезапише пароль суперюзера тим, що з M1.
+Постав одразу ті самі значення, інакше compose стверджуватиме одне, а база матиме інше.
+
+`WEB_SECRET_KEY` навпаки — тільки новий: ним підписані всі сесії на ноутбуку, і спільний
+ключ на двох машинах перетворює один витік на два проникнення.
+
+*(Ротацію обох паролів на свіжі роби **після** cutover'а, окремим заходом: воркери на M1
+логіняться як `cma_app` саме в цю базу, тож міняти треба з двох боків синхронно.)*
+
 ```bash
-cp deploy/env/vps.env.example /srv/cma/.env    # заповнити всі <ПЛЕЙСХОЛДЕРИ>
+cp deploy/env/vps.env.example /srv/cma/.env    # заповнити три плейсхолдери
 chmod 600 /srv/cma/.env && chown cma:cma /srv/cma/.env
 
 cd /srv/cma
