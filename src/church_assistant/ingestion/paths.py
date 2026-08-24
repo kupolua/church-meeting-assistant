@@ -9,8 +9,12 @@ Folder layout (data/meetings/YYYY-MM-DD/):
     audio.<ext>              — copied-in recording
     audio_transcript.json    — transcribe.py output   (fallback: transcript.json)
     audio_embeddings.pkl     — cached speaker embeddings
-    diarization.rttm         — pyannote output
-    speakers.json            — SPEAKER_XX → name map (edited during review)
+    diarization.rttm         — pyannote output, rebuilt if a speaker was added
+                               by hand (see ingestion/manual_speakers.py)
+    diarization.pyannote.rttm — pyannote's own output, copied aside once before
+                               the first manual edit; every rebuild starts here
+    speakers.json            — SPEAKER_XX → name map (edited during review);
+                               _meta.manual_speakers holds hand-added speakers
     annotated.md             — merge_transcript output
     chunks/                  — chunked_analyze per-chunk output
     chunked.md               — merged analysis

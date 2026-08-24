@@ -11,7 +11,9 @@ data/tenants/<slug>/meetings/
 │   ├── README.md         (meeting-specific: what's here, how to reproduce)
 │   ├── audio.m4a         (source recording)
 │   ├── transcript.json   (Whisper output)
-│   ├── diarization.rttm  (pyannote output)
+│   ├── diarization.rttm  (pyannote output, + any hand-added speakers)
+│   ├── diarization.pyannote.rttm  (pyannote's own output, kept once — only
+│   │                               present once a speaker was added by hand)
 │   ├── embeddings.pkl    (cached pyannote speaker embeddings)
 │   ├── speakers.json     (SPEAKER_XX → canonical name map + _meta)
 │   ├── annotated.md      (transcript + speaker labels merged)
@@ -49,9 +51,10 @@ prefix — the folder already encodes the date):
 | ---------------- | ------------------------- | ---------------------------------- |
 | `audio.m4a`      | (you, the operator)       | Or `.wav`, `.mp3` — any format     |
 | `transcript.json`| `transcribe.py`           | Whisper output                     |
-| `diarization.rttm` | `match_speakers.py`     | pyannote turn-by-turn output       |
+| `diarization.rttm` | `match_speakers.py`     | pyannote turns; rebuilt when a speaker is added by hand |
+| `diarization.pyannote.rttm` | `manual_speakers.py` | pyannote's untouched original; every rebuild starts here |
 | `embeddings.pkl` | `match_speakers.py`       | Cached speaker embeddings (256-d)  |
-| `speakers.json`  | `match_speakers.py`       | Auto-generated, may need review    |
+| `speakers.json`  | `match_speakers.py`       | Auto-generated, may need review; `_meta.manual_speakers` holds hand-added ones |
 | `annotated.md`   | `merge_transcript.py`     | Whisper × diarization merged       |
 | `chunks/`        | `chunked_analyze.py`      | Per-chunk Gemma output             |
 | `chunked.md`     | `chunked_analyze.py`      | Merged chunks                      |
