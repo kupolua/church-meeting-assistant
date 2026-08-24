@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from church_assistant.shared import tenant_paths
+
 
 @dataclass(frozen=True)
 class MeetingPaths:
@@ -91,3 +93,34 @@ def resolve(meeting_dir: Path, audio_filename: Optional[str] = None) -> MeetingP
         chunked=meeting_dir / "chunked.md",
         polished=meeting_dir / "polished.md",
     )
+
+
+def meeting_dir_for(tenant_slug: str, meeting_date: str) -> Path:
+    """
+    Locate a meeting's folder from its tenant and date, not from a stored path.
+
+    `ingestion_jobs.meeting_dir` holds an ABSOLUTE path, written by whichever
+    process created the job. That is only ever correct while every process runs
+    on the same machine with the same checkout: the moment web and worker are
+    split across hosts — or DATA_ROOT differs, or the repo moves — the stored
+    string names a directory that does not exist on the reader's side, and the
+    job fails with a missing-file error that points at the wrong cause.
+
+    (tenant_slug, meeting_date) is the real identity of a meeting folder — it is
+    what both writers already concatenate, and what the unique index
+    (tenant_id, meeting_date) enforces. Deriving it here reproduces the stored
+    value byte for byte for existing rows while removing the machine binding.
+
+    The column is still written (audit, and it records where a job actually
+    ran); it is simply no longer the source of truth for reads.
+    """
+    return tenant_paths.paths_for(tenant_slug).meeting_dir(meeting_date)
+
+
+def resolve_for(
+    tenant_slug: str,
+    meeting_date: str,
+    audio_filename: Optional[str] = None,
+) -> MeetingPaths:
+    """Artifact paths for one meeting, located by tenant + date. See meeting_dir_for()."""
+    return resolve(meeting_dir_for(tenant_slug, meeting_date), audio_filename)

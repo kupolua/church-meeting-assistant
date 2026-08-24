@@ -228,6 +228,146 @@ def test_fs_isolation() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 2b. Portable meeting folder
+# ─────────────────────────────────────────────────────────────
+
+def test_portable_meeting_dir() -> None:
+    """
+    A meeting folder is located by (tenant, date), never by the path stored on
+    the job row.
+
+    ingestion_jobs.meeting_dir holds an ABSOLUTE path written by whichever
+    process created the job. While web and worker share a machine that is
+    harmless; split them across hosts (or move the checkout, or change
+    DATA_ROOT) and the reader looks for a directory that does not exist, then
+    fails with a missing-file error naming the wrong cause. These checks pin
+    the derivation down, including for rows written before it existed.
+    """
+    print("\n2b. Meeting folder derived from tenant + date")
+    print("-" * 66)
+
+    from church_assistant.ingestion import paths as ing_paths
+
+    slug, date = "church-a", "2026-09-07"
+
+    # 1. Byte-identical to what the writers concatenate. Every existing row was
+    #    stored as `paths_for(slug).meetings / date`; if the derivation drifted
+    #    from that, live jobs would silently point somewhere new.
+    stored_equivalent = tenant_paths.paths_for(slug).meetings / date
+    assert ing_paths.meeting_dir_for(slug, date) == stored_equivalent
+    ok("derived folder == the absolute path writers already store")
+
+    # 2. It follows DATA_ROOT. Same tenant, same date, another machine's root →
+    #    the folder moves with the host instead of staying pinned to one laptop.
+    other_root = Path(tempfile.mkdtemp(prefix="cma_mt3_otherhost_"))
+    previous = os.environ["DATA_ROOT"]
+    try:
+        os.environ["DATA_ROOT"] = str(other_root)
+        relocated = ing_paths.meeting_dir_for(slug, date)
+        assert relocated != stored_equivalent
+        assert relocated == other_root.resolve() / "tenants" / slug / "meetings" / date
+        ok("another DATA_ROOT → folder relocates (no machine binding left)")
+    finally:
+        os.environ["DATA_ROOT"] = previous
+        shutil.rmtree(other_root, ignore_errors=True)
+
+    # 3. Artifacts resolve through the derived folder, and a job row carrying a
+    #    path from a DIFFERENT host does not divert them.
+    folder = stored_equivalent
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "audio.m4a").write_bytes(b"not really audio")
+    (folder / "polished.md").write_text("## Присутні\n\n- Анна А\n", encoding="utf-8")
+    job = {
+        "meeting_date": date,
+        "audio_filename": "audio.m4a",
+        # what a VPS would have written; nonsense on this machine
+        "meeting_dir": "/srv/cma/data/tenants/church-a/meetings/2026-09-07",
+    }
+    mp = ing_paths.resolve_for(slug, job["meeting_date"], job.get("audio_filename"))
+    assert mp.polished.exists() and mp.audio.exists(), mp.meeting_dir
+    assert not str(mp.meeting_dir).startswith("/srv/cma")
+    ok("job row from another host → artifacts still found locally")
+
+    # 4. And nothing reads the column any more. The equivalence above holds only
+    #    while that stays true, so guard it at the source rather than trusting
+    #    that a future edit will remember (same tactic as the template scanner).
+    offenders: list[str] = []
+    src_root = tenant_paths.REPO_ROOT / "src" / "church_assistant"
+    for py in sorted(src_root.rglob("*.py")):
+        text = py.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if '["meeting_dir"]' in line or '.get("meeting_dir")' in line:
+                rel = py.relative_to(tenant_paths.REPO_ROOT)
+                offenders.append(f"{rel}:{lineno}")
+    assert not offenders, (
+        "these read the stored meeting_dir instead of deriving it from "
+        f"(tenant, date): {', '.join(offenders)}"
+    )
+    ok("source scan: no module reads the stored meeting_dir column")
+
+    # 5. And the same thing through the real routes. The three readers in
+    #    web/routes/ingest.py had no coverage, which is exactly how the CSP
+    #    regressions of 31.07 got through: the server answers 200 either way.
+    #    So give the job row a path from another host and drive the pages.
+    import json as _json
+    from fastapi.testclient import TestClient
+    from church_assistant.db import ingestion_jobs_repo as jobs_repo
+    from church_assistant.web.main import app
+
+    (folder / "diarization.rttm").write_text(
+        "SPEAKER audio 1 0.000 40.000 <NA> <NA> SPEAKER_00 <NA> <NA>\n"
+        "SPEAKER audio 1 40.000 30.000 <NA> <NA> SPEAKER_01 <NA> <NA>\n",
+        encoding="utf-8",
+    )
+    (folder / "speakers.json").write_text(_json.dumps({
+        "_meta": {"needs_review": [], "no_match": [], "invalid_embedding": []},
+        "SPEAKER_00": "Анна А", "SPEAKER_01": "Богдан Б",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    async def _make_job() -> int:
+        pool = await get_pool()
+        try:
+            async with tenant_cursor(pool, TENANT_A) as cur:
+                await cur.execute(
+                    "DELETE FROM ingestion_jobs WHERE meeting_date = %s", (date,)
+                )
+            job_id = await jobs_repo.insert_job(
+                pool, TENANT_A,
+                meeting_date=date,
+                meeting_dir=job["meeting_dir"],   # the other host's path
+                audio_filename="audio.m4a",
+            )
+            await jobs_repo.mark_awaiting_review(pool, TENANT_A, job_id, speaker_count=2)
+            return job_id
+        finally:
+            await close_pool()
+
+    job_id = asyncio.run(_make_job())
+
+    with TestClient(app, follow_redirects=False) as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+
+        r = client.get(f"/ingest/{job_id}")
+        assert r.status_code == 200, r.status_code
+        # polished.md was found through the derived folder. Assert on the row
+        # driven by polished_exists, not on a link to the meeting — the sidebar
+        # lists every folder and would satisfy a looser check either way.
+        assert "✅ polished.md" in r.text, (
+            "detail page says the protocol is missing → it looked in the stored "
+            "path, not in the derived folder"
+        )
+        assert "— ще немає" not in r.text
+        ok("GET /ingest/<id> resolves artifacts despite a foreign stored path")
+
+        r = client.get(f"/ingest/{job_id}/speakers")
+        assert r.status_code == 200, r.status_code
+        assert "SPEAKER_00" in r.text and "Богдан Б" in r.text
+        ok("GET /ingest/<id>/speakers reads speakers.json from the derived folder")
+
+
+# ─────────────────────────────────────────────────────────────
 # 3. Qdrant collection naming
 # ─────────────────────────────────────────────────────────────
 
@@ -1191,6 +1331,7 @@ def main() -> int:
     try:
         asyncio.run(phase_db())
         test_fs_isolation()
+        test_portable_meeting_dir()
         test_collections()
         test_http()              # owns its pool via the app's lifespan
         test_admin_ui()          # ditto

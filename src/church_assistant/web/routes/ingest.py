@@ -29,7 +29,7 @@ from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import manual_speakers
 from church_assistant.ingestion import speakers as speakers_util
-from church_assistant.ingestion.paths import resolve as resolve_paths
+from church_assistant.ingestion.paths import resolve_for
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
@@ -123,7 +123,9 @@ async def ingest_detail(request: Request, job_id: int):
     if job is None:
         return RedirectResponse("/ingest?error=Job+не+знайдено", status_code=303)
 
-    paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
+    paths = resolve_for(
+        current_tenant_slug(request), job["meeting_date"], job.get("audio_filename")
+    )
     return templates.TemplateResponse(
         request,
         "ingest_detail.html",
@@ -276,7 +278,9 @@ async def speakers_editor(request: Request, job_id: int):
             status_code=303,
         )
 
-    paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
+    paths = resolve_for(
+        current_tenant_slug(request), job["meeting_date"], job.get("audio_filename")
+    )
     if not paths.speakers.exists():
         return RedirectResponse(
             f"/ingest?error=speakers.json+відсутній+для+job+%23{job_id}", status_code=303
@@ -332,7 +336,9 @@ async def speakers_save(request: Request, job_id: int):
             status_code=303,
         )
 
-    paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
+    paths = resolve_for(
+        current_tenant_slug(request), job["meeting_date"], job.get("audio_filename")
+    )
     if not paths.speakers.exists():
         return RedirectResponse(
             f"/ingest?error=speakers.json+відсутній+для+job+%23{job_id}", status_code=303

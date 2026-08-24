@@ -12,9 +12,10 @@ retry cap, else leave it permanently 'failed'.
 
 The worker is shared across churches (it claims jobs cross-tenant via a
 SECURITY DEFINER function), so every job's tenant comes from the claimed row.
-That tenant then decides two things outside the meeting folder: which voice-
-profile library diarization matches against, and which Qdrant collections the
-result is indexed into.
+That tenant then decides three things: where the meeting folder itself is
+(paths.meeting_dir_for — the job row's stored path is not trusted, so web and
+worker may run on different machines), which voice-profile library diarization
+matches against, and which Qdrant collections the result is indexed into.
 
 Never raises — the caller's loop must survive any single job.
 """
@@ -22,7 +23,6 @@ Never raises — the caller's loop must survive any single job.
 from __future__ import annotations
 
 import traceback
-from pathlib import Path
 from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
@@ -30,7 +30,9 @@ from psycopg_pool import AsyncConnectionPool
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db import tenants_repo
 from church_assistant.ingestion import stages
+from church_assistant.ingestion.paths import meeting_dir_for
 from church_assistant.ingestion.paths import resolve as resolve_paths
+from church_assistant.ingestion.paths import resolve_for
 from church_assistant.shared import tenant_paths
 from church_assistant.shared.logger import Logger
 
@@ -82,9 +84,8 @@ async def _run_transcription(
 ) -> None:
     job_id = job["id"]
     tenant_id = job["tenant_id"]
-    paths = resolve_paths(Path(job["meeting_dir"]), job.get("audio_filename"))
-
     tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
+    paths = resolve_for(tenant_slug, job["meeting_date"], job.get("audio_filename"))
     profiles_dir = tenant_paths.paths_for(tenant_slug).voice_profiles
 
     await _log.info(
@@ -130,7 +131,8 @@ async def _run_analysis(
 ) -> None:
     job_id = job["id"]
     tenant_id = job["tenant_id"]
-    meeting_dir = Path(job["meeting_dir"])
+    tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
+    meeting_dir = meeting_dir_for(tenant_slug, job["meeting_date"])
     paths = resolve_paths(meeting_dir, job.get("audio_filename"))
 
     await _log.info(
@@ -155,7 +157,6 @@ async def _run_analysis(
         )
 
         if auto_index:
-            tenant_slug = await tenants_repo.get_slug(pool, tenant_id)
             await jobs_repo.mark_indexing(pool, tenant_id, job_id)
             await stages.run_index(
                 meeting_dir, tenant_slug=tenant_slug, progress=progress, force=force
