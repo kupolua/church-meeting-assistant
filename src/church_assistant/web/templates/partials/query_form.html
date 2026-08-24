@@ -24,8 +24,10 @@
                 Запитати
             </button>
 
+            {# The POST only enqueues now, so this flashes for a moment; the
+               waiting itself is shown by partials/query_pending.html. #}
             <span id="query-loading" class="htmx-indicator">
-                🔍 Шукаю та аналізую... (10-70 сек)
+                Ставлю в чергу…
             </span>
         </div>
     </form>

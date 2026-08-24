@@ -54,6 +54,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 # ─── Environment BEFORE any church_assistant import (config is read at import) ─
 #
@@ -1300,6 +1301,158 @@ def test_manual_speaker() -> None:
     ok("removing the manual speaker restores the original diarization")
 
 
+# ─────────────────────────────────────────────────────────────
+# 12. Web queries go through the queue
+# ─────────────────────────────────────────────────────────────
+
+def test_query_queue() -> None:
+    """
+    POST /api/query enqueues; it does not answer.
+
+    The route used to run rag.answer() inline, which needed Ollama, the
+    reranker and Gemma's weights inside the web process. These checks pin the
+    new contract: the request returns a partial that watches the row, and the
+    answer appears only once something else wrote it. Nothing here touches
+    Ollama — which is the point, and also why it can be tested at all.
+
+    DB work happens BETWEEN client sessions, never inside one: the pool is a
+    module singleton bound to whichever loop opened it, and TestClient's
+    lifespan owns it for the duration of the `with`.
+    """
+    print("\n12. Запит через чергу (web → queries → worker)")
+    print("-" * 66)
+
+    from fastapi.testclient import TestClient
+    from church_assistant.db import queries_repo
+    from church_assistant.web.main import app
+
+    def _client() -> TestClient:
+        return TestClient(app, follow_redirects=False)
+
+    def _qid(html: str) -> int:
+        assert 'hx-get="/api/query/' in html, "response does not watch a query"
+        return int(html.split('hx-get="/api/query/')[1].split('"')[0])
+
+    # ── Enqueue two questions and try one that must be refused ──
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+
+        r = client.post("/api/query", data={"question": "Про що говорили у червні?"})
+        assert r.status_code == 200, r.status_code
+        assert "hx-trigger" in r.text, "pending partial must keep polling"
+        answered_id = _qid(r.text)
+        ok(f"POST /api/query queues and returns a watching partial (#{answered_id})")
+
+        r = client.get(f"/api/query/{answered_id}")
+        assert r.status_code == 200 and "hx-trigger" in r.text
+        assert "черз" in r.text.lower() or "оброб" in r.text.lower()
+        ok("polling an unfinished query returns the waiting partial")
+
+        failed_id = _qid(
+            client.post("/api/query", data={"question": "Друге питання для збою"}).text
+        )
+        slow_id = _qid(
+            client.post("/api/query", data={"question": "Третє питання, яке чекає довго"}).text
+        )
+
+        r = client.post("/api/query", data={"question": "ні"})
+        assert r.status_code == 400, r.status_code
+        assert "hx-get" not in r.text, "a refused question must not be watched"
+
+    # ── What a worker would do, done here instead ──────────────
+    async def _advance() -> tuple[str, int]:
+        pool = await get_pool()
+        try:
+            waiting = await queries_repo.get_by_id(pool, TENANT_A, answered_id)
+            async with tenant_cursor(pool, TENANT_A) as cur:
+                await cur.execute("SELECT max(id) FROM queries")
+                highest = (await cur.fetchone())[0]
+
+            await queries_repo.mark_completed(
+                pool, TENANT_A, answered_id,
+                hits=[{
+                    "score": 0.81, "vector_score": 0.55, "reranked": True,
+                    "collection": "cma_turns",
+                    "payload": {"meeting_date": "2026-06-15", "speaker": "Анна А",
+                                "topic_title": "Тема А"},
+                }],
+                synthesis="Це відповідь, яку написав воркер.",
+                sources=["2026-06-15"],
+                embed_time_ms=11, qdrant_time_ms=22, rerank_time_ms=33,
+                gemma_time_ms=44, total_time_ms=110,
+            )
+            await queries_repo.mark_failed(
+                pool, TENANT_A, failed_id,
+                error_message="Ollama unreachable",
+                error_traceback="(none)",
+                increment_retry=False,
+            )
+            # Age one query so the waiting partial has to do arithmetic on a
+            # real timestamp rather than render a constant.
+            async with tenant_cursor(pool, TENANT_A) as cur:
+                await cur.execute(
+                    "UPDATE queries SET asked_at = now() - interval '5 minutes' "
+                    "WHERE id = %s", (slow_id,)
+                )
+            return waiting["status"], highest
+        finally:
+            await close_pool()
+
+    status_while_watching, highest_id = asyncio.run(_advance())
+
+    assert status_while_watching == "pending", status_while_watching
+    ok("the query sat 'pending' — no RAG ran inside the web process")
+
+    # The refused question was posted last, so if it had been queued anyway it
+    # would hold the highest id instead of the last accepted one.
+    assert highest_id == slow_id, f"a refused question was queued (#{highest_id})"
+    ok("too-short question → 400 and nothing enqueued")
+
+    # ── The answer, and the failure, reach the page ────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+
+        r = client.get(f"/api/query/{answered_id}")
+        assert r.status_code == 200
+        assert "Це відповідь, яку написав воркер." in r.text, "synthesis not rendered"
+        assert "Тема А" in r.text and "2026-06-15" in r.text, "hit / source missing"
+        # Rebuilt from the row, so the stored timings must survive the trip.
+        assert "44ms" in r.text, "timings lost on the way back"
+        assert "hx-trigger" not in r.text, "the answer must stop the polling"
+        ok("once completed, the poll swaps in the answer and stops polling")
+
+        r = client.get(f"/api/query/{failed_id}")
+        assert r.status_code == 200
+        assert "Ollama unreachable" in r.text, "the row's reason must reach the page"
+        assert "hx-trigger" not in r.text, "a failed query must stop the polling"
+        ok("a failed query shows the recorded reason and stops polling")
+
+        # The counter reads `asked_at`; `queries` has no `created_at`, and the
+        # wrong key would fail silently — a missing timestamp is indistinguishable
+        # from "no time has passed", so the counter would just sit at 0 forever.
+        # That is exactly what happened, and only the browser showed it.
+        r = client.get(f"/api/query/{slow_id}")
+        assert r.status_code == 200 and "hx-trigger" in r.text
+        shown = int(r.text.split("</strong>")[-1].split("с</span>")[0].strip().split(">")[-1])
+        assert shown >= 290, f"elapsed counter reads {shown}s for a 5-minute-old query"
+        assert "недоступний" in r.text, "a long wait must say the worker may be absent"
+        ok(f"a {shown}s-old query shows real elapsed time and the absent-worker hint")
+
+    # ── Another church cannot poll it ──────────────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "borys", "password": PASSWORD_B}
+        ).status_code == 303
+        r = client.get(f"/api/query/{answered_id}")
+        assert r.status_code == 404, r.status_code
+        assert "воркер" not in r.text, "another church's answer leaked into the body"
+        ok("another church polling this query gets 404, not the answer")
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -1339,6 +1492,7 @@ def main() -> int:
         test_hardening()
         test_pdf_export()
         test_manual_speaker()
+        test_query_queue()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

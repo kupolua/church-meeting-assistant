@@ -1,0 +1,41 @@
+{#
+  A queued query, watching itself.
+
+  hx-swap="outerHTML" replaces this whole <article> with whatever the poll
+  returns — this partial again while the query waits, the answer (or the
+  failure) once it is terminal. The terminal partials carry no hx-trigger,
+  and that absence is what ends the polling.
+#}
+<article class="query-result query-pending"
+         id="query-pending-{{ query_id }}"
+         hx-get="/api/query/{{ query_id }}"
+         hx-trigger="every {{ poll_interval_s }}s"
+         hx-swap="outerHTML">
+
+    <header class="query-result-header">
+        <h5>Питання:</h5>
+        <p class="question-text">{{ question }}</p>
+    </header>
+
+    <section class="pending-block">
+        <p class="pending-status">
+            {% if status == 'processing' %}
+            ⏳ <strong>Обробляю…</strong> шукаю фрагменти й формулюю відповідь.
+            {% else %}
+            🕒 <strong>У черзі.</strong> Обробник візьме запит, щойно звільниться.
+            {% endif %}
+            <span class="pending-elapsed">{{ elapsed_s }} с</span>
+        </p>
+
+        {% if slow_hint %}
+        <p class="pending-hint">
+            Обробник або зайнятий іншим запитом, або зараз недоступний. Запит
+            нікуди не подінеться — він виконається, щойно черга дійде. Сторінку
+            можна закрити: відповідь буде в
+            <a href="/history">історії запитів</a>.
+        </p>
+        {% endif %}
+
+        <small class="timings">запит #{{ query_id }}</small>
+    </section>
+</article>

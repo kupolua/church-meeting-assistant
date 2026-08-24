@@ -536,6 +536,33 @@ body {
 
 /* ─── Query error ─── */
 
+.query-pending .pending-block {
+    margin-top: 0.5rem;
+}
+
+.pending-status {
+    margin: 0;
+    color: #444;
+}
+
+.pending-elapsed {
+    color: #888;
+    font-size: 0.85rem;
+    margin-left: 0.4rem;
+}
+
+/* Shown only once waiting stops looking like a queue and starts looking like
+   an absent worker — same palette as .query-error, since it is a caution. */
+.pending-hint {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin: 0.75rem 0 0 0;
+    color: #856404;
+    font-size: 0.9rem;
+}
+
 .query-error {
     background: #fff3cd;
     border: 1px solid #ffc107;

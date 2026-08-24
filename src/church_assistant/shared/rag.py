@@ -157,6 +157,35 @@ class AnswerResult:
         """Convenience for storing in queries.hits JSONB."""
         return [h.to_dict() for h in self.hits]
 
+    @classmethod
+    def from_query_row(cls, row: dict[str, Any]) -> "AnswerResult":
+        """
+        Rebuild a finished answer from its stored `queries` row.
+
+        The inverse of hits_as_json() plus the timing columns mark_completed
+        writes. It exists because the answer is produced in one process (the
+        worker) and rendered in another (web), which share no memory — the row
+        is the only thing they both see. Same reason /history can re-render an
+        old query without re-running it.
+
+        Tolerates missing pieces: a row that failed mid-flight still renders
+        rather than raising inside a template.
+        """
+        return cls(
+            question=row.get("question") or "",
+            collection=row.get("collection") or "protocols",
+            hits=[Hit.from_dict(h) for h in (row.get("hits") or [])],
+            synthesis=row.get("synthesis") or "",
+            sources=list(row.get("sources") or []),
+            timings=Timings(
+                embed_ms=row.get("embed_time_ms") or 0,
+                qdrant_ms=row.get("qdrant_time_ms") or 0,
+                rerank_ms=row.get("rerank_time_ms") or 0,
+                gemma_ms=row.get("gemma_time_ms") or 0,
+                total_ms=row.get("total_time_ms") or 0,
+            ),
+        )
+
 
 @dataclass
 class RetrievalResult:
