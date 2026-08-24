@@ -13,8 +13,11 @@
 #      ./restart_dev.sh              # повний цикл: перевірка + перезапуск
 #      ./restart_dev.sh --check      # лише перевірка інфраструктури, без перезапуску
 #      ./restart_dev.sh --stop       # зупинити сервіси + контейнери (Postgres, Qdrant)
+#                                    # + сторонні контейнери, що ділять машину
+#                                    #   (за замовчуванням langfuse — звільнити RAM)
 #
-# Перевизначення (env): CMA_PG_CONTAINER, CMA_QDRANT_CONTAINER, CMA_WEB_PORT
+# Перевизначення (env): CMA_PG_CONTAINER, CMA_QDRANT_CONTAINER, CMA_WEB_PORT,
+#                       CMA_EXTRA_STOP (порожнє = не чіпати сторонні контейнери)
 #
 set -uo pipefail
 
@@ -190,6 +193,32 @@ stop_containers() {
             info "$desc: '$name' вже зупинений"
         fi
     done
+    stop_extra_containers
+}
+
+# Stop unrelated containers that merely share this laptop (default: langfuse).
+# They are not ours to manage, but they hold RAM that Gemma and whisper need on
+# a 32 GB machine — and after --stop the point is to get the machine back.
+# Matched by name substring, so this covers a whole compose stack at once.
+# CMA_EXTRA_STOP="" leaves them alone.
+stop_extra_containers() {
+    local filter="${CMA_EXTRA_STOP-langfuse}"
+    [[ -z "$filter" ]] && return
+
+    local ids
+    ids="$("$DOCKER" ps -q --filter "name=$filter" 2>/dev/null)"
+    if [[ -z "$ids" ]]; then
+        info "сторонні ($filter): запущених немає"
+        return
+    fi
+
+    local n; n="$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
+    # shellcheck disable=SC2086  # ids is a deliberate word-split list
+    if "$DOCKER" stop $ids >/dev/null 2>&1; then
+        ok "сторонні ($filter): зупинено $n"
+    else
+        warn "сторонні ($filter): не вдалося зупинити частину"
+    fi
 }
 
 start_services() {
@@ -218,7 +247,7 @@ case "$MODE" in
     --stop)
         hdr "⏹  Зупинка church_assistant-сервісів"
         stop_services
-        hdr "⏹  Зупинка контейнерів (Postgres + Qdrant)"
+        hdr "⏹  Зупинка контейнерів"
         stop_containers
         ok "готово"
         exit 0
