@@ -80,21 +80,30 @@ async def resolve_tenant_for_telegram(
             return int(row[0]) if row and row[0] is not None else None
 
 
-async def resolve_tenant_for_web_user(
-    pool: AsyncConnectionPool, username: str
-) -> Optional[int]:
+async def resolve_login_tenant(
+    pool: AsyncConnectionPool, username: str, church: Optional[str] = None
+) -> tuple[Optional[int], int]:
     """
-    Which tenant does this web account belong to? None if unknown/inactive.
+    Which church should this login be checked against? (tenant_id, candidates).
 
-    The login-side twin of resolve_tenant_for_telegram (migration 006): the same
-    SECURITY DEFINER bootstrap, because web_users is RLS-gated too. Returns only
-    the tenant id — the password hash is read afterwards INSIDE that tenant's
-    context, so this call can leak at most "such a username exists".
+    The login-side twin of resolve_tenant_for_telegram (migration 014, replacing
+    006's resolve_tenant_for_web_user): the same SECURITY DEFINER bootstrap,
+    because web_users is RLS-gated too and login has no tenant context yet.
+    Returns only the tenant id — the password hash is read afterwards INSIDE
+    that tenant's context, so this call can leak at most "such a username
+    exists", and now also "in more than one church".
+
+    tenant_id is None when the name is unknown, or when it is shared and the
+    caller has not said which church (or named one that does not hold it). The
+    count is what tells those apart: 0 means nobody, >1 means ask.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT resolve_tenant_for_web_user(%s)", (username,)
+                "SELECT tenant_id, n_candidates FROM resolve_login_tenant(%s, %s)",
+                (username, church),
             )
             row = await cur.fetchone()
-            return int(row[0]) if row and row[0] is not None else None
+            if row is None:
+                return None, 0
+            return (int(row[0]) if row[0] is not None else None), int(row[1])

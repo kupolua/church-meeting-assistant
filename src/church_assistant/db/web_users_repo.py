@@ -6,10 +6,13 @@ tenant_cursor(pool, tenant_id) → RLS scopes it to one church. Login resolves t
 tenant FIRST (tenant_context.resolve_tenant_for_web_user, a SECURITY DEFINER
 lookup) and then calls these with that tenant_id.
 
-`username` stays globally UNIQUE: a person belongs to exactly one church — that's
-what makes login-time routing unambiguous. add_web_user therefore raises
-WebUserAlreadyExists even when the clashing row lives in another tenant
-(invisible under RLS, but the unique index is global).
+`username` is unique WITHIN a church (migration 014). It used to be unique
+across the server, because the login form carries only a name and a password
+and the name had to be what identified the church; since 014 login asks which
+church when a name is shared, so churches no longer compete for names.
+add_web_user therefore raises WebUserAlreadyExists only for a clash in the SAME
+tenant — a name taken in another church is not this church's problem, and is
+not visible to it either.
 
 Password hashing/verification lives in web/security.py — this module only stores
 and returns the opaque hash string.
@@ -32,7 +35,7 @@ ROLES = ("member", "admin")
 
 
 class WebUserAlreadyExists(Exception):
-    """username already registered (in this or another tenant)."""
+    """username already registered IN THIS tenant (migration 014)."""
 
 
 # ─────────────────────────────────────────────────────────────

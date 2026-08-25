@@ -225,10 +225,12 @@ async def create_user(
             role=role,
         )
     except web_users_repo.WebUserAlreadyExists:
-        # Deliberately the same message whether the clash is in this church or
-        # another: an admin has no business learning who exists elsewhere.
+        # Since 014 this can only be a clash inside this church, which the admin
+        # can see in the table above. Churches no longer compete for names, and
+        # the message no longer says anything about any other one.
         return await _panel_with(
-            request, error=f"Логін «{username}» уже зайнятий. Оберіть інший."
+            request,
+            error=f"Логін «{username}» уже є у вашій церкві. Оберіть інший.",
         )
     except ValueError as e:
         return await _panel_with(request, error=str(e))

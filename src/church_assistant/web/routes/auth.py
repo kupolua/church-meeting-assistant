@@ -7,15 +7,26 @@ Auth routes:
 The login flow is the tenant bootstrap for the web side, and mirrors the bot's
 (bot/middleware/whitelist.py) step for step:
 
-    1. resolve_tenant_for_web_user(username)  — SECURITY DEFINER, bypasses RLS,
+    1. resolve_login_tenant(username, church)  — SECURITY DEFINER, bypasses RLS,
        because web_users is RLS-gated and we don't know the tenant yet;
     2. everything after that runs INSIDE that tenant's context (tenant_cursor),
        so a bug below step 1 can't read another church's rows;
     3. the tenant must be active — a suspended church can't be logged into even
        with valid credentials.
 
+Since migration 014 a login name is unique within a church, not across the
+server, so step 1 can come back with "more than one church has this name". Then
+the form asks which one — BEFORE any password is checked. The other way round
+(verify against every candidate, ask only if two match) would pay one hash per
+candidate for a single guess, test that guess against several people's secrets
+at once, and make the question itself proof to whoever triggered it that the
+password was right. Which churches exist is not a secret worth this; whether a
+password is valid is.
+
 Failures are deliberately indistinguishable to the user (same message, same
-cost) so the form can't be used to enumerate accounts.
+cost) so the form can't be used to enumerate accounts. A wrong church is one of
+those failures: same message, same burnt scrypt, so it cannot be used to ask
+"is this name in THAT church?".
 """
 
 from __future__ import annotations
@@ -31,7 +42,7 @@ from church_assistant.db import (
     audit_repo, tenants_repo, web_sessions_repo, web_users_repo,
 )
 from church_assistant.db.connection import get_pool
-from church_assistant.db.tenant_context import resolve_tenant_for_web_user
+from church_assistant.db.tenant_context import resolve_login_tenant
 from church_assistant.shared.logger import Logger
 from church_assistant.web import auth, headers, security
 from church_assistant.web.main import templates
@@ -43,6 +54,11 @@ _logger = Logger(process="web")
 
 GENERIC_ERROR = "Невірний логін або пароль."
 LOCKED_ERROR = "Забагато невдалих спроб. Спробуйте за кілька хвилин."
+# Not an error — a question. The name is fine, it just belongs to more than one
+# church, and only its owner knows which. Nothing has been checked yet.
+AMBIGUOUS_NOTICE = (
+    "Такий логін є в кількох церквах. Вкажіть свою — і введіть пароль ще раз."
+)
 
 # Brute-force brake. scrypt already costs ~100 ms per attempt, so this is about
 # stopping a slow grind, not a fast one — hence generous limits and a short
@@ -94,14 +110,26 @@ def _render_login(
     request: Request,
     *,
     error: Optional[str] = None,
+    notice: Optional[str] = None,
     username: str = "",
+    church: str = "",
+    ask_church: bool = False,
     next_url: str = "/",
     status_code: int = 200,
 ) -> HTMLResponse:
+    """
+    The form. `ask_church` adds the church field — shown only once we know the
+    name is shared, so nobody is asked a question they don't need to answer.
+
+    The password is never passed back. Re-rendering it into a hidden field
+    would put it in the page source, in the browser's history, and in every
+    error page after it; one retype in a rare case is the cheaper side.
+    """
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"error": error, "username": username, "next": next_url},
+        {"error": error, "notice": notice, "username": username,
+         "church": church, "ask_church": ask_church, "next": next_url},
         status_code=status_code,
     )
 
@@ -123,26 +151,42 @@ async def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    church: str = Form(""),
     next: str = Form("/"),
 ):
     """Verify credentials and start a session."""
     username = username.strip().lower()
+    church = church.strip().lower()
     next_url = _safe_next(next)
     key = _client_key(request, username)
 
     if _is_locked(key):
         return _render_login(
-            request, error=LOCKED_ERROR, username=username,
+            request, error=LOCKED_ERROR, username=username, church=church,
             next_url=next_url, status_code=429,
         )
 
     pool = await get_pool()
 
     # ─── 1. Tenant bootstrap (bypasses RLS by design) ────────
-    tenant_id = await resolve_tenant_for_web_user(pool, username)
+    tenant_id, n_candidates = await resolve_login_tenant(
+        pool, username, church or None
+    )
+
+    # A shared name and nobody has said which church. Ask — and charge the
+    # brute-force budget for it, because a free answer here is an oracle for
+    # "is this name in more than one church?" that costs the prober nothing.
+    if tenant_id is None and n_candidates > 1 and not church:
+        _record_failure(key)
+        return _render_login(
+            request, username=username, ask_church=True,
+            notice=AMBIGUOUS_NOTICE, next_url=next_url,
+        )
+
     if tenant_id is None:
-        # Unknown/disabled account. Burn the same scrypt round a real check
-        # would, so timing doesn't reveal which usernames exist.
+        # Unknown account — or a church that does not hold this name, which
+        # must be indistinguishable from it. Burn the same scrypt round a real
+        # check would, so timing doesn't reveal which usernames exist or where.
         security.waste_time_like_a_real_check()
         _record_failure(key)
         # No tenant_id: we could not resolve one, so this goes to `_system`.
@@ -150,11 +194,12 @@ async def login_submit(
         await _logger.warn(
             "web.login_failed",
             message=f"unknown web user {username!r}",
-            metadata={"username": username, "reason": "unknown_user"},
+            metadata={"username": username, "reason": "unknown_user",
+                      "candidates": n_candidates, "church_given": bool(church)},
         )
         return _render_login(
-            request, error=GENERIC_ERROR, username=username,
-            next_url=next_url, status_code=401,
+            request, error=GENERIC_ERROR, username=username, church=church,
+            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
         )
 
     # ─── 2. Everything below is tenant-scoped (RLS active) ───
@@ -163,8 +208,8 @@ async def login_submit(
         security.waste_time_like_a_real_check()
         _record_failure(key)
         return _render_login(
-            request, error=GENERIC_ERROR, username=username,
-            next_url=next_url, status_code=401,
+            request, error=GENERIC_ERROR, username=username, church=church,
+            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
         )
 
     if not security.verify_password(password, user_row["password_hash"]):
@@ -184,8 +229,8 @@ async def login_submit(
             tenant_id=tenant_id,
         )
         return _render_login(
-            request, error=GENERIC_ERROR, username=username,
-            next_url=next_url, status_code=401,
+            request, error=GENERIC_ERROR, username=username, church=church,
+            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
         )
 
     # ─── 3. The church itself must still be active ───────────
@@ -207,7 +252,8 @@ async def login_submit(
         return _render_login(
             request,
             error="Доступ до цієї церкви призупинено. Зверніться до адміністратора.",
-            username=username, next_url=next_url, status_code=403,
+            username=username, church=church, ask_church=n_candidates > 1,
+            next_url=next_url, status_code=403,
         )
 
     # ─── 4. Open a server-side session ───────────────────────

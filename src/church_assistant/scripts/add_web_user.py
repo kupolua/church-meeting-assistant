@@ -80,8 +80,8 @@ async def cmd_add(pool, tenant: dict, args: argparse.Namespace) -> int:
         )
     except web_users_repo.WebUserAlreadyExists as e:
         print(f"❌ {e}", file=sys.stderr)
-        print("   Логіни глобально унікальні — одна людина належить одній церкві.",
-              file=sys.stderr)
+        print("   Логін має бути унікальним у цій церкві (в інших такий самий "
+              "може існувати).", file=sys.stderr)
         return 2
     except ValueError as e:
         print(f"❌ Невірні дані: {e}", file=sys.stderr)
@@ -177,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tenant", type=str, required=True,
                    help="Tenant id or slug (the church this account belongs to)")
     p.add_argument("--username", type=str,
-                   help="Login name (lowercased; globally unique)")
+                   help="Login name (lowercased; unique within the church)")
     p.add_argument("--name", type=str, help='Full name (e.g. "Павло Кулаковський")')
     p.add_argument("--role", choices=list(web_users_repo.ROLES), default="member",
                    help="member (default) or admin")

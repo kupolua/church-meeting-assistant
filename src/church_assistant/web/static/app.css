@@ -27,6 +27,8 @@
 .login-brand h1 { margin-bottom: .25rem; font-size: 1.5rem; }
 .login-brand p { margin: 0; color: var(--pico-muted-color); font-size: .875rem; }
 .login-error { color: var(--pico-del-color); }
+/* A question, not a rejection — it must not read like the error above it. */
+.login-notice { color: #92400e; font-size: 0.9em; }
 
 :root {
     --sidebar-width: 320px;

@@ -102,7 +102,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from church_assistant.db import audit_repo, web_users_repo  # noqa: E402
 from church_assistant.db.connection import close_pool, get_pool  # noqa: E402
 from church_assistant.db.tenant_context import (  # noqa: E402
-    resolve_tenant_for_web_user,
+    resolve_login_tenant,
     tenant_cursor,
 )
 from church_assistant.shared import collections, tenant_paths  # noqa: E402
@@ -159,10 +159,10 @@ async def test_db_layer(pool) -> None:
     print("\n1. web_users — resolver + RLS isolation")
     print("-" * 66)
 
-    assert await resolve_tenant_for_web_user(pool, "anna") == TENANT_A
-    assert await resolve_tenant_for_web_user(pool, "borys") == TENANT_B
-    assert await resolve_tenant_for_web_user(pool, "nobody") is None
-    ok("resolve_tenant_for_web_user routes each login to its own church")
+    assert await resolve_login_tenant(pool, "anna") == (TENANT_A, 1)
+    assert await resolve_login_tenant(pool, "borys") == (TENANT_B, 1)
+    assert await resolve_login_tenant(pool, "nobody") == (None, 0)
+    ok("resolve_login_tenant routes an unshared login to its own church")
 
     # Church A's context sees only Anna; Borys is invisible even by name.
     a_user = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
@@ -175,20 +175,55 @@ async def test_db_layer(pool) -> None:
     assert [u["username"] for u in a_list] == ["anna"], a_list
     ok("list_active returns only this church's accounts")
 
-    # Usernames are globally unique — the routing invariant.
+    # The name has to be free INSIDE the church, and only there (014).
     try:
         await web_users_repo.add_web_user(
-            pool, TENANT_B, username="anna",
+            pool, TENANT_A, username="anna",
             password_hash=security.hash_password("x" * 12), full_name="Клон",
         )
-        raise AssertionError("duplicate username across tenants should be refused")
+        raise AssertionError("duplicate username within a tenant should be refused")
     except web_users_repo.WebUserAlreadyExists:
         pass
-    ok("username stays globally unique (one person → one church)")
+    ok("the same login twice in one church is refused")
 
     assert security.verify_password(PASSWORD_A, a_user["password_hash"])
     assert not security.verify_password(PASSWORD_B, a_user["password_hash"])
     ok("stored scrypt hash verifies the right password only")
+
+    # A name in two churches resolves to neither until somebody says which —
+    # and the count is what tells "ask" apart from "no such account".
+    shared_hash = security.hash_password("spilnyi-parol-000")
+    a_id = await web_users_repo.add_web_user(
+        pool, TENANT_A, username="spilne", password_hash=shared_hash,
+        full_name="Спільне Імʼя А")
+    b_id = await web_users_repo.add_web_user(
+        pool, TENANT_B, username="spilne", password_hash=shared_hash,
+        full_name="Спільне Імʼя Б")
+    ok("the same login may now exist in two churches (migration 014)")
+
+    assert await resolve_login_tenant(pool, "spilne") == (None, 2)
+    assert await resolve_login_tenant(pool, "spilne", "church-a") == (TENANT_A, 2)
+    assert await resolve_login_tenant(pool, "spilne", "church-b") == (TENANT_B, 2)
+    ok("a shared login resolves only once the church is named")
+
+    # A church that does not hold the name is refused exactly like a church
+    # that does not exist — the caller must not be able to tell them apart.
+    assert await resolve_login_tenant(pool, "spilne", "church-off") == (None, 2)
+    assert await resolve_login_tenant(pool, "spilne", "no-such-church") == (None, 2)
+    ok("naming the wrong church answers the same as naming a fictional one")
+
+    # The display name works too — people know it better than the identifier —
+    # but only while it points at one candidate.
+    assert await resolve_login_tenant(pool, "spilne", "Церква А") == (TENANT_A, 2)
+    ok("the display name is accepted when it is unambiguous")
+
+    # Candidates are ACTIVE accounts: an account nobody has claimed yet does
+    # not make somebody else's name ambiguous.
+    await web_users_repo.deactivate(pool, TENANT_B, b_id)
+    assert await resolve_login_tenant(pool, "spilne") == (TENANT_A, 1)
+    await web_users_repo.reactivate(pool, TENANT_B, b_id)
+    ok("an inactive account is not a candidate — no question is asked for it")
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -638,6 +673,101 @@ async def test_system_tenant(pool) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 6b. A login name shared by two churches (migration 014)
+# ─────────────────────────────────────────────────────────────
+
+def test_shared_login() -> None:
+    """
+    The whole point of 014, over real HTTP: one login page for everyone, and
+    the church asked only when the name alone cannot answer.
+
+    `spilne` exists in church A and church B with the SAME password — the
+    worst case, and the likely one, since the person on both sides may well be
+    the same human reusing a password.
+    """
+    print("\n6b. Один вхід на всі церкви — питання про церкву")
+    print("-" * 66)
+
+    from fastapi.testclient import TestClient
+    from church_assistant.web.main import app
+
+    SHARED = "spilnyi-parol-000"
+
+    with TestClient(app, follow_redirects=False) as client:
+        # An unshared name is untouched: one field, one step, straight in.
+        r = client.post("/login", data={"username": "anna", "password": PASSWORD_A})
+        assert r.status_code == 303 and security.SESSION_COOKIE in r.cookies
+        ok("a login only one church uses still signs in in one step")
+
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "spilne", "password": SHARED})
+        assert r.status_code == 200, r.status_code
+        assert 'name="church"' in r.text
+        assert security.SESSION_COOKIE not in r.cookies
+        ok("a shared login is asked which church, not signed in")
+
+        # The password is never handed back to the browser — not in a hidden
+        # field, not as a value. One retype beats a password in page source.
+        assert SHARED not in r.text
+        ok("the re-rendered form does not carry the password")
+
+        # And the question comes BEFORE any verification: a WRONG password
+        # gets the same question, so seeing it proves nothing about the
+        # password. This is the check that would fail if the flow were ever
+        # rewritten to "verify against every candidate, then ask".
+        client.cookies.clear()
+        r_bad = client.post("/login", data={"username": "spilne",
+                                            "password": "zovsim-ne-toi-parol"})
+        assert r_bad.status_code == 200 and 'name="church"' in r_bad.text
+        assert security.SESSION_COOKIE not in r_bad.cookies
+        ok("the question is asked before the password is checked, not after")
+
+        # Naming the church resolves it — and the two accounts are genuinely
+        # separate people in separate churches.
+        # The church badge in the top bar is rendered from the SESSION's tenant,
+        # so it is the page's own answer to "which church am I in".
+        for church, other in (("church-a", "church-b"), ("church-b", "church-a")):
+            client.cookies.clear()
+            r = client.post("/login", data={"username": "spilne",
+                                            "password": SHARED, "church": church})
+            assert r.status_code == 303, (church, r.status_code)
+            page = client.get("/dashboard").text
+            assert f"⛪ {church}" in page and other not in page, church
+            ok(f"«{church}» named → signed into that church, and only it")
+
+        # The display name works too — it is what people actually know.
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "spilne",
+                                        "password": SHARED, "church": "Церква А"})
+        assert r.status_code == 303
+        ok("the church's display name is accepted as well as its identifier")
+
+        # A church that does not hold the name answers exactly like a wrong
+        # password: same message, same status. Otherwise the field becomes a
+        # way to ask "is this name in THAT church?".
+        client.cookies.clear()
+        r_wrong_church = client.post("/login", data={
+            "username": "spilne", "password": SHARED, "church": "church-off"})
+        r_wrong_pw = client.post("/login", data={
+            "username": "spilne", "password": "ne-toi", "church": "church-a"})
+        assert r_wrong_church.status_code == r_wrong_pw.status_code == 401
+        assert "Невірний логін або пароль" in r_wrong_church.text
+        assert security.SESSION_COOKIE not in r_wrong_church.cookies
+        ok("a wrong church answers exactly like a wrong password")
+
+        # Having answered wrongly, the person still gets the field back —
+        # losing it would strand them on a form they cannot complete.
+        assert 'name="church"' in r_wrong_church.text
+        ok("the church field survives a failed attempt")
+
+        # Nothing here leaks the list of churches: the field is free text, and
+        # church B is never named to somebody probing church A's name.
+        assert "church-b" not in r_wrong_church.text
+        assert "<select" not in r_wrong_church.text
+        ok("no church is ever listed on the login page")
+
+
+# ─────────────────────────────────────────────────────────────
 # 7. Web account management UI
 # ─────────────────────────────────────────────────────────────
 
@@ -714,12 +844,22 @@ def test_admin_ui() -> None:
         client.cookies.clear()
         login(client, "anna", PASSWORD_A)
 
-        # Usernames are global; the clash message reveals nothing about church B.
+        # Since 014 a name taken in another church is not this church's
+        # problem. It lands inactive (unclaimed), so it does not yet make
+        # church B's borys ambiguous — see the resolver checks in section 1.
         r = client.post("/admin/users", data={
-            "username": "borys", "full_name": "Клон", "role": "member",
+            "username": "borys", "full_name": "Тезка", "role": "member",
         })
-        assert "зайнятий" in r.text and "church-b" not in r.text
-        ok("clash with another church's login is refused without disclosing it")
+        assert "створено" in r.text and "church-b" not in r.text
+        ok("a login used in another church can be taken here (014)")
+
+        # Inside one church the name still has to be free, and the message
+        # says where the clash is — the admin can see that row themselves.
+        r = client.post("/admin/users", data={
+            "username": "borys", "full_name": "Ще один", "role": "member",
+        })
+        assert "у вашій церкві" in r.text
+        ok("the same login twice in ONE church is still refused")
 
         # Guard rails.
         me = client.get("/admin/users")
@@ -1847,11 +1987,18 @@ def test_create_church() -> dict:
         assert r.status_code == 200 and "створено" not in r.text
         ok("a traversal slug is refused (same validator as paths and collections)")
 
+        # Founding a church whose admin carries a name another church already
+        # uses. Before 014 this was refused and the tenant rolled back; now it
+        # is simply a different church's business. The founding account is
+        # inactive until its invite is redeemed, so `borys` does not become an
+        # ambiguous login here — see the resolver checks in section 1.
         r = client.post("/platform/churches", data={
-            "slug": SLUG, "name": "Тестова церква",
-            "admin_username": "borys", "admin_full_name": "Борис Б"})
-        assert "зайнят" in r.text and "без адміна" not in r.text
-        ok("login taken elsewhere → refused, and the church is rolled back")
+            # An independent slug, not a suffix of SLUG: later checks ask
+            # "is SLUG still listed?" with a substring test.
+            "slug": f"smoke-tezka-{secrets.token_hex(3)}", "name": "Церква тезки",
+            "admin_username": "borys", "admin_full_name": "Борис Тезка"})
+        assert "створено" in r.text and "без адміна" not in r.text
+        ok("a login used elsewhere no longer blocks founding a church (014)")
 
         r = client.post("/platform/churches", data={
             "slug": SLUG, "name": "Тестова церква",
@@ -2152,6 +2299,7 @@ def main() -> int:
         test_portable_meeting_dir()
         test_collections()
         test_http()              # owns its pool via the app's lifespan
+        test_shared_login()      # ditto
         test_admin_ui()          # ditto
         test_sessions()
         test_hardening()

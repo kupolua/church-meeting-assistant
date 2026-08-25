@@ -149,14 +149,15 @@ async def create_church(
             request, pool, tenant_id, admin_username, admin_full_name,
         )
     except Exception as e:
-        # Logins are globally unique and RLS hides other churches', so a clash
-        # cannot be seen before the INSERT. Undo the tenant rather than leave an
-        # empty church holding the slug; delete_if_empty refuses anything that
-        # has accounts, so this cannot remove a real one.
+        # Since 014 a login only clashes inside its own church, and this church
+        # is one statement old — so WebUserAlreadyExists here is close to
+        # impossible. Kept anyway: whatever the failure, undo the tenant rather
+        # than leave an empty church holding the slug. delete_if_empty refuses
+        # anything that has accounts, so this cannot remove a real one.
         removed = await tenants_repo.delete_if_empty(pool, tenant_id)
         taken = isinstance(e, web_users_repo.WebUserAlreadyExists)
         detail = (
-            f"Логін «{admin_username}» уже зайнятий. Оберіть інший."
+            f"Логін «{admin_username}» уже є в цій церкві. Оберіть інший."
             if taken else f"Не вдалося створити адміністратора: {e}"
         )
         if not removed:

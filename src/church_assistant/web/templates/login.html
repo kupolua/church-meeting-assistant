@@ -24,6 +24,12 @@
         <p role="alert" class="login-error">⚠️ {{ error }}</p>
         {% endif %}
 
+        {# Not a failure — a question, asked only when the name is shared. It
+           carries no verdict about the password: nothing has been checked. #}
+        {% if notice %}
+        <p role="status" class="login-notice">{{ notice }}</p>
+        {% endif %}
+
         <form method="post" action="/login">
             <input type="hidden" name="next" value="{{ next }}">
 
@@ -36,10 +42,32 @@
                     value="{{ username }}"
                     autocomplete="username"
                     autocapitalize="none"
-                    autofocus
+                    {% if not ask_church %}autofocus{% endif %}
                     required
                 >
             </label>
+
+            {# Free text, never a <select>: a dropdown would hand every
+               visitor the list of every church on the server. Its owner knows
+               the identifier — the invite page showed it while they set their
+               password — and the display name is accepted too. #}
+            {% if ask_church %}
+            <label for="church">
+                Церква
+                <input
+                    type="text"
+                    id="church"
+                    name="church"
+                    value="{{ church }}"
+                    autocomplete="organization"
+                    autocapitalize="none"
+                    autofocus
+                    required
+                >
+                <small>Ідентифікатор церкви (наприклад <code>first-baptist</code>)
+                    або її назва. Ви бачили його на сторінці, де задавали пароль.</small>
+            </label>
+            {% endif %}
 
             <label for="password">
                 Пароль

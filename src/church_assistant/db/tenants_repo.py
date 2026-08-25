@@ -126,10 +126,10 @@ async def delete_if_empty(pool: AsyncConnectionPool, tenant_id: int) -> bool:
     Remove a church that has no accounts. Returns True if it was removed.
 
     Exists for exactly one situation: create_tenant succeeded and creating its
-    first admin did not. Logins are globally unique and RLS hides other
-    churches', so that clash cannot be seen before the INSERT — and by then the
-    tenant row is there, holding a slug the operator would otherwise have to
-    abandon over a typo.
+    first admin did not — for whatever reason, and by then the tenant row is
+    there, holding a slug the operator would otherwise have to abandon over a
+    typo. (Before migration 014 the usual reason was a login already taken in
+    some other church; names stopped being server-wide, so that one is gone.)
 
     The `NOT EXISTS` is the guard, in SQL rather than in the caller: a check
     that lives in the calling code protects only the callers that remember it.
