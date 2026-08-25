@@ -33,7 +33,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/srv/cma/logs
+# Leading '-': absent means "no access", not "refuse to start". See cma-web.
+ReadWritePaths=-/srv/cma/logs
 
 StandardOutput=journal
 StandardError=journal

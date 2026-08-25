@@ -40,7 +40,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/srv/cma/data /srv/cma/logs
+# Leading '-' means "grant if present, do not fail if absent". Without it a
+# missing path is fatal: systemd cannot build the namespace and the unit dies
+# with 226/NAMESPACE before a line of Python runs. Moving the artifacts out of
+# /srv/cma took the web down that way, and the message points at namespaces
+# rather than at the directory that moved.
+ReadWritePaths=-/srv/cma-data/artifacts -/srv/cma/logs
 
 StandardOutput=journal
 StandardError=journal

@@ -529,6 +529,18 @@ systemctl start cma-web cma-telegram-bot
 ARTIFACT_SYNC_REMOTE=cma@10.10.0.1:/srv/cma-data/artifacts
 ```
 
+⚠️ **Юніт оголошує цей шлях у `ReadWritePaths`** — після переносу його треба
+оновити й зробити `daemon-reload`, інакше `cma-web` упаде з `226/NAMESPACE` ще
+до запуску Python, і повідомлення вказуватиме на namespace, а не на теку, що
+переїхала:
+```bash
+sed -i 's|^ReadWritePaths=.*|ReadWritePaths=-/srv/cma-data/artifacts -/srv/cma/logs|' \
+    /etc/systemd/system/cma-web.service
+systemctl daemon-reload
+```
+Дефіс перед шляхом означає «дати права, якщо тека є; не падати, якщо немає» —
+саме це перетворює перенесення каталогу з аварії на дрібницю.
+
 ⚠️ Переноситься **вся тека `data`**, а не `data/tenants`. `paths_for()` шукає
 `<DATA_ROOT>/tenants/<slug>`, тож рівень `tenants` має лишитися всередині —
 перенесеш лише його, і застосунок не знайде жодної зустрічі, хоча файли на
