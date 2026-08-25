@@ -66,8 +66,9 @@ SCORE_OK = 0.40
 
 # bge-reranker-v2-m3 sigmoid scores: ~0.65+ confidently relevant, ~0.35-0.65
 # moderate, <0.35 weak. (First-pass calibration — retune on real queries.)
-RERANK_SCORE_GOOD = 0.65
-RERANK_SCORE_OK = 0.35
+# Kept in step with shared/rag.py — see the calibration note there.
+RERANK_SCORE_GOOD = 0.60
+RERANK_SCORE_OK = 0.52
 
 
 # ----- Logging -----

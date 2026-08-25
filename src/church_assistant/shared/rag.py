@@ -87,10 +87,26 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 # (kept for downstream UI to show green/yellow/dim)
 SCORE_GOOD = 0.55
 SCORE_OK = 0.40
-# bge-reranker-v2-m3 sigmoid scores: ~0.65+ confidently relevant, ~0.35-0.65
-# moderate, <0.35 weak. (First-pass calibration — retune on real queries.)
-RERANK_SCORE_GOOD = 0.65
-RERANK_SCORE_OK = 0.35
+
+# Colour cutoffs for reranked hits, calibrated 2026-08-25 against two datasets
+# rather than guessed (scripts/eval_rerank.py, plus 165 real scores read back
+# out of queries.hits).
+#
+# bge-reranker's sigmoid piles irrelevant pairs on 0.5: the production median is
+# 0.503 and the maximum ever recorded is 0.676. The old 0.65 therefore fired on
+# 1 hit out of 165 — green effectively did not exist — while .env carried a
+# 0.50/0.20 pair that nothing read at all, and 0.50 would have painted 82% of
+# hits green.
+#
+#   0.60 → the top 8% of hits; 18.5% precision on the corpus against a 5% base
+#          rate, i.e. the only band where a hit genuinely stands out
+#   0.52 → just above the 0.503 noise floor; below it a score carries no
+#          information, so dim is the honest colour
+#
+# Retune with scripts/eval_rerank.py if the model or the corpus changes — the
+# numbers are model-specific and mean nothing for a different reranker.
+RERANK_SCORE_GOOD = 0.60
+RERANK_SCORE_OK = 0.52
 
 
 # ─────────────────────────────────────────────────────────────

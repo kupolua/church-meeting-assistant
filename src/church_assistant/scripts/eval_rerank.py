@@ -192,18 +192,30 @@ def _score_in_subprocess(model_name: str, evalset_path: str) -> Optional[dict[st
     A fresh interpreter also means the second model cannot inherit the first's
     memory state, so the timings are comparable rather than order-dependent.
     """
-    proc = subprocess.run(
+    # Streamed, not captured: a quarter of an hour of silence looks identical to
+    # a hung process, and capture_output swallows the child's progress until it
+    # exits. The result comes back on a marked line; everything else is echoed.
+    proc = subprocess.Popen(
         [sys.executable, "-m", "church_assistant.scripts.eval_rerank",
          "-i", evalset_path, "--model", model_name, "--single"],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
-    for line in proc.stdout.splitlines():
+    result: Optional[dict[str, Any]] = None
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip()
         if line.startswith(_MARKER):
-            return json.loads(line[len(_MARKER):])
-    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-    for t in tail:
-        print(f"      {t}", flush=True)
-    return None
+            result = json.loads(line[len(_MARKER):])
+            continue
+        if line:
+            print(f"    {line}", flush=True)
+            tail = (tail + [line])[-3:]
+    proc.wait()
+    if result is None:
+        for t in tail:
+            print(f"      {t}", flush=True)
+    return result
 
 
 def _pct(n: int, total: int) -> str:
@@ -216,6 +228,27 @@ def _quantiles(xs: list[float]) -> str:
     s = sorted(xs)
     q = lambda p: s[min(int(p * len(s)), len(s) - 1)]
     return f"p10 {q(0.10):.3f} · медіана {q(0.50):.3f} · p90 {q(0.90):.3f}"
+
+
+def _threshold_table(gold: list[float], other: list[float]) -> list[str]:
+    """
+    What each candidate threshold would actually do.
+
+    RERANK_SCORE_GOOD/OK only colour hits green / yellow / dim, but a threshold
+    that lets everything through is worse than none: it tells the reader every
+    result is good. Both distributions start at 0.500 here, which is exactly what
+    the current 0.50 does. Precision at a cutoff — of everything scoring at least
+    t, how much of it is the right answer — is the number that should set it.
+    """
+    if not gold or not other:
+        return []
+    rows = ["      поріг   precision   покриття правильних"]
+    for t in (0.50, 0.52, 0.55, 0.60, 0.65, 0.70, 0.75):
+        g = sum(1 for x in gold if x >= t)
+        o = sum(1 for x in other if x >= t)
+        prec = g / (g + o) if (g + o) else 0.0
+        rows.append(f"      {t:.2f}    {prec:6.1%}      {g/len(gold):6.1%}")
+    return rows
 
 
 def report(results: list[dict[str, Any]]) -> None:
@@ -237,6 +270,8 @@ def report(results: list[dict[str, Any]]) -> None:
         # from where gold and non-gold scores actually separate.
         print(f"    скори правильних:  {_quantiles(r['gold_scores'])}")
         print(f"    скори решти:       {_quantiles(r['other_scores'])}")
+        for line in _threshold_table(r["gold_scores"], r["other_scores"]):
+            print(line)
     print()
 
 
@@ -275,9 +310,11 @@ async def _amain(args: argparse.Namespace) -> int:
         return 1
     report(results)
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(
-            [{k: v for k, v in r.items() if not k.endswith("_scores")} for r in results],
-            ensure_ascii=False, indent=2), encoding="utf-8")
+        # Scores included: ~200 KB for a corpus this size, and re-deriving them
+        # costs a quarter of an hour of reranking. Cheap insurance against
+        # having to run the whole thing again to ask a different question.
+        Path(args.json_out).write_text(
+            json.dumps(results, ensure_ascii=False), encoding="utf-8")
         print(f"  ✓ підсумок → {args.json_out}")
     return 0
 
