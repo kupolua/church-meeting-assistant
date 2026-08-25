@@ -55,6 +55,10 @@ class SessionUser:
     username: str
     full_name: str
     role: str                      # 'member' | 'admin'
+    # Platform-level, deliberately NOT part of `role`: role is scoped to one
+    # church, while creating a church happens outside every tenant. Folding it
+    # into 'admin' would let anyone running one church mint more (migration 010).
+    is_platform_admin: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -76,6 +80,9 @@ class SessionUser:
             username=str(row["username"]),
             full_name=str(row["full_name"] or ""),
             role=str(row["role"] or "member"),
+            # Absent on a deployment that has not run 010 — default False, so a
+            # missing migration removes the capability rather than granting it.
+            is_platform_admin=bool(row.get("is_platform_admin") or False),
         )
 
 

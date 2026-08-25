@@ -10,6 +10,8 @@ Web account management (admin only):
     POST /admin/users/{id}/password       set a new password
     POST /admin/users/{id}/sessions/revoke  sign the account out everywhere
 
+    POST /admin/churches                  create a NEW church (platform admins)
+
 Everything is scoped to the logged-in admin's own church: the tenant comes from
 the session and every query runs through tenant_cursor, so an admin of church A
 cannot see — let alone edit — church B's accounts even by guessing an id.
@@ -23,16 +25,29 @@ TWO GUARD RAILS, both about not locking yourself out of your own church:
 
 Every change is written to audit_log: account changes are exactly what the
 наглядова рада needs to see.
+
+THE ONE EXCEPTION is POST /admin/churches, which by definition acts outside any
+tenant. It is gated on is_platform_admin (migration 010), not on `role` — an
+admin runs a church, and being able to create more is a different power. A
+church admin without the flag gets 404 rather than 403: the route's existence is
+not theirs to know.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Form, Request
+import secrets
+
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from church_assistant.db import audit_repo, web_sessions_repo, web_users_repo
+from church_assistant.db import (
+    audit_repo,
+    tenants_repo,
+    web_sessions_repo,
+    web_users_repo,
+)
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
@@ -52,6 +67,12 @@ _logger = Logger(process="web")
 
 MIN_PASSWORD_LEN = 8
 MAX_USERNAME_LEN = 40
+MAX_CHURCH_NAME_LEN = 120
+
+# Generated, not typed: the operator setting up a church for someone else has no
+# business choosing their password, and a founding account is the one nobody
+# wants weak. token_urlsafe(12) is 16 characters of ~72 bits.
+FOUNDING_PASSWORD_BYTES = 12
 
 
 # ─────────────────────────────────────────────────────────────
@@ -373,3 +394,139 @@ async def set_password(request: Request, user_id: int, password: str = Form(...)
     return await _panel_with(
         request, ok=f"Пароль для «{target['username']}» змінено.{suffix}"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Creating a church — platform level, outside every tenant
+# ─────────────────────────────────────────────────────────────
+
+def _require_platform_admin(request: Request) -> Any:
+    """
+    The logged-in user, but only if they may create churches.
+
+    404, not 403: a church admin has no need to learn that this endpoint exists,
+    and "forbidden" tells them it does. The rest of this module answers 403 for
+    role checks because there the feature is openly part of the product; this
+    one is not.
+    """
+    me = current_user(request)
+    if not getattr(me, "is_platform_admin", False):
+        raise HTTPException(status_code=404, detail="Not found")
+    return me
+
+
+def _church_form(
+    request: Request, *, error: Optional[str] = None, created: Optional[dict] = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "partials/admin_church_form.html",
+        {"error": error, "created": created, "me": current_user(request)},
+    )
+
+
+@router.post("/churches", response_class=HTMLResponse)
+async def create_church(
+    request: Request,
+    slug: str = Form(...),
+    name: str = Form(...),
+    admin_username: str = Form(...),
+    admin_full_name: str = Form(...),
+):
+    """
+    Register a church and its first administrator.
+
+    A church with no account is unreachable — nobody could sign in to create
+    one — so the two are one operation rather than two screens.
+
+    Qdrant collections are deliberately NOT created here: index_meeting makes
+    them on first use. Creating them up front would add a second system that can
+    fail halfway through registration, in exchange for nothing.
+    """
+    _require_platform_admin(request)
+    pool = await get_pool()
+
+    slug = slug.strip().lower()
+    name = name.strip()
+    admin_username = admin_username.strip().lower()
+    admin_full_name = admin_full_name.strip()
+
+    # The slug becomes a directory name AND a Qdrant collection prefix, so it is
+    # validated by the same function those two use rather than by a rule written
+    # here that could drift from them.
+    try:
+        tenant_paths.validate_slug(slug)
+    except tenant_paths.InvalidTenantSlug as e:
+        return _church_form(request, error=str(e))
+
+    if not name or len(name) > MAX_CHURCH_NAME_LEN:
+        return _church_form(
+            request, error=f"Назва має бути 1–{MAX_CHURCH_NAME_LEN} символів."
+        )
+    if not admin_username or len(admin_username) > MAX_USERNAME_LEN:
+        return _church_form(
+            request, error=f"Логін адміна має бути 1–{MAX_USERNAME_LEN} символів."
+        )
+    if not admin_full_name:
+        return _church_form(request, error="Вкажіть імʼя адміністратора.")
+
+    if await tenants_repo.get_by_slug(pool, slug) is not None:
+        return _church_form(request, error=f"Ідентифікатор «{slug}» уже зайнятий.")
+
+    tenant_id = await tenants_repo.create_tenant(pool, slug=slug, name=name)
+
+    password = secrets.token_urlsafe(FOUNDING_PASSWORD_BYTES)
+    try:
+        user_id = await web_users_repo.add_web_user(
+            pool,
+            tenant_id,
+            username=admin_username,
+            password_hash=security.hash_password(password),
+            full_name=admin_full_name,
+            role="admin",
+        )
+    except Exception as e:
+        # Logins are globally unique and RLS hides other churches', so a clash
+        # cannot be seen before this INSERT. Undo the tenant instead of leaving
+        # an empty church holding the slug — delete_if_empty refuses anything
+        # that has accounts, so this cannot remove a real one.
+        removed = await tenants_repo.delete_if_empty(pool, tenant_id)
+        taken = isinstance(e, web_users_repo.WebUserAlreadyExists)
+        detail = (
+            f"Логін «{admin_username}» уже зайнятий. Оберіть інший."
+            if taken else f"Не вдалося створити адміністратора: {e}"
+        )
+        if not removed:
+            detail += f" ⚠️ Церкву «{slug}» створено, але без адміна — приберіть вручну."
+        await _logger.error(
+            "web.church_create_failed",
+            message=f"church {slug!r}: {type(e).__name__}: {e} (rolled back={removed})",
+        )
+        return _church_form(request, error=detail)
+
+    # Folders now, not on first upload: an operator who opens the new church and
+    # finds nothing cannot tell "empty" from "broken".
+    tenant_paths.paths_for(slug).ensure()
+
+    # Logged into the NEW church's audit trail, where its наглядова рада will
+    # look, and naming the outside actor who did it. The platform log gets its
+    # own line below.
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="platform.church_created",
+        actor=current_user(request).actor,
+        resource=f"tenants/{tenant_id}",
+        detail={"slug": slug, "name": name, "admin_username": admin_username},
+    )
+    await _logger.info(
+        "web.church_created",
+        message=f"{current_user(request).username} created church {slug!r} "
+                f"(admin {admin_username})",
+    )
+
+    # The password is returned to the screen and written nowhere — not to the
+    # audit detail, not to the log line above. Shown once is the whole point.
+    return _church_form(request, created={
+        "slug": slug, "name": name, "tenant_id": tenant_id,
+        "username": admin_username, "user_id": user_id, "password": password,
+    })

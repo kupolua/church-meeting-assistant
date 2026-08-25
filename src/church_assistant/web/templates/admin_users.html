@@ -19,5 +19,12 @@
     <div id="admin-users-panel">
         {% include "partials/admin_users_panel.html" %}
     </div>
+
+    {# Platform admins only. The route answers 404 to everyone else, so hiding
+       the form is about not showing a power the reader does not have, not about
+       enforcing it — that lives in _require_platform_admin. #}
+    {% if me.is_platform_admin %}
+    {% include "partials/admin_church_form.html" %}
+    {% endif %}
 </article>
 {% endblock %}

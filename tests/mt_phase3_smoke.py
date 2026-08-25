@@ -1106,6 +1106,26 @@ def test_hardening() -> None:
     assert not offenders, "the CSP would block these: " + "; ".join(offenders)
     ok(f"no CDN links / inline handlers / inline styles in {len(templates)} templates")
 
+    # htmx attributes it does not understand are not ignored — they are acted on.
+    # hx-swap-oob marks an element as out-of-band, and htmx REMOVES such an
+    # element from the document while processing. Written as hx-swap-oob="false"
+    # in the hope of "not out of band", it silently deleted the church form the
+    # moment anything swapped: server 200, tests green, section simply gone.
+    # Only htmx's own vocabulary is allowed here.
+    OOB_OK = ("true", "outerHTML", "innerHTML", "beforebegin", "afterbegin",
+              "beforeend", "afterend", "delete", "none")
+    bad_oob: list[str] = []
+    for tpl in templates:
+        body = _re2.sub(r"<!--.*?-->", "", tpl.read_text(encoding="utf-8"), flags=_re2.S)
+        for m in _re2.finditer(r'hx-swap-oob="([^"]*)"', body):
+            if m.group(1).split(":")[0] not in OOB_OK:
+                bad_oob.append(f"{tpl.name}: hx-swap-oob=\"{m.group(1)}\"")
+    assert not bad_oob, (
+        "htmx treats these as out-of-band and removes the element: "
+        + "; ".join(bad_oob)
+    )
+    ok("no hx-swap-oob with a value htmx does not define")
+
     static_dir = _Path(__file__).resolve().parent.parent / "src/church_assistant/web/static"
     for asset in ("htmx.min.js", "app.js", "app.css", "pico.min.css"):
         p = static_dir / asset
@@ -1606,6 +1626,192 @@ def test_artifact_sync() -> None:
         shutil.rmtree(remote, ignore_errors=True)
 
 
+# ─────────────────────────────────────────────────────────────
+# 14. Creating a church (platform admin only)
+# ─────────────────────────────────────────────────────────────
+
+def test_create_church() -> None:
+    """
+    Registering a church is a platform act, not a church-admin one.
+
+    The thing worth proving is not that the happy path works — it is that an
+    ordinary church admin cannot reach it, and that a half-finished
+    registration does not leave a slug locked up.
+    """
+    print("\n14. Створення нової церкви (платформовий адмін)")
+    print("-" * 66)
+
+    from fastapi.testclient import TestClient
+    from church_assistant.db import tenants_repo, web_users_repo
+    from church_assistant.web.main import app
+
+    # Fresh each run. A leftover church cannot be fully removed afterwards —
+    # its first sign-in writes rows in `logs` that hold the tenant down through
+    # a foreign key, and cma_app has no UPDATE on `tenants` to rename it either.
+    # Rather than widen the application role for a test's convenience, the test
+    # simply never reuses a slug.
+    TEST_CHURCH_SLUG = f"smoke-church-{secrets.token_hex(3)}"
+
+    def _client() -> TestClient:
+        return TestClient(app, follow_redirects=False)
+
+    async def _set_platform_admin(username: str, value: bool) -> None:
+        pool = await get_pool()
+        try:
+            async with tenant_cursor(pool, TENANT_A) as cur:
+                await cur.execute(
+                    "UPDATE web_users SET is_platform_admin = %s WHERE username = %s",
+                    (value, username),
+                )
+        finally:
+            await close_pool()
+
+    async def _cleanup() -> None:
+        """
+        Remove the test church's accounts, and the church itself if it can go.
+
+        audit_log is append-only for cma_app by design and its rows reference
+        the tenant, so a church that reached a successful sign-in cannot be
+        deleted. That is correct behaviour, not an obstacle to work around:
+        the suite uses a new slug per run instead.
+        """
+        pool = await get_pool()
+        try:
+            t = await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG)
+            if t is None:
+                return
+            tid = int(t["id"])
+            async with tenant_cursor(pool, tid) as cur:
+                await cur.execute("DELETE FROM web_users")
+            # Best effort: returns False once anything references the tenant,
+            # which is the case as soon as its admin has signed in once.
+            await tenants_repo.delete_if_empty(pool, tid)
+        finally:
+            await close_pool()
+
+    asyncio.run(_cleanup())
+    asyncio.run(_set_platform_admin("anna", False))
+
+    # ── An ordinary church admin must not find it ──────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+        r = client.get("/admin/users")
+        assert r.status_code == 200
+        assert "Нова церква" not in r.text, "the form is offered to a church admin"
+        r = client.post("/admin/churches", data={
+            "slug": "sneaky", "name": "Х", "admin_username": "x", "admin_full_name": "Х",
+        })
+        # 404, not 403: the endpoint's existence is not a church admin's business.
+        assert r.status_code == 404, r.status_code
+        ok("church admin: form hidden and POST /admin/churches is 404, not 403")
+
+    asyncio.run(_set_platform_admin("anna", True))
+
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+        assert "Нова церква" in client.get("/admin/users").text
+        ok("platform admin: the form appears")
+
+        # ── A slug that would escape the data root ─────────────
+        r = client.post("/admin/churches", data={
+            "slug": "../etc", "name": "Х", "admin_username": "x", "admin_full_name": "Х",
+        })
+        assert r.status_code == 200 and "created" not in r.text.lower()
+        assert "../etc" not in r.text or "Unsafe" in r.text or "expected" in r.text
+        ok("a traversal slug is refused (same validator as paths and collections)")
+
+        # ── A login that belongs to another church ─────────────
+        # borys is in church B. The clash cannot be seen before the INSERT, so
+        # this is the path that has to roll the tenant back.
+        r = client.post("/admin/churches", data={
+            "slug": TEST_CHURCH_SLUG, "name": "Тестова церква",
+            "admin_username": "borys", "admin_full_name": "Борис Б",
+        })
+        assert r.status_code == 200
+        assert "зайнят" in r.text, "a taken login must be reported"
+        assert "без адміна" not in r.text, "the tenant was not rolled back"
+        ok("login taken elsewhere → refused, and the church is rolled back")
+
+    # The slug must be free again — that is the whole point of the rollback.
+    async def _slug_free() -> bool:
+        pool = await get_pool()
+        try:
+            return await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG) is None
+        finally:
+            await close_pool()
+
+    assert asyncio.run(_slug_free()), "the rolled-back slug is still taken"
+    ok("the slug is free again after the rollback")
+
+    # ── The real thing ────────────────────────────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "anna", "password": PASSWORD_A}
+        ).status_code == 303
+        r = client.post("/admin/churches", data={
+            "slug": TEST_CHURCH_SLUG, "name": "Тестова церква",
+            "admin_username": "newpastor", "admin_full_name": "Новий Пастор",
+        })
+        assert r.status_code == 200, r.status_code
+        assert "створено" in r.text, r.text[:300]
+        # The generated password is on screen and must be usable.
+        import re as _re2
+        m = _re2.search(r'class="church-password">([^<]+)<', r.text)
+        assert m, "the password is not shown"
+        new_password = m.group(1).strip()
+        assert len(new_password) >= 12, new_password
+        ok(f"church created, founding password shown once ({len(new_password)} chars)")
+
+    async def _check_created() -> tuple[int, list[dict[str, Any]], int]:
+        pool = await get_pool()
+        try:
+            t = await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG)
+            assert t is not None, "no tenant row"
+            tid = int(t["id"])
+            users = await web_users_repo.list_all(pool, tid)
+            async with tenant_cursor(pool, tid) as cur:
+                await cur.execute(
+                    "SELECT count(*) FROM audit_log WHERE action = 'platform.church_created'"
+                )
+                n_audit = (await cur.fetchone())[0]
+            return tid, users, n_audit
+        finally:
+            await close_pool()
+
+    tid, users, n_audit = asyncio.run(_check_created())
+    assert [u["username"] for u in users] == ["newpastor"], users
+    assert users[0]["role"] == "admin", "the founding account must be able to add others"
+    assert not users[0]["is_platform_admin"], "creating a church must not hand out the platform"
+    ok("exactly one account, role admin, and NOT a platform admin")
+
+    assert n_audit == 1, n_audit
+    ok("the founding is in the new church's own audit trail")
+
+    paths = tenant_paths.paths_for(TEST_CHURCH_SLUG)
+    assert paths.meetings.is_dir() and paths.voice_profiles.is_dir()
+    ok("folders exist — an empty church is distinguishable from a broken one")
+
+    # ── And it is genuinely a separate church ─────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": "newpastor", "password": new_password}
+        ).status_code == 303, "the founding password does not work"
+        body = client.get("/meetings").text
+        assert "2026-06-15" not in body, "the new church can see church A's meetings"
+        r = client.post("/admin/churches", data={
+            "slug": "another", "name": "Х", "admin_username": "y", "admin_full_name": "Y",
+        })
+        assert r.status_code == 404, "a founded admin inherited the platform flag"
+        ok("the new admin signs in, sees an empty archive, and cannot create churches")
+
+    asyncio.run(_cleanup())
+    asyncio.run(_set_platform_admin("anna", False))
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -1647,6 +1853,7 @@ def main() -> int:
         test_manual_speaker()
         test_query_queue()
         test_artifact_sync()
+        test_create_church()
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

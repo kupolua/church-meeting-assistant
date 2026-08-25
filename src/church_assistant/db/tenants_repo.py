@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from psycopg.rows import dict_row
+from psycopg.errors import ForeignKeyViolation
 from psycopg_pool import AsyncConnectionPool
 
 
@@ -118,3 +119,47 @@ async def get_slug(pool: AsyncConnectionPool, tenant_id: int) -> str:
     slug = str(tenant["slug"])
     _slug_cache[tenant_id] = slug
     return slug
+
+
+async def delete_if_empty(pool: AsyncConnectionPool, tenant_id: int) -> bool:
+    """
+    Remove a church that has no accounts. Returns True if it was removed.
+
+    Exists for exactly one situation: create_tenant succeeded and creating its
+    first admin did not. Logins are globally unique and RLS hides other
+    churches', so that clash cannot be seen before the INSERT — and by then the
+    tenant row is there, holding a slug the operator would otherwise have to
+    abandon over a typo.
+
+    The `NOT EXISTS` is the guard, in SQL rather than in the caller: a check
+    that lives in the calling code protects only the callers that remember it.
+    A church with a single account is not empty and will not be deleted here.
+    """
+    sql = """
+        DELETE FROM tenants
+        WHERE id = %s
+          AND NOT EXISTS (SELECT 1 FROM web_users WHERE tenant_id = tenants.id)
+          AND NOT EXISTS (SELECT 1 FROM users     WHERE tenant_id = tenants.id)
+    """
+    try:
+      async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # Both subqueries read RLS-protected tables, and the policy casts
+            # current_setting('app.current_tenant') to bigint — with no tenant
+            # context that setting is '' and the cast fails before the delete is
+            # even considered. Set it to the tenant being removed, in the same
+            # transaction, so RLS shows exactly the rows the guard needs to see.
+            await cur.execute(
+                "SELECT set_config('app.current_tenant', %s, true)", (str(tenant_id),)
+            )
+            await cur.execute(sql, (tenant_id,))
+            return cur.rowcount > 0
+    except ForeignKeyViolation:
+        # Something else already points at this tenant — a log line from its
+        # first sign-in, an audit row. The NOT EXISTS guard covers accounts
+        # because those are what "empty" means to the caller, but it cannot
+        # enumerate every table that might reference a church, and it should not
+        # try: the honest answer to "is this safe to remove" is then no.
+        # Caught outside the connection block so the aborted transaction is
+        # rolled back by the context manager before we return.
+        return False
