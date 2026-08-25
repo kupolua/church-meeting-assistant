@@ -554,3 +554,47 @@ systemctl daemon-reload
 **Що дашборд поки не показує:** чи M1 узагалі на звʼязку. `health_checks`
 пише воркер, тож коли M1 спить, панель показує **останній** знімок, а не
 «обробник відсутній». Кандидат на наступну правку.
+
+## 11. Викочування зміни, що торкається схеми
+
+Порядок нижче — не церемонія: кожен крок тут існує тому, що якийсь із них колись
+пропустили. Робиться з M1, через тунель; на VPS від root — лише те, що інакше не
+працює.
+
+```bash
+# 1. Бекап ДО, не після. Міграції, що переписують resolve_web_session,
+#    вимикають вхід усім одразу, якщо в них помилка.
+bash deploy/backup_from_vps.sh
+
+# 2. Код
+git push origin main
+ssh cma@10.10.0.1 'cd /srv/cma && git pull --ff-only && git log --oneline -1'
+
+# 3. Схема. Суперюзер — cma, НЕ postgres: контейнер створено з POSTGRES_USER=cma.
+ssh cma@10.10.0.1 '
+  PW=$(grep "^POSTGRES_SUPERUSER_PASSWORD=" /srv/cma/.env | cut -d= -f2-)
+  docker exec -i -e PGPASSWORD="$PW" cma-postgres \
+      psql -U cma -d cma -q -v ON_ERROR_STOP=1 \
+      < /srv/cma/src/church_assistant/db/migrations/013_tenant_archive.sql
+  docker exec -e PGPASSWORD="$PW" cma-postgres \
+      psql -U cma -d cma -tAc "SELECT max(version) FROM schema_version;"
+'
+
+# 4. Перезапуск — лише після того, як схема стала новою. Навпаки не можна:
+#    код, що чекає deleted_at, на старій схемі падає на кожному запиті.
+ssh cma@10.10.0.1 'sudo systemctl restart cma-web cma-telegram-bot'
+
+# 5. Звірка
+curl -s -o /dev/null -w '%{http_code}\n' https://cma.rechurch.org.ua/login
+```
+
+⚠️ **`git pull` на VPS робиться від `cma`, ніколи від root.** Один pull від root
+переписав `auth.py` як root-owned, і `cma-web` після цього падав із
+`PermissionError` — 502 на живому сайті, а причина видно лише в journalctl.
+
+⚠️ **Ніколи `chown -R cma:cma /srv/cma`.** Поки томи Postgres лежали під
+`deploy/data`, ця команда підмела й їх, і база не піднялась. Томи відтоді в
+`/srv/cma-data`, але звичка небезпечна саме тим, що спрацьовує 99 разів.
+
+⚠️ **Не перезапускати `cma-web` «щоб перевірити»** — кожен рестарт рве всі живі
+сесії. Права перевіряються `sudo -n -u cma …`, а не рестартом.
