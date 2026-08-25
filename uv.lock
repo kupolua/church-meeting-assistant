@@ -378,21 +378,17 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
-    { name = "faster-whisper" },
     { name = "jinja2" },
     { name = "ollama" },
-    { name = "omegaconf" },
     { name = "pdfplumber" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
-    { name = "pyannote-audio" },
     { name = "pypdf" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "python-telegram-bot" },
     { name = "qdrant-client" },
     { name = "reportlab" },
-    { name = "sentence-transformers" },
     { name = "uvicorn" },
 ]
 
@@ -400,30 +396,38 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+worker = [
+    { name = "faster-whisper" },
+    { name = "omegaconf" },
+    { name = "pyannote-audio" },
+    { name = "sentence-transformers" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.139.0" },
-    { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "ollama", specifier = ">=0.6.2" },
-    { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "pdfplumber", specifier = ">=0.11.9" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", specifier = ">=3.3.1" },
-    { name = "pyannote-audio", specifier = ">=4.0.4" },
     { name = "pypdf", specifier = ">=6.13.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "python-telegram-bot", specifier = ">=21.0" },
     { name = "qdrant-client", specifier = ">=1.18.0" },
     { name = "reportlab", specifier = ">=5.0.0" },
-    { name = "sentence-transformers", specifier = ">=3.0.0" },
     { name = "uvicorn", specifier = ">=0.51.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
+worker = [
+    { name = "faster-whisper", specifier = ">=1.2.1" },
+    { name = "omegaconf", specifier = ">=2.3.0" },
+    { name = "pyannote-audio", specifier = ">=4.0.4" },
+    { name = "sentence-transformers", specifier = ">=3.0.0" },
+]
 
 [[package]]
 name = "click"

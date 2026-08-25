@@ -4,23 +4,26 @@ version = "0.1.0"
 description = "Transcribe, diarize and summarize church meeting recordings"
 readme = "README.md"
 requires-python = ">=3.12"
+# The control plane: everything the web tier and the Telegram bot need, and
+# nothing else. This is what installs on the VPS.
+#
+# THE SPLIT IS ABOUT 4.5 GB, not tidiness. The heavy group below drags in torch,
+# the whole nvidia CUDA stack and triton — 4.5 GB of GPU runtime on a box with no
+# GPU, which never loads because reranking and transcription happen on the M1.
+# Keeping one flat list meant every `uv sync` on the VPS reinstalled all of it.
 dependencies = [
     "fastapi>=0.139.0",
-    "faster-whisper>=1.2.1",
     "jinja2>=3.1.6",
     "ollama>=0.6.2",
-    "omegaconf>=2.3.0",
     "pdfplumber>=0.11.9",
     "psycopg-pool>=3.3.1",
     "psycopg[binary]>=3.3.4",
-    "pyannote-audio>=4.0.4",
     "pypdf>=6.13.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
     "python-telegram-bot>=21.0",
     "qdrant-client>=1.18.0",
     "uvicorn>=0.51.0",
-    "sentence-transformers>=3.0.0",
     "reportlab>=5.0.0",
 ]
 
@@ -35,3 +38,28 @@ packages = ["src/church_assistant"]
 dev = [
     "pytest>=8.0",
 ]
+
+# Models and the audio pipeline: transcription, diarization, reranking. Installed
+# on the M1, never on the VPS.
+#
+# A GROUP RATHER THAN AN EXTRA, and default-on rather than default-off. The M1
+# runs dozens of `uv run python -m church_assistant.…` commands across scripts,
+# restart_dev.sh and the tests; if the heavy set needed a flag, one forgotten flag
+# would silently rebuild the venv without torch and break the pipeline. The VPS
+# runs exactly two units, so that is where the flag belongs — and it is set once,
+# as UV_NO_GROUP=worker in both service files.
+#
+# omegaconf is here because it is not imported anywhere in src/ — it was pinned for
+# pyannote, which declares it itself. Left in the group rather than deleted, since
+# proving a transitive pin unnecessary is a separate question from this split.
+worker = [
+    "faster-whisper>=1.2.1",
+    "pyannote-audio>=4.0.4",
+    "sentence-transformers>=3.0.0",
+    "omegaconf>=2.3.0",
+]
+
+[tool.uv]
+# The worker set installs by default; the VPS opts out. See the note above for
+# why the default leans this way.
+default-groups = ["dev", "worker"]

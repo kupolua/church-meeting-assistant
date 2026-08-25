@@ -22,6 +22,16 @@ Group=cma
 WorkingDirectory=/srv/cma
 EnvironmentFile=/srv/cma/.env
 
+# The control plane does not install the worker group: torch, the nvidia CUDA
+# stack and triton are 4.5 GB of GPU runtime on a box with no GPU, and nothing
+# here ever loads them — reranking and transcription run on the M1.
+#
+# IT BELONGS HERE, NOT IN pyproject. `uv run` re-syncs the environment on every
+# start, so without this the next restart would reinstall all of it. The default
+# in pyproject leans the other way on purpose: the M1 runs dozens of uv commands
+# and one forgotten flag there would quietly break the pipeline, while this box
+# runs exactly two units and both carry the flag.
+Environment=UV_NO_GROUP=worker
 ExecStart=/usr/local/bin/uv run python -m church_assistant.bot.main
 
 # Telegram polling drops on any network blip and the process exits; always is

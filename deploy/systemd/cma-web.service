@@ -28,6 +28,16 @@ EnvironmentFile=/srv/cma/.env
 # No --reload: production. Bound to localhost because a TLS terminator (caddy
 # or nginx) sits in front — see docs/vps_deploy.md step 6. Binding 0.0.0.0 here
 # would put an un-TLS'd login form on the public internet.
+# The control plane does not install the worker group: torch, the nvidia CUDA
+# stack and triton are 4.5 GB of GPU runtime on a box with no GPU, and nothing
+# here ever loads them — reranking and transcription run on the M1.
+#
+# IT BELONGS HERE, NOT IN pyproject. `uv run` re-syncs the environment on every
+# start, so without this the next restart would reinstall all of it. The default
+# in pyproject leans the other way on purpose: the M1 runs dozens of uv commands
+# and one forgotten flag there would quietly break the pipeline, while this box
+# runs exactly two units and both carry the flag.
+Environment=UV_NO_GROUP=worker
 ExecStart=/usr/local/bin/uv run uvicorn church_assistant.web.main:app \
     --host 127.0.0.1 --port 8000
 
