@@ -521,13 +521,18 @@ du -sh /srv/cma/data/tenants/*
 ```bash
 # на VPS
 systemctl stop cma-web cma-telegram-bot
-mv /srv/cma/data/tenants /srv/cma-data/artifacts   # створити теку заздалегідь
+mv /srv/cma/data /srv/cma-data/artifacts
 sed -i 's|^DATA_ROOT=.*|DATA_ROOT=/srv/cma-data/artifacts|' /srv/cma/.env
 systemctl start cma-web cma-telegram-bot
 
 # на M1, у .env
 ARTIFACT_SYNC_REMOTE=cma@10.10.0.1:/srv/cma-data/artifacts
 ```
+
+⚠️ Переноситься **вся тека `data`**, а не `data/tenants`. `paths_for()` шукає
+`<DATA_ROOT>/tenants/<slug>`, тож рівень `tenants` має лишитися всередині —
+перенесеш лише його, і застосунок не знайде жодної зустрічі, хоча файли на
+місці.
 
 Поки не перенесено — `chown -R` по `/srv/cma` дістане й записи церкви.
 
