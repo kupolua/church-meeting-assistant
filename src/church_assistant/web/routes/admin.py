@@ -45,6 +45,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from church_assistant.db import (
     audit_repo,
     tenants_repo,
+    web_invites_repo,
     web_sessions_repo,
     web_users_repo,
 )
@@ -68,11 +69,6 @@ _logger = Logger(process="web")
 MIN_PASSWORD_LEN = 8
 MAX_USERNAME_LEN = 40
 MAX_CHURCH_NAME_LEN = 120
-
-# Generated, not typed: the operator setting up a church for someone else has no
-# business choosing their password, and a founding account is the one nobody
-# wants weak. token_urlsafe(12) is 16 characters of ~72 bits.
-FOUNDING_PASSWORD_BYTES = 12
 
 
 # ─────────────────────────────────────────────────────────────
@@ -438,6 +434,11 @@ async def create_church(
     A church with no account is unreachable — nobody could sign in to create
     one — so the two are one operation rather than two screens.
 
+    No password is set. The account is created inactive with a hash of something
+    nobody holds, and what comes back is a single-use link. The person who runs
+    this never learns the church's password because until the invited person
+    types one, there is none to learn.
+
     Qdrant collections are deliberately NOT created here: index_meeting makes
     them on first use. Creating them up front would add a second system that can
     fail halfway through registration, in exchange for nothing.
@@ -474,16 +475,19 @@ async def create_church(
 
     tenant_id = await tenants_repo.create_tenant(pool, slug=slug, name=name)
 
-    password = secrets.token_urlsafe(FOUNDING_PASSWORD_BYTES)
+    # A hash of something nobody has: the account cannot be signed into until the
+    # invite is redeemed. Deactivated as well, so the state is legible in the UI
+    # rather than being an account that merely fails to accept any password.
     try:
         user_id = await web_users_repo.add_web_user(
             pool,
             tenant_id,
             username=admin_username,
-            password_hash=security.hash_password(password),
+            password_hash=security.hash_password(secrets.token_urlsafe(32)),
             full_name=admin_full_name,
             role="admin",
         )
+        await web_users_repo.deactivate(pool, tenant_id, user_id)
     except Exception as e:
         # Logins are globally unique and RLS hides other churches', so a clash
         # cannot be seen before this INSERT. Undo the tenant instead of leaving
@@ -524,9 +528,21 @@ async def create_church(
                 f"(admin {admin_username})",
     )
 
-    # The password is returned to the screen and written nowhere — not to the
-    # audit detail, not to the log line above. Shown once is the whole point.
+    # The invite token is returned to the screen and written nowhere — the table
+    # holds only its hash, and neither the audit detail nor the log line above
+    # carries it. Shown once is the whole point.
+    invite_token = security.new_session_token()
+    invite_id = await web_invites_repo.create(
+        pool,
+        tenant_id,
+        web_user_id=user_id,
+        token_hash=security.hash_token(invite_token),
+        created_by=current_user(request).actor,
+    )
     return _church_form(request, created={
         "slug": slug, "name": name, "tenant_id": tenant_id,
-        "username": admin_username, "user_id": user_id, "password": password,
+        "username": admin_username, "user_id": user_id,
+        "invite_url": f"{str(request.base_url).rstrip('/')}/invite/{invite_token}",
+        "invite_hours": web_invites_repo.DEFAULT_TTL_SECONDS // 3600,
+        "invite_id": invite_id,
     })

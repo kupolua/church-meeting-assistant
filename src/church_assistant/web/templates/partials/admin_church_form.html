@@ -15,20 +15,22 @@
     {% endif %}
 
     {% if created %}
-    {# Shown once. The password is not in the audit entry and not in the logs —
-       if this box is closed before it is copied, the only way back is a reset
-       from this page. Said plainly rather than discovered later. #}
+    {# Shown once: the table stores only the token's hash, so this string cannot
+       be recovered from anywhere. Closing the box before copying means issuing
+       a new invite, not looking the old one up. #}
     <div class="church-created">
         <p><strong>✓ Церкву «{{ created.name }}» створено</strong>
            <small>(ідентифікатор <code>{{ created.slug }}</code>, tenant #{{ created.tenant_id }})</small></p>
         <table class="church-credentials">
             <tr><td>Логін</td><td><code>{{ created.username }}</code></td></tr>
-            <tr><td>Пароль</td><td><code class="church-password">{{ created.password }}</code></td></tr>
         </table>
+        <p><small>Надішліть це посилання адміністратору церкви:</small></p>
+        <p><code class="church-password">{{ created.invite_url }}</code></p>
         <p class="admin-msg is-warn">
-            Пароль показано <strong>один раз</strong> і ніде не збережено —
-            ні в журналі, ні в аудиті. Скопіюйте зараз; якщо втратите, доведеться
-            скидати з цієї ж сторінки.
+            Спрацьовує <strong>один раз</strong> і діє {{ created.invite_hours }} год.
+            За ним людина <strong>сама задає пароль</strong> — ви його не знаєте
+            й не зможете дізнатися, тож і передавати нічого, крім цього посилання.
+            Показане один раз: у базі лише його хеш.
         </p>
     </div>
     {% endif %}
@@ -53,7 +55,8 @@
     <p><small>
         Ідентифікатор стає назвою теки на диску й префіксом колекцій Qdrant, тому
         змінити його потім не можна — лише малі латинські літери, цифри,
-        <code>. _ -</code>. Разом із церквою створюється її перший адміністратор:
-        церква без акаунта недосяжна, бо ввійти й створити його нікому.
+        <code>. _ -</code>. Разом із церквою створюється її перший адміністратор —
+        поки що <strong>без пароля й вимкнений</strong>: він оживе, коли людина
+        перейде за посиланням і задасть пароль сама.
     </small></p>
 </section>

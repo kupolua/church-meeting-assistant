@@ -1651,6 +1651,12 @@ def test_create_church() -> None:
     # Rather than widen the application role for a test's convenience, the test
     # simply never reuses a slug.
     TEST_CHURCH_SLUG = f"smoke-church-{secrets.token_hex(3)}"
+    # The login has to be fresh too, and for the same reason: logins are globally
+    # unique, and a church left behind by an earlier run still holds its admin's.
+    # Only the slug was randomised at first, so the second run failed at "login
+    # taken" — inside the success path, where the message reads as a broken
+    # feature rather than as leftover state.
+    TEST_ADMIN = f"smoke-pastor-{secrets.token_hex(3)}"
 
     def _client() -> TestClient:
         return TestClient(app, follow_redirects=False)
@@ -1754,17 +1760,22 @@ def test_create_church() -> None:
         ).status_code == 303
         r = client.post("/admin/churches", data={
             "slug": TEST_CHURCH_SLUG, "name": "Тестова церква",
-            "admin_username": "newpastor", "admin_full_name": "Новий Пастор",
+            "admin_username": TEST_ADMIN, "admin_full_name": "Новий Пастор",
         })
         assert r.status_code == 200, r.status_code
         assert "створено" in r.text, r.text[:300]
-        # The generated password is on screen and must be usable.
+        # An invite LINK, not a password: the operator must not be able to learn
+        # one, which is only true if none exists yet.
         import re as _re2
         m = _re2.search(r'class="church-password">([^<]+)<', r.text)
-        assert m, "the password is not shown"
-        new_password = m.group(1).strip()
-        assert len(new_password) >= 12, new_password
-        ok(f"church created, founding password shown once ({len(new_password)} chars)")
+        assert m, "the invite link is not shown"
+        invite_url = m.group(1).strip()
+        assert "/invite/" in invite_url, invite_url
+        invite_token = invite_url.rsplit("/", 1)[1]
+        assert len(invite_token) >= 32, invite_token
+        assert "пароль" not in r.text.lower().split("посилання")[0], \
+            "a password appears on the creation screen"
+        ok(f"church created, one-time invite link issued ({len(invite_token)} chars)")
 
     async def _check_created() -> tuple[int, list[dict[str, Any]], int]:
         pool = await get_pool()
@@ -1783,10 +1794,90 @@ def test_create_church() -> None:
             await close_pool()
 
     tid, users, n_audit = asyncio.run(_check_created())
-    assert [u["username"] for u in users] == ["newpastor"], users
+    assert [u["username"] for u in users] == [TEST_ADMIN], users
     assert users[0]["role"] == "admin", "the founding account must be able to add others"
     assert not users[0]["is_platform_admin"], "creating a church must not hand out the platform"
     ok("exactly one account, role admin, and NOT a platform admin")
+
+    # Until the invite is spent the account cannot be signed into at all — that
+    # is what "the operator holds no credentials" has to mean concretely.
+    assert not users[0]["is_active"], "the founding account is live before anyone claimed it"
+    ok("the account is inactive until the invite is redeemed")
+
+    with _client() as client:
+        r = client.post("/login", data={"username": TEST_ADMIN, "password": "whatever"})
+        assert r.status_code != 303, "an unclaimed account accepted a sign-in"
+        ok("signing in to an unclaimed account is refused")
+
+        # A wrong token must look exactly like an expired or spent one.
+        r = client.get(f"/invite/{'z' * 43}")
+        assert r.status_code == 404 and "недійсне" in r.text
+        assert TEST_ADMIN not in r.text, "a bad token disclosed an account"
+        ok("an unknown invite renders the same dead-link page, naming nobody")
+
+        r = client.get(invite_url.replace("http://testserver", ""))
+        assert r.status_code == 200 and TEST_ADMIN in r.text
+        ok("the real link opens the set-your-password form")
+
+        r = client.post(invite_url.replace("http://testserver", ""),
+                        data={"password": "short", "password_repeat": "short"})
+        assert r.status_code == 200 and "закороткий" in r.text
+        r = client.post(invite_url.replace("http://testserver", ""),
+                        data={"password": "dovhyi-parol-1", "password_repeat": "inshyi"})
+        assert r.status_code == 200 and "не збігаються" in r.text
+        ok("a short password and a mismatch are both refused")
+
+    new_password = "novyi-parol-pastora"
+    with _client() as client:
+        r = client.post(invite_url.replace("http://testserver", ""),
+                        data={"password": new_password, "password_repeat": new_password})
+        assert r.status_code == 303, r.status_code
+        assert r.headers["location"] == "/admin/users", r.headers["location"]
+        assert "cma_session" in r.headers.get("set-cookie", ""), "no session was issued"
+        ok("redeeming sets the password, signs in, and lands on the church's accounts")
+
+    # Single use is the property that makes a link safer than a password, so
+    # both halves are checked: opening it again, and REDEEMING it again. The
+    # second matters more — it is the one a race or a replay would exercise, and
+    # the GET path would keep passing even if redemption stopped enforcing it.
+    with _client() as client:
+        r = client.get(invite_url.replace("http://testserver", ""))
+        assert r.status_code == 404 and "недійсне" in r.text
+        ok("the same link a second time is dead")
+
+        r = client.post(invite_url.replace("http://testserver", ""),
+                        data={"password": "insha-sproba-1", "password_repeat": "insha-sproba-1"})
+        assert r.status_code == 404, r.status_code
+        assert "cma_session" not in r.headers.get("set-cookie", ""), \
+            "a spent invite still issued a session"
+        ok("redeeming a spent invite issues nothing — no second password, no session")
+
+    # And the password it set is the one that works, not the replay attempt.
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": TEST_ADMIN, "password": "insha-sproba-1"}
+        ).status_code != 303, "the replayed password was accepted"
+        ok("the replay attempt did not overwrite the real password")
+
+    # The route refuses a spent invite at its first resolve, so the HTTP checks
+    # above never reach the guard inside redeem_web_invite — the one that
+    # settles an actual race, where two redeems both pass resolve and only one
+    # may win. Tested where it lives, since no single-threaded request can
+    # produce the interleaving that would exercise it through the web.
+    async def _redeem_again() -> Any:
+        from church_assistant.db import web_invites_repo
+        from church_assistant.web import security as sec
+        pool = await get_pool()
+        try:
+            return await web_invites_repo.redeem(
+                pool, sec.hash_token(invite_token), sec.hash_password("hrace-parol"),
+            )
+        finally:
+            await close_pool()
+
+    assert asyncio.run(_redeem_again()) is None, \
+        "redeem_web_invite spent the same invite twice"
+    ok("redeem_web_invite itself refuses a second spend (the race guard)")
 
     assert n_audit == 1, n_audit
     ok("the founding is in the new church's own audit trail")
@@ -1798,7 +1889,7 @@ def test_create_church() -> None:
     # ── And it is genuinely a separate church ─────────────────
     with _client() as client:
         assert client.post(
-            "/login", data={"username": "newpastor", "password": new_password}
+            "/login", data={"username": TEST_ADMIN, "password": new_password}
         ).status_code == 303, "the founding password does not work"
         body = client.get("/meetings").text
         assert "2026-06-15" not in body, "the new church can see church A's meetings"

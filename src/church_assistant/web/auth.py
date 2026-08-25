@@ -42,7 +42,13 @@ LOGIN_PATH = "/login"
 # Reachable without a session. Everything else — including every HTMX poll
 # target — requires one.
 PUBLIC_PATHS = frozenset({LOGIN_PATH, "/logout", "/healthz", "/favicon.ico"})
-PUBLIC_PREFIXES = ("/static/",)
+# "/invite/" is the only prefix here that can END in a signed-in session, so it
+# is the only one that has to be as careful as /login. What makes it acceptable:
+# the path carries a 256-bit token that is single-use, expiring, and stored only
+# as a hash, and the route can do exactly one thing — set the first password on
+# an account that has none. It cannot reach any other church's data, because the
+# tenant it may touch is the one the token names.
+PUBLIC_PREFIXES = ("/static/", "/invite/")
 
 
 @dataclass(frozen=True)

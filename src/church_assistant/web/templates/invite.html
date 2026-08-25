@@ -1,0 +1,79 @@
+{#
+  Redeeming an invitation. Standalone like login.html rather than extending
+  base.html: there is no session yet, so there is no navigation to draw and no
+  church to name in a header.
+
+  Every way a link can be dead — unknown, expired, already spent, church
+  suspended — renders the same block below. Distinguishing them would tell a
+  stranger which tokens once existed.
+#}
+<!DOCTYPE html>
+<html lang="uk" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Запрошення — Church Meeting Assistant</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<div class="login-shell">
+    <article class="login-card">
+
+        <div class="login-brand">
+            <h1>📖 Church Meeting Assistant</h1>
+            <p>Архів протоколів пасторської ради</p>
+        </div>
+
+        {% if gone %}
+        <p role="alert" class="login-error">⚠️ Посилання недійсне</p>
+        <p><small>
+            Воно могло бути вже використане, або сплив його термін. Одне
+            посилання спрацьовує <strong>один раз</strong> — це навмисно.
+            Попросіть того, хто реєстрував церкву, надіслати нове.
+        </small></p>
+
+        {% else %}
+        <p>
+            Вітаємо, <strong>{{ invite.full_name }}</strong>!<br>
+            <small>
+                Церква <strong>{{ invite.tenant_slug }}</strong>, ваш логін —
+                <code>{{ invite.username }}</code>
+            </small>
+        </p>
+
+        {% if error %}
+        <p role="alert" class="login-error">⚠️ {{ error }}</p>
+        {% endif %}
+
+        <form method="post">
+            <label for="password">
+                Придумайте пароль
+                <input type="password" id="password" name="password"
+                       required minlength="{{ min_password_len }}"
+                       autocomplete="new-password" autofocus>
+            </label>
+
+            <label for="password_repeat">
+                Ще раз
+                <input type="password" id="password_repeat" name="password_repeat"
+                       required minlength="{{ min_password_len }}"
+                       autocomplete="new-password">
+            </label>
+
+            <button type="submit">Задати пароль і увійти</button>
+        </form>
+
+        <p><small>
+            Пароль знаєте <strong>тільки ви</strong> — він не існував, доки ви
+            його не ввели, тож ніхто не міг його вам передати й не може
+            підглянути. Мінімум {{ min_password_len }} символів.
+        </small></p>
+        {% endif %}
+
+    </article>
+</div>
+
+</body>
+</html>
