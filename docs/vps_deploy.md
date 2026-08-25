@@ -140,6 +140,26 @@ chown -R cma:cma /srv/cma
 mkdir -p /srv/cma/data /srv/cma/logs && chown cma:cma /srv/cma/data /srv/cma/logs
 ```
 
+⚠️ **Кожен наступний `git pull` — під `cma`, не під root:**
+```bash
+sudo -u cma git -C /srv/cma pull
+```
+Root'ів umask кладе файли так, що сервісний користувач їх не читає, і `cma-web`
+падає з `PermissionError` на першому ж імпорті: Caddy віддає 502, а в журналі
+застосунку — стек імпорту без жодної підказки, що річ у правах. Так сталося
+25.08. Лікували `chown -R cma:cma /srv/cma` — і **саме воно спричинило другу,
+гіршу аварію**: під `/srv/cma/deploy/data` тоді лежав том Postgres, який після
+цього перестав читатися. Тому томи винесені (крок 3), а масові зміни прав
+обмежуються вихідниками:
+
+```bash
+chown -R cma:cma /srv/cma/src /srv/cma/docs /srv/cma/tests /srv/cma/deploy
+chmod 700 /srv/cma/.ssh && chmod 600 /srv/cma/.ssh/authorized_keys /srv/cma/.env
+```
+
+`.ssh` під `chmod -R go=rX` стає читабельним для інших, і sshd відмовляє ключу —
+тобто разом із вебом ляже й синхронізація артефактів із M1.
+
 **Swap** — 8 ГБ без запасу; пік у Postgres не має вбивати веб:
 ```bash
 fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
@@ -201,9 +221,36 @@ grep -nE '^[A-Z_]+=.*#' /srv/cma/.env    # має бути порожньо
 cp deploy/env/vps.env.example /srv/cma/.env    # заповнити три плейсхолдери
 chmod 600 /srv/cma/.env && chown cma:cma /srv/cma/.env
 
+mkdir -p /srv/cma-data
 cd /srv/cma
 set -a && . ./.env && set +a
 docker compose -f deploy/docker-compose.vps.yml up -d
+```
+
+**Дані контейнерів лежать у `/srv/cma-data`, поза репозиторієм** — і це не
+косметика. Раніше вони були під `/srv/cma/deploy/data`, і `chown -R cma:cma /srv/cma`
+(яким лагодили права після root'ового `git pull`) забрав із собою базу: Postgres
+перестав читати власні файли, продакшн ліг. Дані застосунку не мають бути
+досяжні операцією над кодом.
+
+**Якщо переносиш уже наявну інсталяцію** — порядок критичний:
+```bash
+cd /srv/cma
+docker compose -f deploy/docker-compose.vps.yml down     # СПЕРШУ зупинити
+mkdir -p /srv/cma-data
+mv deploy/data/postgres deploy/data/qdrant /srv/cma-data/
+mv deploy/backup deploy/snapshots /srv/cma-data/ 2>/dev/null || true
+docker compose -f deploy/docker-compose.vps.yml up -d
+```
+⚠️ `up -d` на нових шляхах **до** переміщення створить порожні томи й
+проініціалізує **чисту** базу. Старі дані нікуди не подінуться, але система
+дивитиметься не на них — а виглядатиме це як «усе зникло».
+
+**Права на томи належать контейнерам, не `cma`:**
+```bash
+docker exec cma-postgres id postgres        # postgres:16-alpine → 70:70
+chown -R 70:70 /srv/cma-data/postgres && chmod 700 /srv/cma-data/postgres
+chown -R root:root /srv/cma-data/qdrant /srv/cma-data/snapshots
 ```
 
 **Перевірка:**
@@ -465,6 +512,24 @@ du -sh /srv/cma/data/tenants/*
 **Бекап — новий обовʼязок.** До переїзду копія-джерело була на ноутбуку. Тепер
 вона на VPS, і без бекапу ти проміняв «ноутбук помер» на «VPS помер». Мінімум:
 щоденний `pg_dump` + щотижневий rsync артефактів на інший майданчик.
+
+⚠️ **Артефакти зустрічей поки лежать у `/srv/cma/data`** — тобто всередині
+репозиторію, з тією самою вадою, через яку переїхали томи контейнерів. Це 1.9 ГБ
+і найцінніше, що є: записи й протоколи. Переносити треба узгоджено з M1, бо шлях
+зашитий у двох `.env`:
+
+```bash
+# на VPS
+systemctl stop cma-web cma-telegram-bot
+mv /srv/cma/data/tenants /srv/cma-data/artifacts   # створити теку заздалегідь
+sed -i 's|^DATA_ROOT=.*|DATA_ROOT=/srv/cma-data/artifacts|' /srv/cma/.env
+systemctl start cma-web cma-telegram-bot
+
+# на M1, у .env
+ARTIFACT_SYNC_REMOTE=cma@10.10.0.1:/srv/cma-data/artifacts
+```
+
+Поки не перенесено — `chown -R` по `/srv/cma` дістане й записи церкви.
 
 **Тунель.** `sudo wg show` на M1. Немає handshake — воркери не бачать черги, і
 завантажене церквою аудіо просто чекає.
