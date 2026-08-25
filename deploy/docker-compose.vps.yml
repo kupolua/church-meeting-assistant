@@ -14,6 +14,20 @@
 # Versions are PINNED, both because the M1's data is restored into these (a
 # 1.18 Qdrant snapshot is not guaranteed to load into whatever is `latest` that
 # morning) and because a church's archive is not the place to find out.
+#
+# ⚠️ VOLUMES LIVE OUTSIDE THE CHECKOUT, at /srv/cma-data, and that is the point.
+# They used to sit under /srv/cma/deploy/data — inside the repository — until a
+# `chown -R cma:cma /srv/cma`, meant to repair ownership after a root-owned
+# `git pull`, swept the database with it and Postgres stopped being able to read
+# its own files. A church's data has no business being reachable by an operation
+# on the code. Absolute paths rather than `./` for the same reason: a relative
+# volume resolves against the compose file's own directory, which is exactly
+# where people run things that rewrite files in bulk.
+#
+# MOVING AN EXISTING INSTALL: stop the stack FIRST, move the directories, then
+# start. Starting on the new paths before moving creates empty volumes and
+# initialises a blank database — the old data is still on disk, but nothing is
+# looking at it any more. docs/vps_deploy.md step 3 carries the sequence.
 
 services:
   postgres:
@@ -34,8 +48,8 @@ services:
       # From deploy/env/vps.env — never inline here.
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./backup:/backup          # where dumps land; see deploy/migrate/
+      - /srv/cma-data/postgres:/var/lib/postgresql/data
+      - /srv/cma-data/backup:/backup    # where dumps land; see deploy/migrate/
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cma -d cma"]
       interval: 30s
@@ -50,8 +64,8 @@ services:
       - "10.10.0.1:6333:6333"
       - "10.10.0.1:6334:6334"
     volumes:
-      - ./data/qdrant:/qdrant/storage
-      - ./snapshots:/qdrant/snapshots
+      - /srv/cma-data/qdrant:/qdrant/storage
+      - /srv/cma-data/snapshots:/qdrant/snapshots
     environment:
       QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/snapshots
     healthcheck:
