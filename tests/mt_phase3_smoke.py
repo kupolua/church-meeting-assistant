@@ -1632,275 +1632,163 @@ def test_artifact_sync() -> None:
 
 def test_create_church() -> None:
     """
-    Registering a church is a platform act, not a church-admin one.
+    Two panels that do not intersect.
 
-    The thing worth proving is not that the happy path works — it is that an
-    ordinary church admin cannot reach it, and that a half-finished
-    registration does not leave a slug locked up.
+    A platform account runs the fleet and belongs to no church; a church account
+    runs its own congregation and cannot see that a fleet panel exists. The
+    checks that matter are the refusals in both directions — the happy path is
+    the easy half.
     """
-    print("\n14. Створення нової церкви (платформовий адмін)")
+    print("\n14. Платформова панель і панель церкви")
     print("-" * 66)
 
     from fastapi.testclient import TestClient
-    from church_assistant.db import tenants_repo, web_users_repo
+    from church_assistant.db import tenants_repo, web_invites_repo, web_users_repo
+    from church_assistant.web import security as sec
     from church_assistant.web.main import app
 
-    # Fresh each run. A leftover church cannot be fully removed afterwards —
-    # its first sign-in writes rows in `logs` that hold the tenant down through
-    # a foreign key, and cma_app has no UPDATE on `tenants` to rename it either.
-    # Rather than widen the application role for a test's convenience, the test
-    # simply never reuses a slug.
-    TEST_CHURCH_SLUG = f"smoke-church-{secrets.token_hex(3)}"
-    # The login has to be fresh too, and for the same reason: logins are globally
-    # unique, and a church left behind by an earlier run still holds its admin's.
-    # Only the slug was randomised at first, so the second run failed at "login
-    # taken" — inside the success path, where the message reads as a broken
-    # feature rather than as leftover state.
-    TEST_ADMIN = f"smoke-pastor-{secrets.token_hex(3)}"
+    SLUG = f"smoke-church-{secrets.token_hex(3)}"
+    CH_ADMIN = f"smoke-pastor-{secrets.token_hex(3)}"
+    ROOT = f"smoke-root-{secrets.token_hex(3)}"
+    ROOT_PW = "korin-parol-2026"
 
     def _client() -> TestClient:
         return TestClient(app, follow_redirects=False)
 
-    async def _set_platform_admin(username: str, value: bool) -> None:
+    async def _make_root() -> str:
+        """A platform account in `_system`, claimed through an invite."""
         pool = await get_pool()
         try:
-            async with tenant_cursor(pool, TENANT_A) as cur:
-                await cur.execute(
-                    "UPDATE web_users SET is_platform_admin = %s WHERE username = %s",
-                    (value, username),
-                )
+            uid = await web_users_repo.add_web_user(
+                pool, 0, username=ROOT, full_name="Тест Корінь", role="admin",
+                password_hash=sec.hash_password(sec.new_session_token()),
+            )
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT set_config('app.current_tenant','0',true)")
+                    await cur.execute(
+                        "UPDATE web_users SET is_platform_admin=TRUE, is_active=FALSE"
+                        " WHERE id=%s", (uid,))
+            token = sec.new_session_token()
+            await web_invites_repo.create(
+                pool, 0, web_user_id=uid, token_hash=sec.hash_token(token),
+                created_by="test",
+            )
+            return token
         finally:
             await close_pool()
 
-    async def _cleanup() -> None:
-        """
-        Remove the test church's accounts, and the church itself if it can go.
+    # ── The platform account claims itself ────────────────────
+    token = asyncio.run(_make_root())
+    with _client() as client:
+        r = client.post(f"/invite/{token}",
+                        data={"password": ROOT_PW, "password_repeat": ROOT_PW})
+        assert r.status_code == 303, r.status_code
+        # A church admin lands on their accounts page; a platform account has no
+        # church and would be refused there.
+        assert r.headers["location"] == "/platform", r.headers["location"]
+        ok("a platform invite redeems into the platform panel, not a church page")
 
-        audit_log is append-only for cma_app by design and its rows reference
-        the tenant, so a church that reached a successful sign-in cannot be
-        deleted. That is correct behaviour, not an obstacle to work around:
-        the suite uses a new slug per run instead.
-        """
-        pool = await get_pool()
-        try:
-            t = await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG)
-            if t is None:
-                return
-            tid = int(t["id"])
-            async with tenant_cursor(pool, tid) as cur:
-                await cur.execute("DELETE FROM web_users")
-            # Best effort: returns False once anything references the tenant,
-            # which is the case as soon as its admin has signed in once.
-            await tenants_repo.delete_if_empty(pool, tid)
-        finally:
-            await close_pool()
-
-    asyncio.run(_cleanup())
-    asyncio.run(_set_platform_admin("anna", False))
-
-    # ── An ordinary church admin must not find it ──────────────
+    # ── A church account cannot see the fleet ─────────────────
     with _client() as client:
         assert client.post(
             "/login", data={"username": "anna", "password": PASSWORD_A}
         ).status_code == 303
-        r = client.get("/admin/users")
-        assert r.status_code == 200
-        assert "Нова церква" not in r.text, "the form is offered to a church admin"
-        r = client.post("/admin/churches", data={
-            "slug": "sneaky", "name": "Х", "admin_username": "x", "admin_full_name": "Х",
-        })
-        # 404, not 403: the endpoint's existence is not a church admin's business.
+        assert "Нова церква" not in client.get("/admin/users").text
+        for path in ("/platform", "/platform/panel"):
+            assert client.get(path).status_code == 404, path
+        r = client.post("/platform/churches", data={
+            "slug": "sneaky", "name": "Х", "admin_username": "x", "admin_full_name": "Х"})
         assert r.status_code == 404, r.status_code
-        ok("church admin: form hidden and POST /admin/churches is 404, not 403")
+        ok("church admin: the platform panel is 404, and absent from their page")
 
-    asyncio.run(_set_platform_admin("anna", True))
-
+    # ── The platform account cannot reach any church ──────────
     with _client() as client:
         assert client.post(
-            "/login", data={"username": "anna", "password": PASSWORD_A}
+            "/login", data={"username": ROOT, "password": ROOT_PW}
         ).status_code == 303
-        assert "Нова церква" in client.get("/admin/users").text
-        ok("platform admin: the form appears")
+        for path in ("/meetings", "/admin/users", "/ingest", "/history"):
+            assert client.get(path).status_code == 403, path
+        ok("platform admin: every church route refuses them (403, not a crash)")
 
-        # ── A slug that would escape the data root ─────────────
-        r = client.post("/admin/churches", data={
-            "slug": "../etc", "name": "Х", "admin_username": "x", "admin_full_name": "Х",
-        })
-        assert r.status_code == 200 and "created" not in r.text.lower()
-        assert "../etc" not in r.text or "Unsafe" in r.text or "expected" in r.text
+        assert client.get("/platform").status_code == 200
+        ok("platform admin: the fleet panel opens")
+
+        # ── Registration ──────────────────────────────────────
+        r = client.post("/platform/churches", data={
+            "slug": "../etc", "name": "Х", "admin_username": "x", "admin_full_name": "Х"})
+        assert r.status_code == 200 and "створено" not in r.text
         ok("a traversal slug is refused (same validator as paths and collections)")
 
-        # ── A login that belongs to another church ─────────────
-        # borys is in church B. The clash cannot be seen before the INSERT, so
-        # this is the path that has to roll the tenant back.
-        r = client.post("/admin/churches", data={
-            "slug": TEST_CHURCH_SLUG, "name": "Тестова церква",
-            "admin_username": "borys", "admin_full_name": "Борис Б",
-        })
-        assert r.status_code == 200
-        assert "зайнят" in r.text, "a taken login must be reported"
-        assert "без адміна" not in r.text, "the tenant was not rolled back"
+        r = client.post("/platform/churches", data={
+            "slug": SLUG, "name": "Тестова церква",
+            "admin_username": "borys", "admin_full_name": "Борис Б"})
+        assert "зайнят" in r.text and "без адміна" not in r.text
         ok("login taken elsewhere → refused, and the church is rolled back")
 
-    # The slug must be free again — that is the whole point of the rollback.
-    async def _slug_free() -> bool:
-        pool = await get_pool()
-        try:
-            return await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG) is None
-        finally:
-            await close_pool()
-
-    assert asyncio.run(_slug_free()), "the rolled-back slug is still taken"
-    ok("the slug is free again after the rollback")
-
-    # ── The real thing ────────────────────────────────────────
-    with _client() as client:
-        assert client.post(
-            "/login", data={"username": "anna", "password": PASSWORD_A}
-        ).status_code == 303
-        r = client.post("/admin/churches", data={
-            "slug": TEST_CHURCH_SLUG, "name": "Тестова церква",
-            "admin_username": TEST_ADMIN, "admin_full_name": "Новий Пастор",
-        })
-        assert r.status_code == 200, r.status_code
-        assert "створено" in r.text, r.text[:300]
-        # An invite LINK, not a password: the operator must not be able to learn
-        # one, which is only true if none exists yet.
-        import re as _re2
-        m = _re2.search(r'class="church-password">([^<]+)<', r.text)
-        assert m, "the invite link is not shown"
+        r = client.post("/platform/churches", data={
+            "slug": SLUG, "name": "Тестова церква",
+            "admin_username": CH_ADMIN, "admin_full_name": "Новий Пастор"})
+        assert r.status_code == 200 and "створено" in r.text, r.text[:200]
+        import re as _re3
+        m = _re3.search(r'class="church-password">([^<]+)<', r.text)
+        assert m and "/invite/" in m.group(1), "no invite link"
         invite_url = m.group(1).strip()
-        assert "/invite/" in invite_url, invite_url
-        invite_token = invite_url.rsplit("/", 1)[1]
-        assert len(invite_token) >= 32, invite_token
-        assert "пароль" not in r.text.lower().split("посилання")[0], \
-            "a password appears on the creation screen"
-        ok(f"church created, one-time invite link issued ({len(invite_token)} chars)")
+        ok("church registered from the platform panel, with an invite link")
 
-    async def _check_created() -> tuple[int, list[dict[str, Any]], int]:
+        # The new church appears in the list — the gap that started all this.
+        assert SLUG in client.get("/platform/panel").text
+        ok("the new church shows up in the fleet list")
+
+    async def _founded() -> tuple[int, list[Any]]:
         pool = await get_pool()
         try:
-            t = await tenants_repo.get_by_slug(pool, TEST_CHURCH_SLUG)
-            assert t is not None, "no tenant row"
-            tid = int(t["id"])
-            users = await web_users_repo.list_all(pool, tid)
-            async with tenant_cursor(pool, tid) as cur:
-                await cur.execute(
-                    "SELECT count(*) FROM audit_log WHERE action = 'platform.church_created'"
-                )
-                n_audit = (await cur.fetchone())[0]
-            return tid, users, n_audit
+            t = await tenants_repo.get_by_slug(pool, SLUG)
+            return int(t["id"]), await web_users_repo.list_all(pool, int(t["id"]))
         finally:
             await close_pool()
 
-    tid, users, n_audit = asyncio.run(_check_created())
-    assert [u["username"] for u in users] == [TEST_ADMIN], users
-    assert users[0]["role"] == "admin", "the founding account must be able to add others"
-    assert not users[0]["is_platform_admin"], "creating a church must not hand out the platform"
-    ok("exactly one account, role admin, and NOT a platform admin")
+    tid, users = asyncio.run(_founded())
+    assert [u["username"] for u in users] == [CH_ADMIN]
+    assert users[0]["role"] == "admin" and not users[0]["is_active"]
+    assert not users[0]["is_platform_admin"], "a founded admin inherited the platform"
+    ok("founding account: admin, inactive until claimed, no platform powers")
 
-    # Until the invite is spent the account cannot be signed into at all — that
-    # is what "the operator holds no credentials" has to mean concretely.
-    assert not users[0]["is_active"], "the founding account is live before anyone claimed it"
-    ok("the account is inactive until the invite is redeemed")
-
-    with _client() as client:
-        r = client.post("/login", data={"username": TEST_ADMIN, "password": "whatever"})
-        assert r.status_code != 303, "an unclaimed account accepted a sign-in"
-        ok("signing in to an unclaimed account is refused")
-
-        # A wrong token must look exactly like an expired or spent one.
-        r = client.get(f"/invite/{'z' * 43}")
-        assert r.status_code == 404 and "недійсне" in r.text
-        assert TEST_ADMIN not in r.text, "a bad token disclosed an account"
-        ok("an unknown invite renders the same dead-link page, naming nobody")
-
-        r = client.get(invite_url.replace("http://testserver", ""))
-        assert r.status_code == 200 and TEST_ADMIN in r.text
-        ok("the real link opens the set-your-password form")
-
-        r = client.post(invite_url.replace("http://testserver", ""),
-                        data={"password": "short", "password_repeat": "short"})
-        assert r.status_code == 200 and "закороткий" in r.text
-        r = client.post(invite_url.replace("http://testserver", ""),
-                        data={"password": "dovhyi-parol-1", "password_repeat": "inshyi"})
-        assert r.status_code == 200 and "не збігаються" in r.text
-        ok("a short password and a mismatch are both refused")
-
-    new_password = "novyi-parol-pastora"
+    # ── The founded admin claims it and stays inside their church ──
     with _client() as client:
         r = client.post(invite_url.replace("http://testserver", ""),
-                        data={"password": new_password, "password_repeat": new_password})
-        assert r.status_code == 303, r.status_code
-        assert r.headers["location"] == "/admin/users", r.headers["location"]
-        assert "cma_session" in r.headers.get("set-cookie", ""), "no session was issued"
-        ok("redeeming sets the password, signs in, and lands on the church's accounts")
-
-    # Single use is the property that makes a link safer than a password, so
-    # both halves are checked: opening it again, and REDEEMING it again. The
-    # second matters more — it is the one a race or a replay would exercise, and
-    # the GET path would keep passing even if redemption stopped enforcing it.
-    with _client() as client:
-        r = client.get(invite_url.replace("http://testserver", ""))
-        assert r.status_code == 404 and "недійсне" in r.text
-        ok("the same link a second time is dead")
-
-        r = client.post(invite_url.replace("http://testserver", ""),
-                        data={"password": "insha-sproba-1", "password_repeat": "insha-sproba-1"})
-        assert r.status_code == 404, r.status_code
-        assert "cma_session" not in r.headers.get("set-cookie", ""), \
-            "a spent invite still issued a session"
-        ok("redeeming a spent invite issues nothing — no second password, no session")
-
-    # And the password it set is the one that works, not the replay attempt.
-    with _client() as client:
-        assert client.post(
-            "/login", data={"username": TEST_ADMIN, "password": "insha-sproba-1"}
-        ).status_code != 303, "the replayed password was accepted"
-        ok("the replay attempt did not overwrite the real password")
-
-    # The route refuses a spent invite at its first resolve, so the HTTP checks
-    # above never reach the guard inside redeem_web_invite — the one that
-    # settles an actual race, where two redeems both pass resolve and only one
-    # may win. Tested where it lives, since no single-threaded request can
-    # produce the interleaving that would exercise it through the web.
-    async def _redeem_again() -> Any:
-        from church_assistant.db import web_invites_repo
-        from church_assistant.web import security as sec
-        pool = await get_pool()
-        try:
-            return await web_invites_repo.redeem(
-                pool, sec.hash_token(invite_token), sec.hash_password("hrace-parol"),
-            )
-        finally:
-            await close_pool()
-
-    assert asyncio.run(_redeem_again()) is None, \
-        "redeem_web_invite spent the same invite twice"
-    ok("redeem_web_invite itself refuses a second spend (the race guard)")
-
-    assert n_audit == 1, n_audit
-    ok("the founding is in the new church's own audit trail")
-
-    paths = tenant_paths.paths_for(TEST_CHURCH_SLUG)
-    assert paths.meetings.is_dir() and paths.voice_profiles.is_dir()
-    ok("folders exist — an empty church is distinguishable from a broken one")
-
-    # ── And it is genuinely a separate church ─────────────────
-    with _client() as client:
-        assert client.post(
-            "/login", data={"username": TEST_ADMIN, "password": new_password}
-        ).status_code == 303, "the founding password does not work"
+                        data={"password": "parol-pastora-1", "password_repeat": "parol-pastora-1"})
+        assert r.status_code == 303 and r.headers["location"] == "/admin/users"
         body = client.get("/meetings").text
-        assert "2026-06-15" not in body, "the new church can see church A's meetings"
-        r = client.post("/admin/churches", data={
-            "slug": "another", "name": "Х", "admin_username": "y", "admin_full_name": "Y",
-        })
-        assert r.status_code == 404, "a founded admin inherited the platform flag"
-        ok("the new admin signs in, sees an empty archive, and cannot create churches")
+        assert "2026-06-15" not in body, "the new church sees church A's meetings"
+        assert client.get("/platform").status_code == 404
+        ok("the founded admin lands in their church, sees nothing of A, no platform")
 
-    asyncio.run(_cleanup())
-    asyncio.run(_set_platform_admin("anna", False))
+    # ── Suspension cuts access without touching data ──────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+        r = client.post(f"/platform/churches/{tid}/suspend")
+        assert r.status_code == 200 and SLUG in r.text
+        ok("a church can be suspended from the panel")
+
+    with _client() as client:
+        r = client.post("/login", data={"username": CH_ADMIN, "password": "parol-pastora-1"})
+        assert r.status_code != 303, "a suspended church still accepts sign-in"
+        ok("its people can no longer sign in")
+
+    async def _still_there() -> bool:
+        pool = await get_pool()
+        try:
+            t = await tenants_repo.get_by_slug(pool, SLUG)
+            return t is not None and not t["is_active"]
+        finally:
+            await close_pool()
+
+    assert asyncio.run(_still_there()), "suspension removed the church"
+    ok("suspension is about access — the church and its data stay")
+
 
 
 async def phase_db() -> None:

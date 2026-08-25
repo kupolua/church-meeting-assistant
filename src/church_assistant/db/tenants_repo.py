@@ -163,3 +163,27 @@ async def delete_if_empty(pool: AsyncConnectionPool, tenant_id: int) -> bool:
         # Caught outside the connection block so the aborted transaction is
         # rolled back by the context manager before we return.
         return False
+
+
+async def list_with_counts(pool: AsyncConnectionPool) -> list[dict[str, Any]]:
+    """
+    Every church with its size — for the platform panel.
+
+    Counts only: accounts, pending invites, ingestion jobs. Nothing that could
+    be read as the church's content, because the panel that shows this is
+    allowed to run the service and not to read the conversations.
+
+    `_system` is excluded by the function: the platform is not a church, and
+    listing it invites somebody to suspend the tenant they are standing in.
+    """
+    sql = """
+        SELECT t.id, t.slug, t.name, t.is_active, t.created_at,
+               c.accounts, c.active_accounts, c.pending_invites, c.jobs
+        FROM tenants t
+        JOIN platform_church_counts() c ON c.tenant_id = t.id
+        ORDER BY t.id
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(sql)
+            return list(await cur.fetchall())

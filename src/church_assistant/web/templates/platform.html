@@ -1,0 +1,62 @@
+{#
+  Standalone, not extending base.html. base.html draws a church's navigation —
+  meetings, ingestion, query history — and names the church in its header. A
+  platform account has none of that, and showing links it will be refused at
+  would be worse than showing nothing.
+
+  The two panels do not intersect. This page is the whole of the platform side.
+#}
+<!DOCTYPE html>
+<html lang="uk" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Платформа — Church Meeting Assistant</title>
+    <link rel="stylesheet" href="/static/pico.min.css">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+
+{# Same shell as base.html: .app-shell is the column that holds the nav and the
+   layout, and .app-layout.no-sidebar is what centres the content. Putting
+   .app-shell on <main> instead left the page squeezed into a sidebar-sized
+   column with the rest of the window empty. #}
+<div class="app-shell">
+
+    <nav class="top-nav">
+        <span class="top-nav-brand">🏛 CMA · Платформа</span>
+        <div class="top-nav-links"></div>
+        <div class="top-nav-user">
+            <span class="top-nav-who">{{ me.full_name or me.username }}</span>
+            <form method="post" action="/logout">
+                <button type="submit" class="top-nav-logout">Вийти</button>
+            </form>
+        </div>
+    </nav>
+
+    <div class="app-layout no-sidebar">
+    <main class="app-main">
+<article class="dashboard-page">
+    <header class="dashboard-header">
+        <h1>🏛 Церкви</h1>
+        <p><small>
+            Обслуговування громад: реєстрація, розмір, призупинення.
+            <strong>Вміст церков звідси недосяжний</strong> — ні протоколів, ні
+            записів, ні стенограм. Цей акаунт не належить жодній громаді.
+        </small></p>
+    </header>
+
+    {# No polling: this changes only when someone on this page acts, and a
+       refresh would wipe a half-typed registration. Each action swaps the panel. #}
+    <div id="platform-panel">
+        {% include "partials/platform_panel.html" %}
+    </div>
+</article>
+    </main>
+    </div>
+
+</div>
+
+</body>
+</html>

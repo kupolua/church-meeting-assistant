@@ -89,6 +89,7 @@ from church_assistant.web.routes import (  # noqa: E402
     home,
     invite,
     meetings,
+    platform,
     query,
     search,
     history,
@@ -102,6 +103,7 @@ app.include_router(admin.router)
 app.include_router(home.router)
 app.include_router(invite.router)
 app.include_router(meetings.router)
+app.include_router(platform.router)
 app.include_router(query.router)
 app.include_router(search.router)
 app.include_router(history.router)

@@ -189,8 +189,15 @@ async def login_submit(
         )
 
     # ─── 3. The church itself must still be active ───────────
+    # `_system` (tenant 0) is inactive by design since 007, so that nobody signs
+    # in "as the platform" for free. A platform account is the one legitimate
+    # exception (migration 012), and the exception is narrow: the tenant must be
+    # 0 AND the account must carry the flag. This mirrors resolve_web_session
+    # exactly — if the two ever disagree, one of them lets somebody in that the
+    # other would refuse, and which one wins depends on the request.
     tenant = await tenants_repo.get_by_id(pool, tenant_id)
-    if tenant is None or not tenant["is_active"]:
+    is_platform = bool(user_row.get("is_platform_admin")) and tenant_id == 0
+    if tenant is None or (not tenant["is_active"] and not is_platform):
         _record_failure(key)
         await _logger.warn(
             "web.login_refused",

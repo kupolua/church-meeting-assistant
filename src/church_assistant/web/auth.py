@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
 from church_assistant.db import web_sessions_repo
 from church_assistant.db.connection import get_pool
@@ -49,6 +49,17 @@ PUBLIC_PATHS = frozenset({LOGIN_PATH, "/logout", "/healthz", "/favicon.ico"})
 # an account that has none. It cannot reach any other church's data, because the
 # tenant it may touch is the one the token names.
 PUBLIC_PREFIXES = ("/static/", "/invite/")
+
+# Two panels that do not intersect, decided in ONE place. A platform account
+# runs the fleet and belongs to no church; a church account runs its own
+# congregation and knows nothing of the fleet. Enforcing this per-route would
+# hold only until somebody adds a route and forgets — the middleware sees every
+# request, so a new church page is closed to the platform by default.
+PLATFORM_PREFIX = "/platform"
+# What a platform session may still reach outside its own panel: signing out,
+# and managing its own sessions. Both are about the account itself, not about
+# any church's data.
+PLATFORM_ALSO_ALLOWED = frozenset({"/logout", "/account/sessions"})
 
 
 @dataclass(frozen=True)
@@ -183,6 +194,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # account was disabled) — clear it so the browser stops sending it.
             return _reject(request)
 
+        wrong_panel = _wrong_panel(request.url.path, session)
+        if wrong_panel is not None:
+            return wrong_panel
+
         response = await call_next(request)
         await self._touch(session)
         return response
@@ -192,6 +207,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Refresh last_seen_at (throttled inside the repo; never raises)."""
         pool = await get_pool()
         await web_sessions_repo.touch(pool, session.tenant_id, session.session_id)
+
+
+def _wrong_panel(path: str, session: "SessionUser") -> Optional[Response]:
+    """
+    Keep each session inside its own panel. None means the request may proceed.
+
+    A church account gets 404 on /platform — not 403, because the existence of a
+    fleet panel is not theirs to learn. A platform account gets 403 on a church
+    route, because it plainly knows the church side exists; it simply has no
+    church. Left unguarded it would not leak anything, but it would fail deep
+    inside tenant_paths with SystemTenantHasNoArtifacts and read as a crash.
+    """
+    on_platform = path == PLATFORM_PREFIX or path.startswith(PLATFORM_PREFIX + "/")
+
+    if session.is_platform_admin:
+        if on_platform or path in PLATFORM_ALSO_ALLOWED:
+            return None
+        if path == "/":
+            return RedirectResponse(PLATFORM_PREFIX, status_code=303)
+        return PlainTextResponse(
+            "Платформовий акаунт не має церкви — цей розділ не для нього.",
+            status_code=403,
+        )
+
+    if on_platform:
+        return PlainTextResponse("Not found", status_code=404)
+    return None
 
 
 def _reject(request: Request) -> Response:

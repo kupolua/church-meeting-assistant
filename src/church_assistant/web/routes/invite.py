@@ -148,9 +148,13 @@ async def invite_redeem(
         tenant_id=tenant_id,
     )
 
-    # Straight to their own church's accounts page: the first thing a founding
-    # admin needs is to add the rest of the council.
-    response = RedirectResponse("/admin/users", status_code=303)
+    # Where they belong, which is not the same for everyone the invite serves.
+    # A founding church admin lands on their own accounts page — the first thing
+    # they need is to add the rest of the council. A platform account has no
+    # church at all and would be refused there by the panel guard, so it goes to
+    # the fleet panel instead. Tenant 0 IS the platform (migration 012).
+    landing = "/platform" if tenant_id == 0 else "/admin/users"
+    response = RedirectResponse(landing, status_code=303)
     auth.set_session_cookie(
         response, session_token, secure=headers.cookie_secure(request)
     )

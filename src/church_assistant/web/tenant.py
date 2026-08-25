@@ -45,3 +45,37 @@ def require_admin(request: Request) -> SessionUser:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin role required")
     return user
+
+
+def require_platform(request: Request) -> SessionUser:
+    """
+    The logged-in user, but only if they run the platform rather than a church.
+
+    404, not 403: a church admin has no business learning that a platform panel
+    exists. Everywhere else in this file 403 is right, because those features
+    are openly part of the product and the reader simply lacks a role.
+    """
+    user = current_user(request)
+    if not user.is_platform_admin:
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
+def forbid_platform(request: Request) -> SessionUser:
+    """
+    The logged-in user, but only if they belong to a church.
+
+    The other half of "the panels do not intersect". A platform account lives in
+    `_system`, which owns no meetings, no voice profiles and no Qdrant
+    collections — tenant_paths and collections refuse it by name. Without this
+    guard a platform session reaching a church route would not leak anything; it
+    would raise SystemTenantHasNoArtifacts somewhere deep and read as a crash.
+    Refusing at the door says what actually happened.
+    """
+    user = current_user(request)
+    if user.is_platform_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Платформовий акаунт не має церкви — цей розділ не для нього.",
+        )
+    return user

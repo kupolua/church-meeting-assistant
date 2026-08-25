@@ -1,0 +1,104 @@
+{#
+  The fleet, as numbers. Sizes and states — never a church's contents, because
+  running the service is not the same as being allowed to read what it holds.
+#}
+{% if error %}
+<p class="admin-msg is-error">⚠ {{ error }}</p>
+{% endif %}
+
+<section class="dash-section">
+    <h5 class="dash-section-label">Церкви ({{ churches | length }})</h5>
+    <table class="dash-table">
+        <thead>
+            <tr>
+                <th>Назва</th><th>Ідентифікатор</th><th>Акаунтів</th>
+                <th>Запрошень</th><th>Зустрічей</th><th>Створено</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in churches %}
+            <tr {% if not c.is_active %}class="is-disabled"{% endif %}>
+                <td><strong>{{ c.name }}</strong></td>
+                <td><code>{{ c.slug }}</code></td>
+                <td>
+                    {{ c.active_accounts }}{% if c.accounts != c.active_accounts %}
+                    <small>з {{ c.accounts }}</small>{% endif %}
+                </td>
+                <td>
+                    {# A pending invite means somebody was given a link and has not
+                       used it — the one state that is otherwise invisible. #}
+                    {% if c.pending_invites %}
+                    <span title="надіслано, ще не використано">✉ {{ c.pending_invites }}</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>{{ c.jobs or '—' }}</td>
+                <td><small>{{ c.created_at.strftime('%Y-%m-%d') }}</small></td>
+                <td>
+                    {% if c.is_active %}
+                    <button class="dash-btn dash-btn-danger"
+                            hx-post="/platform/churches/{{ c.id }}/suspend"
+                            hx-target="#platform-panel" hx-swap="innerHTML"
+                            hx-confirm="Призупинити «{{ c.name }}»? Усі її сесії обірвуться. Дані лишаться.">
+                        ⊘ призупинити
+                    </button>
+                    {% else %}
+                    <button class="dash-btn"
+                            hx-post="/platform/churches/{{ c.id }}/resume"
+                            hx-target="#platform-panel" hx-swap="innerHTML">
+                        ↺ відновити
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section class="dash-section">
+    <h5 class="dash-section-label">🏛 Нова церква</h5>
+
+    {% if created %}
+    {# Shown once: the table stores only the token's hash, so this cannot be
+       recovered. Closing the box means issuing a new invite, not looking it up. #}
+    <div class="church-created">
+        <p><strong>✓ Церкву «{{ created.name }}» створено</strong>
+           <small>(<code>{{ created.slug }}</code>, tenant #{{ created.tenant_id }})</small></p>
+        <table class="church-credentials">
+            <tr><td>Логін</td><td><code>{{ created.username }}</code></td></tr>
+        </table>
+        <p><small>Надішліть це посилання адміністратору церкви:</small></p>
+        <p><code class="church-password">{{ created.invite_url }}</code></p>
+        <p class="admin-msg is-warn">
+            Спрацьовує <strong>один раз</strong> і діє {{ created.invite_hours }} год.
+            За ним людина <strong>сама задає пароль</strong> — ви його не знаєте
+            й не зможете дізнатися. Показане один раз: у базі лише хеш.
+        </p>
+    </div>
+    {% endif %}
+
+    <form class="admin-create-form"
+          hx-post="/platform/churches"
+          hx-target="#platform-panel" hx-swap="innerHTML">
+        <input type="text" name="slug" required maxlength="63"
+               pattern="[a-z0-9][a-z0-9._-]*"
+               autocapitalize="none" autocomplete="off"
+               placeholder="ідентифікатор (first-baptist)">
+        <input type="text" name="name" required maxlength="120"
+               autocomplete="off" placeholder="Назва церкви">
+        <input type="text" name="admin_username" required maxlength="40"
+               autocapitalize="none" autocomplete="off"
+               placeholder="логін адміністратора">
+        <input type="text" name="admin_full_name" required
+               autocomplete="off" placeholder="Імʼя Прізвище адміністратора">
+        <button type="submit">+ Створити церкву</button>
+    </form>
+
+    <p><small>
+        Ідентифікатор стає назвою теки на диску й префіксом колекцій Qdrant, тому
+        змінити його потім не можна — лише малі латинські літери, цифри,
+        <code>. _ -</code>. Разом із церквою створюється її перший адміністратор —
+        поки що <strong>без пароля й вимкнений</strong>: він оживе, коли людина
+        перейде за посиланням і задасть пароль сама.
+    </small></p>
+</section>
