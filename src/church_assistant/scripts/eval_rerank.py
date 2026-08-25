@@ -52,6 +52,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -132,9 +133,7 @@ def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
     """Rerank every item with one model and report where the gold chunk lands."""
     os.environ["RERANK_MODEL"] = model_name
     # Imported here, after the env var is set: the module reads it at import.
-    import importlib
     from church_assistant.shared import local_rerank
-    importlib.reload(local_rerank)
 
     items = evalset["items"]
     top1 = top3 = top5 = 0
@@ -174,6 +173,37 @@ def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
         "gold_scores": gold_scores,
         "other_scores": other_scores,
     }
+
+
+_MARKER = "@@RESULT@@"
+
+
+def _score_in_subprocess(model_name: str, evalset_path: str) -> Optional[dict[str, Any]]:
+    """
+    Score one model in a process of its own.
+
+    Not tidiness — survival. Reranking 482 items and then loading a second model
+    in the same interpreter died at item 450 with no traceback, only a leaked
+    semaphore at shutdown: the signature of a process killed rather than one that
+    raised. Whatever accumulates (MPS allocator growth is the likely candidate)
+    is not worth diagnosing to run an offline script, and one model taking the
+    comparison down with it is the part that actually hurts.
+
+    A fresh interpreter also means the second model cannot inherit the first's
+    memory state, so the timings are comparable rather than order-dependent.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "church_assistant.scripts.eval_rerank",
+         "-i", evalset_path, "--model", model_name, "--single"],
+        capture_output=True, text=True,
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith(_MARKER):
+            return json.loads(line[len(_MARKER):])
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+    for t in tail:
+        print(f"      {t}", flush=True)
+    return None
 
 
 def _pct(n: int, total: int) -> str:
@@ -226,8 +256,23 @@ async def _amain(args: argparse.Namespace) -> int:
         return 0
 
     evalset = json.loads(Path(args.input).read_text(encoding="utf-8"))
+
+    if args.single:
+        # One model, one process — the parent reads this back off stdout.
+        print(_MARKER + json.dumps(score_model(args.model[0], evalset)))
+        return 0
+
     print(f"  набір: {len(evalset['items'])} запитів, пул {evalset['pool']}")
-    results = [score_model(m, evalset) for m in args.model]
+    results = []
+    for m in args.model:
+        r = _score_in_subprocess(m, args.input)
+        if r is None:
+            print(f"  ✗ {m}: процес не дожив до результату — пропускаю", flush=True)
+            continue
+        results.append(r)
+    if not results:
+        print("  ✗ жодна модель не оцінилась")
+        return 1
     report(results)
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(
@@ -249,6 +294,8 @@ def main() -> int:
     p.add_argument("--pool", type=int, default=DEFAULT_POOL)
     p.add_argument("--limit", type=int, default=None, help="взяти лише перші N тем")
     p.add_argument("--json-out", default=None)
+    p.add_argument("--single", action="store_true",
+                   help=argparse.SUPPRESS)   # internal: score one model, emit JSON
     args = p.parse_args()
 
     if not args.build and not args.model:
