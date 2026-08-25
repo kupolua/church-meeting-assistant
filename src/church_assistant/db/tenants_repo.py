@@ -181,9 +181,86 @@ async def list_with_counts(pool: AsyncConnectionPool) -> list[dict[str, Any]]:
                c.accounts, c.active_accounts, c.pending_invites, c.jobs
         FROM tenants t
         JOIN platform_church_counts() c ON c.tenant_id = t.id
+        WHERE t.deleted_at IS NULL
         ORDER BY t.id
     """
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(sql)
+            return list(await cur.fetchall())
+
+
+# A year. Long enough that a church that left in anger and came back in spring
+# still finds its history; short enough that "we keep it forever" is not a
+# promise nobody made.
+ARCHIVE_RETENTION_DAYS = 365
+
+
+async def rename(pool: AsyncConnectionPool, tenant_id: int, name: str) -> None:
+    """
+    Change the display name. NOT the slug.
+
+    The slug is a directory on disk and a prefix on four Qdrant collections;
+    renaming it would mean moving 1.9 GB and reindexing, and getting half way
+    through either would leave a church whose data the application cannot find.
+    The name is a label, and labels are free to change.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("name cannot be empty")
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tenants SET name = %s WHERE id = %s AND id <> 0",
+                (name, tenant_id),
+            )
+
+
+async def archive(pool: AsyncConnectionPool, tenant_id: int) -> None:
+    """
+    Retire a church: access stops now, data stays.
+
+    Both fields are set together — deleted_at is what every resolver checks, and
+    is_active keeps the rest of the system (which has known about it since
+    Phase 1) telling the same story. `id <> 0` because archiving the platform
+    would lock the operator out of the panel they are standing in.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tenants SET deleted_at = NOW(), is_active = FALSE "
+                "WHERE id = %s AND id <> 0 AND deleted_at IS NULL",
+                (tenant_id,),
+            )
+
+
+async def restore(pool: AsyncConnectionPool, tenant_id: int) -> None:
+    """
+    Bring an archived church back. Its own action, not the suspension toggle.
+
+    Restored suspended rather than live: coming back from the archive is a
+    decision, and so is letting people in again. Making one imply the other
+    would mean a mis-click on restore also hands out access.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tenants SET deleted_at = NULL WHERE id = %s AND id <> 0",
+                (tenant_id,),
+            )
+
+
+async def list_archived(pool: AsyncConnectionPool) -> list[dict[str, Any]]:
+    """Archived churches with how long they have left."""
+    sql = """
+        SELECT id, slug, name, deleted_at,
+               deleted_at + make_interval(days => %s) AS purge_after,
+               (deleted_at + make_interval(days => %s)) < NOW() AS overdue
+        FROM tenants
+        WHERE deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(sql, (ARCHIVE_RETENTION_DAYS, ARCHIVE_RETENTION_DAYS))
             return list(await cur.fetchall())

@@ -1630,7 +1630,7 @@ def test_artifact_sync() -> None:
 # 14. Creating a church (platform admin only)
 # ─────────────────────────────────────────────────────────────
 
-def test_create_church() -> None:
+def test_create_church() -> dict:
     """
     Two panels that do not intersect.
 
@@ -1789,6 +1789,206 @@ def test_create_church() -> None:
     assert asyncio.run(_still_there()), "suspension removed the church"
     ok("suspension is about access — the church and its data stay")
 
+    # Handed to test_archive_church, which goes on with this same church:
+    # rebuilding one there would re-test registration and prove nothing new.
+    return {"tid": tid, "slug": SLUG, "church_admin": CH_ADMIN,
+            "root": ROOT, "root_pw": ROOT_PW}
+
+
+# ─────────────────────────────────────────────────────────────
+# 15. Renaming and archiving a church
+# ─────────────────────────────────────────────────────────────
+def test_archive_church(ctx: dict) -> None:
+    """
+    Renaming is cosmetic; archiving is not, and the difference has to hold.
+
+    Archiving must stop access through every door at once — sessions, sign-in
+    and any invite issued while the church was live — because a link handed out
+    last week outlives the decision made today. And it must not be reachable by
+    a mis-click: the panel asks for the identifier to be typed.
+    """
+    print("\n15. Renaming and archiving")
+
+    from fastapi.testclient import TestClient
+
+    from church_assistant.db import tenants_repo, web_invites_repo
+    from church_assistant.web.main import app
+
+    def _client() -> TestClient:
+        return TestClient(app, follow_redirects=False)
+
+    # The heading, not the word: every live row carries a button titled
+    # "Архівувати …", so a bare "Архів" matches the page that has no archive.
+    ARCHIVE_HEADING = "📦 Архів ("
+
+    tid, SLUG = ctx["tid"], ctx["slug"]
+    CH_ADMIN, ROOT, ROOT_PW = ctx["church_admin"], ctx["root"], ctx["root_pw"]
+
+    async def _tenant() -> dict:
+        pool = await get_pool()
+        try:
+            return await tenants_repo.get_by_slug(pool, SLUG)
+        finally:
+            await close_pool()
+
+    # ── Renaming touches the name and nothing else ────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+
+        r = client.post(f"/platform/churches/{tid}/rename",
+                        data={"name": "Церква на Волі"})
+        assert r.status_code == 200 and "Церква на Волі" in r.text
+        ok("a church can be renamed from the panel")
+
+        # Empty names are refused rather than silently blanking the label the
+        # operator navigates by.
+        r = client.post(f"/platform/churches/{tid}/rename", data={"name": "   "})
+        assert r.status_code == 200 and "Церква на Волі" in r.text
+        ok("an empty name is refused, the old one survives")
+
+    t = asyncio.run(_tenant())
+    assert t["name"] == "Церква на Волі" and t["slug"] == SLUG
+    ok("renaming leaves the identifier alone — the disk path never moves")
+
+    # ── Back to a fully live church ───────────────────────────
+    # test_create_church left it suspended, and suspension already closes
+    # sign-in and invites. Archiving has to be shown to close them on a church
+    # that was open a second ago, or the check proves nothing.
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+        assert client.post(f"/platform/churches/{tid}/resume").status_code == 200
+
+    with _client() as client:
+        r = client.post("/login", data={"username": CH_ADMIN, "password": "parol-pastora-1"})
+        assert r.status_code == 303, "the resumed church still refuses its admin"
+        ok("resumed: its admin signs in again")
+
+    # ── An invite issued while the church is live ─────────────
+    invite_token = secrets.token_urlsafe(32)
+
+    async def _issue_invite() -> None:
+        pool = await get_pool()
+        try:
+            users = await web_users_repo.list_all(pool, tid)
+            await web_invites_repo.create(
+                pool, tid,
+                web_user_id=users[0]["id"],
+                token_hash=security.hash_token(invite_token),
+                created_by="test",
+            )
+        finally:
+            await close_pool()
+
+    asyncio.run(_issue_invite())
+    with _client() as client:
+        assert client.get(f"/invite/{invite_token}").status_code == 200
+        ok("an invite issued now works")
+
+    # ── Archiving needs the identifier typed ──────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+
+        for wrong in ("", "  ", SLUG.upper(), SLUG + "x", "Церква на Волі"):
+            r = client.post(f"/platform/churches/{tid}/archive",
+                            data={"confirm_slug": wrong})
+            assert r.status_code == 200, wrong
+            assert SLUG in r.text, f"archived on a wrong confirmation: {wrong!r}"
+            # The Архів section is rendered only when something is in it, so
+            # its absence is the check that nothing slipped through.
+            assert ARCHIVE_HEADING not in r.text, f"archived on {wrong!r}"
+        ok("archiving refuses every near-miss confirmation, including the name")
+
+        r = client.post(f"/platform/churches/{tid}/archive",
+                        data={"confirm_slug": SLUG})
+        assert r.status_code == 200
+        ok("archiving accepts the identifier typed exactly")
+
+        # Gone from the live list, present in the archive — one panel, two
+        # tables, and the church must not appear in both.
+        body = client.get("/platform/panel").text
+        assert ARCHIVE_HEADING in body and SLUG in body
+        live = body.split(ARCHIVE_HEADING)[0]
+        assert SLUG not in live, "an archived church is still listed as live"
+        ok("it leaves the church list and appears under Архів")
+
+    t = asyncio.run(_tenant())
+    assert t is not None, "archiving deleted the row"
+    assert t["deleted_at"] is not None and not t["is_active"]
+    ok("the tenant row survives — archiving is not deletion")
+
+    # ── Every door is shut, not just the front one ────────────
+    with _client() as client:
+        r = client.post("/login", data={"username": CH_ADMIN, "password": "parol-pastora-1"})
+        assert r.status_code != 303
+        ok("archived: nobody signs in")
+
+    with _client() as client:
+        assert client.get(f"/invite/{invite_token}").status_code != 200
+        ok("archived: the invite handed out last week stops working too")
+
+    # ── The platform cannot archive itself ────────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+        r = client.post("/platform/churches/0/archive", data={"confirm_slug": "_system"})
+        assert r.status_code == 200
+
+    async def _system_intact() -> bool:
+        pool = await get_pool()
+        try:
+            sys_t = await tenants_repo.get_by_id(pool, 0)
+            return sys_t is not None and sys_t["deleted_at"] is None
+        finally:
+            await close_pool()
+
+    assert asyncio.run(_system_intact()), "the platform archived itself"
+    ok("the platform cannot archive itself out of its own panel")
+
+    # ── Purging is refused while the year is running ──────────
+    from church_assistant.scripts import purge_archived_tenants as purge
+
+    async def _archived_row() -> dict:
+        pool = await get_pool()
+        try:
+            rows = await tenants_repo.list_archived(pool)
+            return next(r for r in rows if r["slug"] == SLUG)
+        finally:
+            await close_pool()
+
+    row = asyncio.run(_archived_row())
+    assert not row["overdue"], "a church archived seconds ago is already purgeable"
+    assert 360 <= purge._days_left(row["purge_after"]) <= 365
+    ok(f"the archive clock runs {tenants_repo.ARCHIVE_RETENTION_DAYS} days")
+
+    # ── Restoring comes back suspended, not live ──────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+        r = client.post(f"/platform/churches/{tid}/restore")
+        assert r.status_code == 200
+        live = (r.text.split(ARCHIVE_HEADING)[0]
+                if ARCHIVE_HEADING in r.text else r.text)
+        assert SLUG in live
+        ok("a church can be brought back out of the archive")
+
+    t = asyncio.run(_tenant())
+    assert t["deleted_at"] is None, "restore left it archived"
+    assert not t["is_active"], "restore also handed out access"
+    ok("restored suspended: coming back and letting people in stay two decisions")
+
+    with _client() as client:
+        r = client.post("/login", data={"username": CH_ADMIN, "password": "parol-pastora-1"})
+        assert r.status_code != 303
+        ok("its people still cannot sign in until someone resumes it")
+
 
 
 async def phase_db() -> None:
@@ -1832,7 +2032,7 @@ def main() -> int:
         test_manual_speaker()
         test_query_queue()
         test_artifact_sync()
-        test_create_church()
+        test_archive_church(test_create_church())
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

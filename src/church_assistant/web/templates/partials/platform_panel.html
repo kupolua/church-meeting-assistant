@@ -18,7 +18,20 @@
         <tbody>
         {% for c in churches %}
             <tr {% if not c.is_active %}class="is-disabled"{% endif %}>
-                <td><strong>{{ c.name }}</strong></td>
+                <td>
+                    {# Editable in place. The name is a label; the identifier
+                       below it is a path on disk and a Qdrant prefix, so that
+                       one stays read-only. #}
+                    <form class="church-rename"
+                          hx-post="/platform/churches/{{ c.id }}/rename"
+                          hx-target="#platform-panel" hx-swap="innerHTML">
+                        <input type="text" name="name" value="{{ c.name }}"
+                               required maxlength="120" autocomplete="off"
+                               aria-label="Назва церкви">
+                        <button type="submit" class="dash-btn"
+                                title="Зберегти назву">✓</button>
+                    </form>
+                </td>
                 <td><code>{{ c.slug }}</code></td>
                 <td>
                     {{ c.active_accounts }}{% if c.accounts != c.active_accounts %}
@@ -48,12 +61,74 @@
                         ↺ відновити
                     </button>
                     {% endif %}
+
+                    {# Archiving asks for the identifier to be typed rather than
+                       for a click on a dialog. By the second time you see a
+                       confirm box the hand answers it before the eye reads it;
+                       typing `first-baptist` is the difference between the row
+                       you meant and the row above it. #}
+                    <form class="church-archive"
+                          hx-post="/platform/churches/{{ c.id }}/archive"
+                          hx-target="#platform-panel" hx-swap="innerHTML">
+                        <input type="text" name="confirm_slug" required
+                               autocapitalize="none" autocomplete="off"
+                               placeholder="{{ c.slug }}"
+                               aria-label="Введіть {{ c.slug }} для архівування">
+                        <button type="submit" class="dash-btn dash-btn-danger"
+                                title="Архівувати — дані зберігаються {{ retention_days }} днів">
+                            📦 архівувати
+                        </button>
+                    </form>
                 </td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
 </section>
+
+{% if archived %}
+<section class="dash-section">
+    <h5 class="dash-section-label">📦 Архів ({{ archived | length }})</h5>
+    <p><small>
+        Ці церкви не працюють: увійти не може ніхто, запрошення не діють.
+        Дані лишаються на місці <strong>{{ retention_days }} днів</strong> від
+        архівування — і нічого не видаляється саме собою. Після цієї дати їх
+        може прибрати лише людина, запустивши
+        <code>scripts/purge_archived_tenants.py</code>.
+    </small></p>
+    <table class="dash-table">
+        <thead>
+            <tr><th>Назва</th><th>Ідентифікатор</th><th>Архівовано</th>
+                <th>Зберігати до</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for a in archived %}
+            <tr class="is-disabled">
+                <td><strong>{{ a.name }}</strong></td>
+                <td><code>{{ a.slug }}</code></td>
+                <td><small>{{ a.deleted_at.strftime('%Y-%m-%d') }}</small></td>
+                <td>
+                    <small>{{ a.purge_after.strftime('%Y-%m-%d') }}</small>
+                    {% if a.overdue %}
+                    <span class="admin-msg is-warn" title="термін зберігання минув">
+                        строк вийшов
+                    </span>
+                    {% endif %}
+                </td>
+                <td>
+                    <button class="dash-btn"
+                            hx-post="/platform/churches/{{ a.id }}/restore"
+                            hx-target="#platform-panel" hx-swap="innerHTML"
+                            hx-confirm="Повернути «{{ a.name }}» з архіву? Церква зʼявиться у списку призупиненою.">
+                        ⤴ повернути
+                    </button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
 
 <section class="dash-section">
     <h5 class="dash-section-label">🏛 Нова церква</h5>

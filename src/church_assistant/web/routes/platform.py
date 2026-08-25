@@ -6,6 +6,9 @@ The platform panel — running the fleet, not a congregation:
     POST /platform/churches        register a church + its first admin
     POST /platform/churches/{id}/suspend    stop a church signing in
     POST /platform/churches/{id}/resume     let it back
+    POST /platform/churches/{id}/rename     change its display name
+    POST /platform/churches/{id}/archive    retire it, keeping the data a year
+    POST /platform/churches/{id}/restore    bring it back out of the archive
 
 SEPARATE FROM /admin/users BY DESIGN. That page belongs to one church and shows
 its people; this one belongs to no church and shows churches. They used to be
@@ -55,6 +58,8 @@ async def _panel_context(request: Request, pool: Any) -> dict[str, Any]:
     """Churches with their sizes — numbers only, never their contents."""
     return {
         "churches": await tenants_repo.list_with_counts(pool),
+        "archived": await tenants_repo.list_archived(pool),
+        "retention_days": tenants_repo.ARCHIVE_RETENTION_DAYS,
         "me": current_user(request),
     }
 
@@ -263,3 +268,124 @@ async def _set_active(request: Request, tenant_id: int, active: bool) -> HTMLRes
         message=f"{current_user(request).username} {verb} church {church['slug']!r}",
     )
     return await _panel_with(request)
+
+
+@router.post("/churches/{tenant_id}/rename", response_class=HTMLResponse)
+async def rename_church(request: Request, tenant_id: int, name: str = Form(...)):
+    """
+    Change what a church is called. The identifier is not touched.
+
+    The slug is a directory on disk and the prefix of four Qdrant collections;
+    changing it would mean moving 1.9 GB and reindexing, and stopping half way
+    through either leaves a church the application cannot find. The name is a
+    label, so it is free.
+    """
+    require_platform(request)
+    pool = await get_pool()
+
+    name = name.strip()
+    if not name or len(name) > MAX_CHURCH_NAME_LEN:
+        return await _panel_with(
+            request, error=f"Назва має бути 1–{MAX_CHURCH_NAME_LEN} символів."
+        )
+
+    church = await tenants_repo.get_by_id(pool, tenant_id)
+    if church is None or int(church["id"]) == 0:
+        return await _panel_with(request, error="Немає такої церкви.")
+    was = church["name"]
+    if name == was:
+        return await _panel_with(request)
+
+    await tenants_repo.rename(pool, tenant_id, name)
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="platform.church_renamed",
+        actor=current_user(request).actor,
+        resource=f"tenants/{tenant_id}",
+        detail={"slug": church["slug"], "from": was, "to": name},
+    )
+    return await _panel_with(request)
+
+
+@router.post("/churches/{tenant_id}/archive", response_class=HTMLResponse)
+async def archive_church(
+    request: Request, tenant_id: int, confirm_slug: str = Form(""),
+):
+    """
+    Retire a church. Access stops now; the data stays for a year.
+
+    Deliberately not a delete. A congregation's archive is the only copy of
+    conversations nobody wrote down twice, and the afternoon somebody clicks the
+    wrong row is not the moment to find that out. Restoring is one action away
+    for a year; after that scripts/purge_archived_tenants.py can remove it, and
+    only when a person runs it.
+
+    The identifier has to be typed. A confirm dialog is a reflex by the second
+    time you see it; typing `first-baptist` is not something the hand does on
+    its own, and it is the difference between the row you meant and the row
+    above it.
+    """
+    require_platform(request)
+    pool = await get_pool()
+
+    church = await tenants_repo.get_by_id(pool, tenant_id)
+    if church is None or int(church["id"]) == 0:
+        return await _panel_with(request, error="Немає такої церкви.")
+
+    if confirm_slug.strip() != church["slug"]:
+        return await _panel_with(
+            request,
+            error=f"Щоб архівувати «{church['name']}», введіть її ідентифікатор "
+                  f"«{church['slug']}» точно.",
+        )
+
+    await tenants_repo.archive(pool, tenant_id)
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="platform.church_archived",
+        actor=current_user(request).actor,
+        resource=f"tenants/{tenant_id}",
+        detail={"slug": church["slug"],
+                "retention_days": tenants_repo.ARCHIVE_RETENTION_DAYS},
+    )
+    await _logger.warn(
+        "web.church_archived",
+        message=f"{current_user(request).username} archived church "
+                f"{church['slug']!r} — data kept "
+                f"{tenants_repo.ARCHIVE_RETENTION_DAYS} days",
+    )
+    return await _panel_with(request)
+
+
+@router.post("/churches/{tenant_id}/restore", response_class=HTMLResponse)
+async def restore_church(request: Request, tenant_id: int):
+    """
+    Take a church back out of the archive — suspended, not live.
+
+    Coming back is one decision and letting people in is another. Making the
+    first imply the second means a mis-click on restore also hands out access,
+    to a church whose people may have moved on.
+    """
+    require_platform(request)
+    pool = await get_pool()
+
+    church = await tenants_repo.get_by_id(pool, tenant_id)
+    if church is None or int(church["id"]) == 0:
+        return await _panel_with(request, error="Немає такої церкви.")
+
+    await tenants_repo.restore(pool, tenant_id)
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="platform.church_restored",
+        actor=current_user(request).actor,
+        resource=f"tenants/{tenant_id}",
+        detail={"slug": church["slug"]},
+    )
+    return await _panel_with(
+        request,
+        error=f"«{church['name']}» повернуто з архіву — і поки що призупинено. "
+              f"Натисніть «відновити», щоб пустити людей.",
+    )

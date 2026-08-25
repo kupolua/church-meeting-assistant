@@ -1617,3 +1617,47 @@ tr.sp-add-row td { border-top: 2px dashed #b9d9c4; }
 .dlg-newhint { color: #666; margin: 0.25rem 0 0.75rem; }
 .speaker-dialog-actions { display: flex; gap: 0.6rem; }
 .speaker-dialog-actions button { margin: 0; }
+
+/* Platform panel: rename and archive live inside table cells, so both forms
+   have to sit on one line and not stretch the column. */
+.church-rename,
+.church-archive {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+    margin: 0;
+}
+.church-rename button,
+.church-archive button {
+    margin: 0;              /* pico gives buttons a bottom margin; in a flex row
+                               it pushed the control off its input's baseline */
+    white-space: nowrap;
+}
+.church-rename input {
+    margin: 0;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.9em;
+    font-weight: 600;
+    min-width: 9rem;
+}
+.church-archive {
+    margin-top: 0.35rem;
+}
+.church-archive input {
+    margin: 0;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.8em;
+    font-family: var(--font-mono, monospace);
+    width: 8rem;
+}
+/* The archive box is a speed bump, not a field anyone fills in by default. */
+.church-archive input::placeholder {
+    opacity: 0.45;
+    font-style: italic;
+}
+
+/* An identifier is a single token — breaking `first-baptist` across two lines
+   makes it read as two, in the one column where exactness is the point. */
+.dash-table td code {
+    white-space: nowrap;
+}
