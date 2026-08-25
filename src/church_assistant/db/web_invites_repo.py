@@ -107,3 +107,26 @@ async def list_pending(
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(sql)
         return list(await cur.fetchall())
+
+
+async def expire_pending_for_user(
+    pool: AsyncConnectionPool, tenant_id: int, web_user_id: int,
+) -> int:
+    """
+    Kill any live invite for this account. Returns how many were killed.
+
+    Called before issuing a new one, so an account never has two working links
+    at the same time. The old link was handed to somebody over some channel; if
+    an admin re-issues because the first one went astray, leaving it alive keeps
+    exactly the door they were trying to close.
+
+    Expired rather than marked used: `used_at` means a person redeemed it, and
+    the audit trail should not have to guess which of the two happened.
+    """
+    sql = """
+        UPDATE web_invites SET expires_at = NOW()
+        WHERE web_user_id = %s AND used_at IS NULL AND expires_at > NOW()
+    """
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(sql, (web_user_id,))
+        return cur.rowcount

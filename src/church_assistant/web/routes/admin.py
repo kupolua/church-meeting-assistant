@@ -3,12 +3,26 @@ Web account management (admin only):
 
     GET  /admin/users                     list this church's web accounts
     GET  /admin/users/panel               HTMX target — just the table
-    POST /admin/users                     create an account
+    POST /admin/users                     create an account + its invite link
+    POST /admin/users/{id}/invite         issue a fresh invite link
     POST /admin/users/{id}/deactivate     revoke access (soft delete)
     POST /admin/users/{id}/reactivate     restore access
     POST /admin/users/{id}/role           promote/demote
     POST /admin/users/{id}/password       set a new password
     POST /admin/users/{id}/sessions/revoke  sign the account out everywhere
+
+NOBODY HERE TYPES SOMEBODY ELSE'S PASSWORD. Creating an account used to ask the
+admin for one, which meant the head of every church knew the password of every
+person in it — the one place in the system where a secret still travelled from
+hand to hand. Now creation makes an account with no usable password, inactive,
+plus a single-use link; the person sets their own password by following it, and
+the admin cannot learn what they chose. Same mechanism the platform panel uses
+to found a church (web_invites, migration 011), applied one level down.
+
+The password reset stays. It is the answer to "I forgot mine and I need in
+today", it ends every session the old password could still be holding open, and
+an admin who resets one has to say so out loud — whereas issuing an invite is
+the same repair without a secret in the middle. Both are audited.
 
 Everything is scoped to the logged-in admin's own church: the tenant comes from
 the session and every query runs through tenant_cursor, so an admin of church A
@@ -37,7 +51,12 @@ from typing import Any, Optional
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from church_assistant.db import audit_repo, web_sessions_repo, web_users_repo
+from church_assistant.db import (
+    audit_repo,
+    web_invites_repo,
+    web_sessions_repo,
+    web_users_repo,
+)
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
@@ -78,6 +97,14 @@ async def _panel_context(request: Request, pool: Any, tenant_id: int) -> dict[st
         "n_active_admins": sum(
             1 for u in users if u["is_active"] and u["role"] == "admin"
         ),
+        # Who has been handed a link and has not used it yet. Without this the
+        # state is invisible: the account looks the same as one whose owner
+        # never got round to signing in, and the admin re-issues blind.
+        "pending_invites": {
+            int(i["web_user_id"]): i
+            for i in await web_invites_repo.list_pending(pool, tenant_id)
+        },
+        "invite_hours": web_invites_repo.DEFAULT_TTL_SECONDS // 3600,
     }
 
 
@@ -86,13 +113,24 @@ def _render_panel(request: Request, ctx: dict[str, Any]) -> HTMLResponse:
 
 
 async def _panel_with(
-    request: Request, *, error: Optional[str] = None, ok: Optional[str] = None,
+    request: Request,
+    *,
+    error: Optional[str] = None,
+    ok: Optional[str] = None,
+    invited: Optional[dict[str, Any]] = None,
 ) -> HTMLResponse:
-    """Re-render the table with a one-shot message (the HTMX action response)."""
+    """
+    Re-render the table with a one-shot message (the HTMX action response).
+
+    `invited` carries a freshly minted link. It is one-shot in the strong sense:
+    the table stores only the token's hash, so if the admin navigates away
+    without copying it, the only recovery is to issue another one.
+    """
     pool = await get_pool()
     ctx = await _panel_context(request, pool, current_tenant(request))
     ctx["error"] = error
     ctx["ok"] = ok
+    ctx["invited"] = invited
     return _render_panel(request, ctx)
 
 
@@ -149,9 +187,14 @@ async def create_user(
     username: str = Form(...),
     full_name: str = Form(...),
     role: str = Form("member"),
-    password: str = Form(...),
 ):
-    """Create a web account in the admin's own church."""
+    """
+    Create a web account in the admin's own church — as an invitation.
+
+    No password is taken, because taking one would mean the admin knows it. The
+    account lands inactive with a hash of something nobody has, and the response
+    carries a link that lets its owner, once, set a password of their own.
+    """
     require_admin(request)
     pool = await get_pool()
     tenant_id = current_tenant(request)
@@ -165,10 +208,6 @@ async def create_user(
         )
     if not full_name:
         return await _panel_with(request, error="Вкажіть імʼя.")
-    if len(password) < MIN_PASSWORD_LEN:
-        return await _panel_with(
-            request, error=f"Пароль закороткий (мінімум {MIN_PASSWORD_LEN} символів)."
-        )
     if role not in web_users_repo.ROLES:
         return await _panel_with(request, error="Невідома роль.")
 
@@ -177,7 +216,11 @@ async def create_user(
             pool,
             tenant_id,
             username=username,
-            password_hash=security.hash_password(password),
+            # A hash of something nobody has, ever. Until the invite is redeemed
+            # this account cannot be signed into — and it is deactivated too, so
+            # the state reads as "not yet claimed" rather than as an account
+            # that mysteriously refuses every password.
+            password_hash=security.hash_password(security.new_session_token()),
             full_name=full_name,
             role=role,
         )
@@ -190,14 +233,93 @@ async def create_user(
     except ValueError as e:
         return await _panel_with(request, error=str(e))
 
+    await web_users_repo.deactivate(pool, tenant_id, user_id)
+    invite_url, hours = await _issue_invite(request, pool, tenant_id, user_id)
+
     await _audit(pool, request, "admin.web_user_created", user_id,
-                 username=username, role=role)
+                 username=username, role=role, invited=True)
     await _logger.info(
         "web.user_created",
-        message=f"{current_user(request).username} created web account {username} ({role})",
+        message=f"{current_user(request).username} created web account {username} "
+                f"({role}) and issued an invite",
         tenant_id=tenant_id,
     )
-    return await _panel_with(request, ok=f"Акаунт «{username}» створено.")
+    return await _panel_with(request, invited={
+        "username": username, "full_name": full_name, "role": role,
+        "url": invite_url, "hours": hours, "is_new": True,
+    })
+
+
+async def _issue_invite(
+    request: Request, pool: Any, tenant_id: int, user_id: int,
+) -> tuple[str, int]:
+    """
+    Mint a single-use link for an account. Returns (url, hours it lives).
+
+    Any live invite for the same account is expired first. Two working links for
+    one person is one more than anybody intended: the usual reason to re-issue
+    is that the first went somewhere it should not have, and leaving it alive
+    keeps open the exact door the admin came here to close.
+
+    The token exists in this response and nowhere else — the table gets its
+    hash, the log gets neither.
+    """
+    await web_invites_repo.expire_pending_for_user(pool, tenant_id, user_id)
+
+    token = security.new_session_token()
+    await web_invites_repo.create(
+        pool,
+        tenant_id,
+        web_user_id=user_id,
+        token_hash=security.hash_token(token),
+        created_by=current_user(request).actor,
+    )
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/invite/{token}", web_invites_repo.DEFAULT_TTL_SECONDS // 3600
+
+
+@router.post("/users/{user_id}/invite", response_class=HTMLResponse)
+async def reinvite_user(request: Request, user_id: int):
+    """
+    Issue a fresh link — for a link that expired, went astray, or a forgotten
+    password the admin would rather not choose on someone's behalf.
+
+    Redeeming it sets a new password and activates the account, so this doubles
+    as a reset that leaves the secret with its owner. Issuing one deliberately
+    changes nothing yet: nothing has been taken away, and cutting somebody off
+    the moment a link is minted — a link they may never follow — would be a
+    surprise. The old password keeps working, and so do the sessions it opened,
+    until the link is spent; redeeming it ends both, exactly as the 🔑 reset
+    does. The moment the secret changes is the moment the old one stops working,
+    and not a click earlier.
+
+    On an account an admin has switched OFF, this is a way back in — redeeming
+    reactivates. That is sometimes the point (somebody returning, nobody left
+    holding the password), so it is allowed, but the confirmation says so: the
+    admin is restoring access, not just re-issuing a link.
+    """
+    require_admin(request)
+    pool = await get_pool()
+    tenant_id = current_tenant(request)
+
+    target, err = await _load_target(request, pool, user_id)
+    if err is not None:
+        return err
+
+    invite_url, hours = await _issue_invite(request, pool, tenant_id, user_id)
+    await _audit(pool, request, "admin.web_user_invited", user_id,
+                 username=target["username"], was_active=bool(target["is_active"]))
+    await _logger.info(
+        "web.invite_issued",
+        message=f"{current_user(request).username} issued an invite for "
+                f"{target['username']}",
+        tenant_id=tenant_id,
+    )
+    return await _panel_with(request, invited={
+        "username": target["username"], "full_name": target["full_name"],
+        "role": target["role"], "url": invite_url, "hours": hours,
+        "is_new": False, "was_active": bool(target["is_active"]),
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,7 +368,11 @@ async def deactivate_user(request: Request, user_id: int):
         return await _panel_with(request, error=blocked)
 
     tenant_id = current_tenant(request)
-    await web_users_repo.deactivate(pool, tenant_id, user_id)
+    # This also expires any unspent invite for the account, in the same
+    # statement — see web_users_repo.deactivate. An invite is a door too: it
+    # sets a password and reactivates, so a link issued before this click would
+    # undo it.
+    _, n_invites = await web_users_repo.deactivate(pool, tenant_id, user_id)
     # Revoking is belt-and-braces: resolve_web_session() already refuses a
     # session whose account is inactive, so access is gone either way. Doing it
     # explicitly means the rows also *read* as ended, which is what an admin —
@@ -254,8 +380,11 @@ async def deactivate_user(request: Request, user_id: int):
     n = await web_sessions_repo.revoke_all_for_user(pool, tenant_id, user_id)
 
     await _audit(pool, request, "admin.web_user_deactivated", user_id,
-                 username=target["username"], sessions_revoked=n)
+                 username=target["username"], sessions_revoked=n,
+                 invites_expired=n_invites)
     suffix = f" Активних сесій закрито: {n}." if n else ""
+    if n_invites:
+        suffix += " Невикористане запрошення анульовано."
     return await _panel_with(
         request,
         ok=f"Акаунт «{target['username']}» вимкнено — доступ припинено одразу.{suffix}",

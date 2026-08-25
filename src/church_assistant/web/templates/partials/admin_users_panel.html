@@ -5,6 +5,39 @@
 <p role="status" class="admin-msg is-ok">✓ {{ ok }}</p>
 {% endif %}
 
+{# ─── A link that exists on screen once ───
+   The table keeps only the token's hash, so nothing here can be looked up
+   again: closing the panel without copying it means issuing another invite. #}
+{% if invited %}
+<div class="church-created">
+    <p>
+        {% if invited.is_new %}
+        <strong>✓ Акаунт «{{ invited.username }}» створено</strong>
+        <small>({{ invited.full_name }}, {{ invited.role }}) — поки без пароля й вимкнений</small>
+        {% else %}
+        <strong>✓ Нове запрошення для «{{ invited.username }}»</strong>
+        <small>({{ invited.full_name }})</small>
+        {% endif %}
+    </p>
+    <p><small>Надішліть це посилання людині:</small></p>
+    <p><code class="church-password">{{ invited.url }}</code></p>
+    <p class="admin-msg is-warn">
+        Спрацьовує <strong>один раз</strong> і діє {{ invited.hours }} год.
+        Пароль людина <strong>задає сама</strong> — ви його не знаєте й не
+        зможете дізнатися. Показане один раз: у базі лише хеш.
+        {% if not invited.is_new %}
+        Попереднє посилання для цього акаунта більше не працює.
+        {% if invited.was_active %}
+        Старий пароль і відкриті сесії діють, доки людина не задасть новий — тоді
+        вони закриються.
+        {% else %}
+        Коли людина скористається посиланням, акаунт буде <strong>увімкнено</strong>.
+        {% endif %}
+        {% endif %}
+    </p>
+</div>
+{% endif %}
+
 {# ─── Existing accounts ─── #}
 <section class="dash-section">
     <h5 class="dash-section-label">Веб-акаунти ({{ users | length }})</h5>
@@ -22,12 +55,29 @@
             {% set is_last_admin = u.is_active and u.role == 'admin' and n_active_admins <= 1 %}
             {% set locked = is_me or is_last_admin %}
             {% set n_sessions = live_sessions.get(u.id, 0) %}
+            {% set pending = pending_invites.get(u.id) %}
+            {# Inactive means two different things and they need opposite
+               actions: an account that has never signed in is waiting for its
+               owner, one that has is switched off by an admin. #}
+            {% set unclaimed = not u.is_active and not u.last_login_at %}
             <tr class="{{ '' if u.is_active else 'is-disabled' }}">
                 <td><strong>{{ u.username }}</strong>{% if is_me %} <small>(це ви)</small>{% endif %}</td>
                 <td>{{ u.full_name }}</td>
                 <td>
                     {% if u.role == 'admin' %}⭐ admin{% else %}member{% endif %}
-                    {% if not u.is_active %}<small> · вимкнено</small>{% endif %}
+                    {# Both facts, not one of them: an outstanding invite must
+                       never hide that an admin switched the account off. #}
+                    {% if not u.is_active and not unclaimed %}<small> · вимкнено</small>{% endif %}
+                    {% if pending %}
+                    <small class="admin-pending"
+                           title="Запрошення надіслано, ще не використане; діє до {{ pending.expires_at.strftime('%Y-%m-%d %H:%M') }}">
+                        · 📩 {{ 'чекає на вхід' if unclaimed else 'запрошення видано' }}
+                    </small>
+                    {% elif unclaimed %}
+                    <small class="admin-pending" title="Запрошення прострочене або анульоване — видайте нове">
+                        · 📩 вхід не задано
+                    </small>
+                    {% endif %}
                 </td>
                 <td>
                     {# Live sessions, and the lever to end them. #}
@@ -72,7 +122,7 @@
                         <button class="dash-btn is-cancel"
                                 hx-post="/admin/users/{{ u.id }}/deactivate"
                                 hx-target="#admin-users-panel" hx-swap="innerHTML"
-                                hx-confirm="Вимкнути акаунт {{ u.username }}? Доступ припиниться одразу, відкриті сесії закриються.">
+                                hx-confirm="Вимкнути акаунт {{ u.username }}? Доступ припиниться одразу, відкриті сесії закриються{% if pending %}, невикористане запрошення анулюється{% endif %}.">
                             ⊘ вимкнути
                         </button>
                         {% endif %}
@@ -84,6 +134,16 @@
                             ↺ увімкнути
                         </button>
                     {% endif %}
+
+                    {# The repair that leaves the secret with its owner. Next
+                       to the password reset, not instead of it: a reset is for
+                       "I need in today", this is for everything else. #}
+                    <button class="dash-btn"
+                            hx-post="/admin/users/{{ u.id }}/invite"
+                            hx-target="#admin-users-panel" hx-swap="innerHTML"
+                            hx-confirm="{% if not u.is_active and not unclaimed %}Акаунт {{ u.full_name }} ВИМКНЕНО. За посиланням людина задасть пароль і знову отримає доступ. Видати?{% elif pending %}Видати {{ u.full_name }} нове посилання? Попереднє перестане працювати.{% else %}Видати {{ u.full_name }} посилання, щоб задати пароль самостійно?{% endif %}">
+                        📩 запрошення
+                    </button>
 
                     <details class="admin-inline-form">
                         <summary class="dash-btn">🔑 пароль</summary>
@@ -116,12 +176,13 @@
             <option value="member" selected>member</option>
             <option value="admin">admin</option>
         </select>
-        <input type="password" name="password" required minlength="8"
-               autocomplete="new-password" placeholder="пароль (від 8 символів)">
-        <button type="submit">+ Створити</button>
+        <button type="submit">+ Створити й видати посилання</button>
     </form>
     <p><small>
         Логін унікальний на весь сервер — одна людина належить одній церкві.
-        Акаунт створюється у вашій церкві ({{ me.tenant_slug }}).
+        Акаунт створюється у вашій церкві ({{ me.tenant_slug }}) <strong>без пароля
+        й вимкненим</strong>: ви отримаєте одноразове посилання, за яким людина
+        задасть пароль сама. Ви його не побачите — і не зможете передати далі
+        те, чого ніколи не існувало.
     </small></p>
 </section>

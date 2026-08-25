@@ -16,18 +16,30 @@ SETUP (once per run — recreates the sandbox from scratch):
     inside cma_mt3, which is per-database and harmless.
 
     DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
+
+    # The DROP is not optional and it is not "IF EXISTS" being polite: the
+    # migrations are not all re-runnable over a populated database (009
+    # redefines resolve_web_session and Postgres refuses to change an existing
+    # function's OUT columns). Applying them on top gets you a half-migrated
+    # sandbox and a test failure that points at the wrong thing.
+    #
+    # The DROP fails while anything still holds a connection — a sandbox web
+    # instance you left running, or the idle pool of one you killed. The
+    # terminate below is scoped to the sandbox database by name; never widen it.
     $DOCKER exec cma-postgres psql -U cma -d postgres -q \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+           WHERE datname = 'cma_mt3';" \
       -c "DROP DATABASE IF EXISTS cma_mt3;" \
       -c "CREATE DATABASE cma_mt3;"
 
     # heredoc/stdin NEEDS `docker exec -i` — without -i stdin never arrives
-    for f in schema.sql migrations/003_multitenancy.sql \
-             migrations/004_app_role_and_claim.sql \
-             migrations/005_mt_fixups.sql migrations/006_web_auth.sql \
-             migrations/007_system_tenant.sql migrations/008_web_sessions.sql \
-             migrations/009_session_idle_timeout.sql; do
-      $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -q -v ON_ERROR_STOP=1 \
-        < src/church_assistant/db/$f
+    # Globbed, not listed: an enumerated recipe goes stale the first time a
+    # migration is added and nobody rebuilds the sandbox for a month, and the
+    # failure then looks like a broken test rather than a missing table.
+    # Lexicographic order is the migration order (003…013…).
+    for f in src/church_assistant/db/schema.sql \
+             src/church_assistant/db/migrations/0*.sql; do
+      $DOCKER exec -i cma-postgres psql -U cma -d cma_mt3 -q -v ON_ERROR_STOP=1 < $f
     done
 
     $DOCKER exec cma-postgres psql -U cma -d cma_mt3 -q \
@@ -656,48 +668,61 @@ def test_admin_ui() -> None:
         assert "borys" not in r.text          # church B's account
         ok("admin sees only their own church's accounts")
 
-        # Create → the new account can sign in immediately.
+        # Create → no password is asked for, and none comes back. What comes
+        # back is a link that exists on screen once.
+        import re as _re
         r = client.post("/admin/users", data={
-            "username": "dmytro", "full_name": "Дмитро Д",
-            "role": "member", "password": "novyi-parol-123",
+            "username": "dmytro", "full_name": "Дмитро Д", "role": "member",
         })
         assert r.status_code == 200 and "створено" in r.text, r.text[:300]
-        ok("admin creates an account in their church")
+        m = _re.search(r'class="church-password">([^<]+)<', r.text)
+        assert m and "/invite/" in m.group(1), r.text[:400]
+        dmytro_link = m.group(1).strip().replace("http://testserver", "")
+        ok("admin creates an account and gets a link, not a password")
 
-        # Sign in as the new account on the SAME client — a nested TestClient
-        # would start a second event loop and close this one's pool underneath
-        # it (the pool is a module singleton bound to the loop that opened it).
+        # Until it is redeemed the account is inactive, and the row says why —
+        # "waiting to sign in", not "switched off", which call for opposite
+        # actions from the admin looking at them.
+        page = client.get("/admin/users").text
+        assert "чекає на вхід" in page
+        ok("an unclaimed account reads as pending, not as deactivated")
+
+        # Redeem on the SAME client — a nested TestClient would start a second
+        # event loop and close this one's pool underneath it (the pool is a
+        # module singleton bound to the loop that opened it).
         client.cookies.clear()
-        r = client.post("/login", data={"username": "dmytro",
-                                        "password": "novyi-parol-123"})
+        assert client.get(dmytro_link).status_code == 200
+        r = client.post(dmytro_link, data={"password": "novyi-parol-123",
+                                           "password_repeat": "novyi-parol-123"})
         assert r.status_code == 303 and security.SESSION_COOKIE in r.cookies
+        # A member lands on the dashboard: /admin/users would bounce them back
+        # with a permissions error, which is a strange first sentence to read.
+        assert r.headers["location"] == "/dashboard", r.headers["location"]
+        ok("the invited member sets their own password and is signed in")
+
         # Landed in church A: they see A's meeting and not the B-only date, and
         # as a member they get no account-management link.
         page = client.get("/meetings").text
         assert "2026-06-15" in page and "2026-06-22" not in page
         assert "/admin/users" not in page
-        ok("the new account logs in, into the creating admin's church, as member")
+        ok("the new account is in the inviting admin's church, as member")
+
+        # The link is spent — the same one cannot make a second account real.
+        assert client.get(dmytro_link).status_code == 404
+        ok("a redeemed invite is dead")
 
         client.cookies.clear()
         login(client, "anna", PASSWORD_A)
 
         # Usernames are global; the clash message reveals nothing about church B.
         r = client.post("/admin/users", data={
-            "username": "borys", "full_name": "Клон",
-            "role": "member", "password": "shche-odyn-parol",
+            "username": "borys", "full_name": "Клон", "role": "member",
         })
         assert "зайнятий" in r.text and "church-b" not in r.text
         ok("clash with another church's login is refused without disclosing it")
 
-        r = client.post("/admin/users", data={
-            "username": "korotkyi", "full_name": "Х", "role": "member", "password": "abc",
-        })
-        assert "закороткий" in r.text
-        ok("short password rejected")
-
         # Guard rails.
         me = client.get("/admin/users")
-        import re as _re
         anna_id = int(_re.search(r"/admin/users/(\d+)/password", me.text).group(1))
 
         r = client.post(f"/admin/users/{anna_id}/deactivate")
@@ -729,6 +754,108 @@ def test_admin_ui() -> None:
         r = client.post(f"/admin/users/{dmytro_id}/reactivate")
         assert "увімкнено" in r.text
         ok("a deactivated account can be restored (soft delete)")
+
+        # ── Re-issuing: the repair that leaves the secret with its owner ──
+        def _issue(uid: int) -> str:
+            resp = client.post(f"/admin/users/{uid}/invite")
+            assert resp.status_code == 200, resp.status_code
+            link = _re.search(r'class="church-password">([^<]+)<', resp.text)
+            assert link, resp.text[:400]
+            return link.group(1).strip().replace("http://testserver", "")
+
+        first = _issue(dmytro_id)
+        assert client.get(first).status_code == 200
+        second = _issue(dmytro_id)
+        assert client.get(second).status_code == 200
+        assert client.get(first).status_code == 404
+        ok("issuing a new invite kills the previous one — never two live links")
+
+        # An invite for an ACTIVE account is a password reset that the admin
+        # cannot read. It must not cut the person off before they use it: the
+        # old password keeps working until the new one replaces it.
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "dmytro",
+                                        "password": "novyi-parol-123"})
+        assert r.status_code == 303
+        ok("a pending invite does not invalidate the password already in use")
+
+        r = client.post(second, data={"password": "tretii-parol-456",
+                                      "password_repeat": "tretii-parol-456"})
+        assert r.status_code == 303
+        client.cookies.clear()
+        assert client.post("/login", data={"username": "dmytro",
+                                           "password": "novyi-parol-123"}).status_code != 303
+        assert client.post("/login", data={"username": "dmytro",
+                                           "password": "tretii-parol-456"}).status_code == 303
+        ok("redeeming it replaces the password — the old one stops working")
+
+        # Redeeming is where the secret actually changes, so that is where the
+        # sessions the OLD password opened have to end — otherwise the invite is
+        # a weaker repair than the 🔑 reset while the panel offers them as
+        # siblings, and an admin re-credentialing a suspect account leaves
+        # whoever is holding it signed in.
+        client.cookies.clear()
+        assert client.post("/login", data={"username": "dmytro",
+                                           "password": "tretii-parol-456"}).status_code == 303
+        old_session = client.cookies[security.SESSION_COOKIE]
+        assert client.get("/dashboard").status_code == 200
+
+        client.cookies.clear()
+        login(client, "anna", PASSWORD_A)
+        third = _issue(dmytro_id)
+        client.cookies.clear()
+        assert client.post(third, data={"password": "chetvertyi-parol-000",
+                                        "password_repeat": "chetvertyi-parol-000"}
+                           ).status_code == 303
+        client.cookies.clear()
+        client.cookies.set(security.SESSION_COOKIE, old_session)
+        assert client.get("/dashboard").status_code == 303
+        ok("redeeming ends the sessions the replaced password had opened")
+
+        # ── Switching an account off has to close the invite too ──
+        # An unspent link is a door: redeeming sets a password AND is_active,
+        # so a link handed out before the decision walks the account back in.
+        client.cookies.clear()
+        login(client, "anna", PASSWORD_A)
+        doomed = _issue(dmytro_id)
+        assert client.get(doomed).status_code == 200
+        r = client.post(f"/admin/users/{dmytro_id}/deactivate")
+        assert "вимкнено" in r.text and "запрошення анульовано" in r.text
+        assert client.get(doomed).status_code == 404
+        ok("deactivating an account kills its unspent invite")
+
+        # And the dead link cannot resurrect the account by being POSTed anyway
+        # — the GET above only proves the page hides it.
+        client.cookies.clear()
+        assert client.post(doomed, data={"password": "obhid-zaboroni-77",
+                                         "password_repeat": "obhid-zaboroni-77"}
+                           ).status_code == 404      # the "gone" page, not a session
+        assert client.post("/login", data={"username": "dmytro",
+                                           "password": "obhid-zaboroni-77"}).status_code != 303
+        ok("the revoked link cannot set a password or bring the account back")
+
+        # The row must not let an outstanding invite hide the switched-off
+        # state: they are separate facts and they call for opposite actions.
+        client.cookies.clear()
+        login(client, "anna", PASSWORD_A)
+        revived = _issue(dmytro_id)                  # deliberately, on an OFF account
+        page = client.get("/admin/users").text
+        row = [tr for tr in _re.findall(r"<tr.*?</tr>", page, _re.S) if "dmytro" in tr][0]
+        assert "вимкнено" in row and "запрошення видано" in row, row[:400]
+        assert "ВИМКНЕНО" in row                     # the confirm says what it restores
+        ok("an invite on a switched-off account shows both facts, and warns")
+
+        client.cookies.clear()
+        assert client.post(revived, data={"password": "povernennia-123",
+                                          "password_repeat": "povernennia-123"}
+                           ).status_code == 303
+        ok("issuing one deliberately is still the way back — it just says so")
+
+        client.cookies.clear()
+        login(client, "anna", PASSWORD_A)
+        r = client.post("/admin/users/2/invite")       # borys, church B
+        assert "не знайдено" in r.text
+        ok("no inviting your way into another church's account (RLS)")
 
 
 # ─────────────────────────────────────────────────────────────

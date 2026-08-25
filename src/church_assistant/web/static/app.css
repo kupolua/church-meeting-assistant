@@ -1381,6 +1381,14 @@ tr.sp-add-row td { border-top: 2px dashed #b9d9c4; }
     opacity: 0.55;
 }
 
+/* An account whose invite is still unclaimed is disabled too, so it inherits
+   the dimming above — but it is waiting on its owner, not switched off by an
+   admin, and the row has to say which. */
+.admin-pending {
+    color: #92400e;
+    white-space: nowrap;
+}
+
 .admin-create-form {
     display: flex;
     flex-wrap: wrap;

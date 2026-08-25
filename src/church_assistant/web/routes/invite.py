@@ -119,6 +119,14 @@ async def invite_redeem(
     tenant_id = int(invite["tenant_id"])
     username = str(invite["username"])
 
+    # The password just changed, so every session opened with the old one ends
+    # here. A founding account has none and this is a no-op; an account being
+    # re-credentialed may well have several, and the usual reason an admin
+    # reaches for a link is that they no longer trust who is holding the old
+    # password. The 🔑 reset has always done this — a repair that leaves the
+    # secret with its owner must not be the weaker of the two.
+    n_ended = await web_sessions_repo.revoke_all_for_user(pool, tenant_id, user_id)
+
     # Signed in immediately: making someone who just proved they hold the link
     # type the password they set one second ago teaches them nothing and loses
     # people at the last step.
@@ -140,7 +148,8 @@ async def invite_redeem(
         action="auth.invite_redeemed",
         actor=f"web:{username}",
         resource=f"web_users/{user_id}",
-        detail={"invite_id": int(invite["invite_id"]), "session_id": session_id},
+        detail={"invite_id": int(invite["invite_id"]), "session_id": session_id,
+                "sessions_revoked": n_ended},
     )
     await _logger.info(
         "web.invite_redeemed",
@@ -149,11 +158,18 @@ async def invite_redeem(
     )
 
     # Where they belong, which is not the same for everyone the invite serves.
-    # A founding church admin lands on their own accounts page — the first thing
-    # they need is to add the rest of the council. A platform account has no
-    # church at all and would be refused there by the panel guard, so it goes to
-    # the fleet panel instead. Tenant 0 IS the platform (migration 012).
-    landing = "/platform" if tenant_id == 0 else "/admin/users"
+    # A platform account has no church at all and would be refused by the church
+    # panel guard, so it goes to the fleet panel; tenant 0 IS the platform
+    # (migration 012). A founding church admin lands on their own accounts page —
+    # the first thing they need is to add the rest of the council. An ordinary
+    # member is invited the same way since /admin/users started issuing links,
+    # and that page would bounce them straight back to the dashboard with an
+    # error about permissions — a strange first sentence to read after joining.
+    if tenant_id == 0:
+        landing = "/platform"
+    else:
+        account = await web_users_repo.get_by_id(pool, tenant_id, user_id)
+        landing = "/admin/users" if account and account["role"] == "admin" else "/dashboard"
     response = RedirectResponse(landing, status_code=303)
     auth.set_session_cookie(
         response, session_token, secure=headers.cookie_secure(request)

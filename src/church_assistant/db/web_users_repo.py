@@ -183,14 +183,38 @@ async def set_role(
 
 async def deactivate(
     pool: AsyncConnectionPool, tenant_id: int, user_id: int,
-) -> bool:
-    """Soft-delete (is_active=FALSE). Returns True if a row was updated."""
-    async with tenant_cursor(pool, tenant_id) as cur:
-        await cur.execute(
-            "UPDATE web_users SET is_active = FALSE WHERE id = %s RETURNING 1",
-            (user_id,),
+) -> tuple[bool, int]:
+    """
+    Soft-delete (is_active=FALSE). Returns (row updated, invites killed).
+
+    Cutting access has to close every door at once, and an unspent invite is a
+    door: redeeming one sets a password AND `is_active = TRUE`, so a link handed
+    out an hour before the decision would walk the account straight back in.
+    Harmless while the only invites were the ones minted at account creation;
+    real since /admin/users started issuing them to accounts that already live.
+
+    Both statements are one statement on purpose. Two calls in sequence leave a
+    window — crash, disconnect, RLS refusal on the second — where the account is
+    off and the link is still good, which is precisely the state this exists to
+    prevent. `expires_at = NOW()` rather than `used_at`, because nobody redeemed
+    it: the audit trail should not have to guess which of the two happened.
+    """
+    sql = """
+        WITH switched_off AS (
+            UPDATE web_users SET is_active = FALSE WHERE id = %s RETURNING id
+        ), killed AS (
+            UPDATE web_invites SET expires_at = NOW()
+             WHERE web_user_id IN (SELECT id FROM switched_off)
+               AND used_at IS NULL AND expires_at > NOW()
+             RETURNING 1
         )
-        return await cur.fetchone() is not None
+        SELECT (SELECT count(*) FROM switched_off), (SELECT count(*) FROM killed)
+    """
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(sql, (user_id,))
+        row = await cur.fetchone()
+        n_users, n_invites = (int(row[0]), int(row[1])) if row else (0, 0)
+        return n_users > 0, n_invites
 
 
 async def reactivate(
