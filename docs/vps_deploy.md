@@ -570,23 +570,30 @@ bash deploy/backup_from_vps.sh
 git push origin main
 ssh cma@10.10.0.1 'cd /srv/cma && git pull --ff-only && git log --oneline -1'
 
-# 3. Схема. Суперюзер — cma, НЕ postgres: контейнер створено з POSTGRES_USER=cma.
-ssh cma@10.10.0.1 '
-  PW=$(grep "^POSTGRES_SUPERUSER_PASSWORD=" /srv/cma/.env | cut -d= -f2-)
-  docker exec -i -e PGPASSWORD="$PW" cma-postgres \
-      psql -U cma -d cma -q -v ON_ERROR_STOP=1 \
-      < /srv/cma/src/church_assistant/db/migrations/013_tenant_archive.sql
-  docker exec -e PGPASSWORD="$PW" cma-postgres \
-      psql -U cma -d cma -tAc "SELECT max(version) FROM schema_version;"
-'
+# 3. Схема — ТІЛЬКИ від root, у власній сесії. Див. попередження нижче.
+#    Суперюзер бази — cma, НЕ postgres: контейнер створено з POSTGRES_USER=cma.
+PW=$(grep "^POSTGRES_SUPERUSER_PASSWORD=" /srv/cma/.env | cut -d= -f2-)
+docker exec -i -e PGPASSWORD="$PW" cma-postgres \
+    psql -U cma -d cma -q -v ON_ERROR_STOP=1 \
+    < /srv/cma/src/church_assistant/db/migrations/013_tenant_archive.sql
+docker exec -e PGPASSWORD="$PW" cma-postgres \
+    psql -U cma -d cma -tAc "SELECT max(version) FROM schema_version;"
 
 # 4. Перезапуск — лише після того, як схема стала новою. Навпаки не можна:
 #    код, що чекає deleted_at, на старій схемі падає на кожному запиті.
+#    Це `cma` вміє сам: два юніти прописані в /etc/sudoers.d/cma-deploy.
 ssh cma@10.10.0.1 'sudo systemctl restart cma-web cma-telegram-bot'
 
 # 5. Звірка
 curl -s -o /dev/null -w '%{http_code}\n' https://cma.rechurch.org.ua/login
 ```
+
+⚠️ **Міграції `cma` застосувати не може, і не має вміти.** Docker-сокет
+належить root, а членство в групі `docker` рівносильне root — з неї монтується
+`/` у контейнер. Обміняти цю межу на зручність одного `docker exec` — значить
+віддати повний root назавжди заради команди, яку виконують раз на місяць. Права
+`cma` навмисно закінчуються на `systemctl restart` двох юнітів
+(`sudo -n -l` покаже точний список).
 
 ⚠️ **`git pull` на VPS робиться від `cma`, ніколи від root.** Один pull від root
 переписав `auth.py` як root-owned, і `cma-web` після цього падав із
