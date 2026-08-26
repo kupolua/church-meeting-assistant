@@ -47,10 +47,12 @@
                 >
             </label>
 
-            {# Free text, never a <select>: a dropdown would hand every
-               visitor the list of every church on the server. Its owner knows
-               the identifier — the invite page showed it while they set their
-               password — and the display name is accepted too. #}
+            {# Free text, never a <select>: a dropdown would hand every visitor
+               the list of every church on the server. A member knows their
+               church by NAME, so the hint leads with that; the identifier is
+               accepted too, and is what the invite page showed them. Since 015
+               this is reached only by two people sharing a name AND a password,
+               so it is rare enough that one extra question is the right price. #}
             {% if ask_church %}
             <label for="church">
                 Церква
@@ -64,8 +66,9 @@
                     autofocus
                     required
                 >
-                <small>Ідентифікатор церкви (наприклад <code>first-baptist</code>)
-                    або її назва. Ви бачили його на сторінці, де задавали пароль.</small>
+                <small>Назва вашої церкви — так, як вона написана у вас у панелі.
+                    Підійде і її ідентифікатор (наприклад <code>first-baptist</code>),
+                    якщо ви його знаєте.</small>
             </label>
             {% endif %}
 

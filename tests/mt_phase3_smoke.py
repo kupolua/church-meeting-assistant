@@ -102,7 +102,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from church_assistant.db import audit_repo, web_users_repo  # noqa: E402
 from church_assistant.db.connection import close_pool, get_pool  # noqa: E402
 from church_assistant.db.tenant_context import (  # noqa: E402
-    resolve_login_tenant,
+    login_tenants,
     tenant_cursor,
 )
 from church_assistant.shared import collections, tenant_paths  # noqa: E402
@@ -159,10 +159,10 @@ async def test_db_layer(pool) -> None:
     print("\n1. web_users — resolver + RLS isolation")
     print("-" * 66)
 
-    assert await resolve_login_tenant(pool, "anna") == (TENANT_A, 1)
-    assert await resolve_login_tenant(pool, "borys") == (TENANT_B, 1)
-    assert await resolve_login_tenant(pool, "nobody") == (None, 0)
-    ok("resolve_login_tenant routes an unshared login to its own church")
+    assert await login_tenants(pool, "anna") == [TENANT_A]
+    assert await login_tenants(pool, "borys") == [TENANT_B]
+    assert await login_tenants(pool, "nobody") == []
+    ok("login_tenants reports the one church an unshared login can be in")
 
     # Church A's context sees only Anna; Borys is invisible even by name.
     a_user = await web_users_repo.get_by_username(pool, TENANT_A, "anna")
@@ -201,28 +201,39 @@ async def test_db_layer(pool) -> None:
         full_name="Спільне Імʼя Б")
     ok("the same login may now exist in two churches (migration 014)")
 
-    assert await resolve_login_tenant(pool, "spilne") == (None, 2)
-    assert await resolve_login_tenant(pool, "spilne", "church-a") == (TENANT_A, 2)
-    assert await resolve_login_tenant(pool, "spilne", "church-b") == (TENANT_B, 2)
-    ok("a shared login resolves only once the church is named")
+    # And a second pair sharing a name but NOT a password — the ordinary case,
+    # and since 015 the one that must never be asked anything.
+    await web_users_repo.add_web_user(
+        pool, TENANT_A, username="riznyi",
+        password_hash=security.hash_password("riznyi-parol-AAA"),
+        full_name="Різні Паролі А")
+    await web_users_repo.add_web_user(
+        pool, TENANT_B, username="riznyi",
+        password_hash=security.hash_password("riznyi-parol-BBB"),
+        full_name="Різні Паролі Б")
 
-    # A church that does not hold the name is refused exactly like a church
-    # that does not exist — the caller must not be able to tell them apart.
-    assert await resolve_login_tenant(pool, "spilne", "church-off") == (None, 2)
-    assert await resolve_login_tenant(pool, "spilne", "no-such-church") == (None, 2)
+    assert await login_tenants(pool, "spilne") == [TENANT_A, TENANT_B]
+    assert await login_tenants(pool, "spilne", "church-a") == [TENANT_A]
+    assert await login_tenants(pool, "spilne", "church-b") == [TENANT_B]
+    ok("a shared login reports both churches, and narrows when one is named")
+
+    # A church that does not hold the name answers exactly like a church that
+    # does not exist — the caller must not be able to tell them apart.
+    assert await login_tenants(pool, "spilne", "church-off") == []
+    assert await login_tenants(pool, "spilne", "no-such-church") == []
     ok("naming the wrong church answers the same as naming a fictional one")
 
-    # The display name works too — people know it better than the identifier —
-    # but only while it points at one candidate.
-    assert await resolve_login_tenant(pool, "spilne", "Церква А") == (TENANT_A, 2)
+    # The display name works too — a member knows it better than the identifier
+    # — but only while it points at one candidate.
+    assert await login_tenants(pool, "spilne", "Церква А") == [TENANT_A]
     ok("the display name is accepted when it is unambiguous")
 
     # Candidates are ACTIVE accounts: an account nobody has claimed yet does
-    # not make somebody else's name ambiguous.
+    # not make somebody else's name shared.
     await web_users_repo.deactivate(pool, TENANT_B, b_id)
-    assert await resolve_login_tenant(pool, "spilne") == (TENANT_A, 1)
+    assert await login_tenants(pool, "spilne") == [TENANT_A]
     await web_users_repo.reactivate(pool, TENANT_B, b_id)
-    ok("an inactive account is not a candidate — no question is asked for it")
+    ok("an inactive account is not a candidate")
 
 
 
@@ -678,20 +689,34 @@ async def test_system_tenant(pool) -> None:
 
 def test_shared_login() -> None:
     """
-    The whole point of 014, over real HTTP: one login page for everyone, and
-    the church asked only when the name alone cannot answer.
+    One login page for everyone, and the church asked as rarely as possible.
 
-    `spilne` exists in church A and church B with the SAME password — the
-    worst case, and the likely one, since the person on both sides may well be
-    the same human reusing a password.
+    Two pairs of namesakes: `riznyi` with DIFFERENT passwords in church A and B,
+    and `spilne` with the SAME password in both. The password settles the first
+    pair by itself; only the second can reach the question.
     """
-    print("\n6b. Один вхід на всі церкви — питання про церкву")
+    print("\n6b. Один вхід на всі церкви — питання лише коли пароль не вирішує")
     print("-" * 66)
 
     from fastapi.testclient import TestClient
     from church_assistant.web.main import app
 
     SHARED = "spilnyi-parol-000"
+    HINT = "cma_church"
+
+    def only_hint(client) -> None:
+        """
+        Drop the session but keep the browser's church hint.
+
+        Read from the jar rather than by name: httpx keeps one entry per
+        (name, domain, path) and hands back a CookieConflict when several match,
+        which a real browser would have collapsed. The last one written is the
+        one that browser would send.
+        """
+        hints = [c.value for c in client.cookies.jar if c.name == HINT]
+        client.cookies.clear()
+        if hints:
+            client.cookies.set(HINT, hints[-1])
 
     with TestClient(app, follow_redirects=False) as client:
         # An unshared name is untouched: one field, one step, straight in.
@@ -699,33 +724,41 @@ def test_shared_login() -> None:
         assert r.status_code == 303 and security.SESSION_COOKIE in r.cookies
         ok("a login only one church uses still signs in in one step")
 
+        # ── The point of 015: the password already knows which church ──
+        for pw, church, other in (("riznyi-parol-AAA", "church-a", "church-b"),
+                                  ("riznyi-parol-BBB", "church-b", "church-a")):
+            client.cookies.clear()
+            r = client.post("/login", data={"username": "riznyi", "password": pw})
+            assert r.status_code == 303, (church, r.status_code, r.text[:200])
+            page = client.get("/dashboard").text
+            assert f"⛪ {church}" in page and other not in page, church
+            ok(f"«riznyi» + пароль церкви {church} → всередину, без питання")
+
+        # A typo on a shared name is a typo, not an interrogation. Asking a
+        # member for an identifier they have never seen, over a wrong password,
+        # is exactly what this design exists to avoid.
+        client.cookies.clear()
+        r = client.post("/login", data={"username": "riznyi",
+                                        "password": "ne-toi-parol-vzagali"})
+        assert r.status_code == 401
+        assert 'name="church"' not in r.text, "a wrong password must not ask anything"
+        ok("a wrong password on a shared name asks nothing — it just fails")
+
+        # ── The only case the password cannot settle ──
         client.cookies.clear()
         r = client.post("/login", data={"username": "spilne", "password": SHARED})
         assert r.status_code == 200, r.status_code
         assert 'name="church"' in r.text
         assert security.SESSION_COOKIE not in r.cookies
-        ok("a shared login is asked which church, not signed in")
+        ok("one name, one password, two people → the church is asked")
 
         # The password is never handed back to the browser — not in a hidden
         # field, not as a value. One retype beats a password in page source.
         assert SHARED not in r.text
         ok("the re-rendered form does not carry the password")
 
-        # And the question comes BEFORE any verification: a WRONG password
-        # gets the same question, so seeing it proves nothing about the
-        # password. This is the check that would fail if the flow were ever
-        # rewritten to "verify against every candidate, then ask".
-        client.cookies.clear()
-        r_bad = client.post("/login", data={"username": "spilne",
-                                            "password": "zovsim-ne-toi-parol"})
-        assert r_bad.status_code == 200 and 'name="church"' in r_bad.text
-        assert security.SESSION_COOKIE not in r_bad.cookies
-        ok("the question is asked before the password is checked, not after")
-
         # Naming the church resolves it — and the two accounts are genuinely
         # separate people in separate churches.
-        # The church badge in the top bar is rendered from the SESSION's tenant,
-        # so it is the page's own answer to "which church am I in".
         for church, other in (("church-a", "church-b"), ("church-b", "church-a")):
             client.cookies.clear()
             r = client.post("/login", data={"username": "spilne",
@@ -735,6 +768,23 @@ def test_shared_login() -> None:
             assert f"⛪ {church}" in page and other not in page, church
             ok(f"«{church}» named → signed into that church, and only it")
 
+        # ── The browser remembers, so nobody is asked twice ──
+        # The last loop left a hint pointing at church B.
+        only_hint(client)
+        r = client.post("/login", data={"username": "spilne", "password": SHARED})
+        assert r.status_code == 303, "the hint should have answered for them"
+        assert f"⛪ church-b" in client.get("/dashboard").text
+        ok("the browser's remembered church answers the question next time")
+
+        # A hint must never turn a valid login into a refusal — a shared
+        # computer, or somebody who moved church, still gets in.
+        only_hint(client)                       # still pointing at church B
+        r = client.post("/login", data={"username": "riznyi",
+                                        "password": "riznyi-parol-AAA"})
+        assert r.status_code == 303, "a wrong hint must fall through, not refuse"
+        assert "⛪ church-a" in client.get("/dashboard").text
+        ok("a hint for the wrong church falls through instead of failing")
+
         # The display name works too — it is what people actually know.
         client.cookies.clear()
         r = client.post("/login", data={"username": "spilne",
@@ -743,8 +793,8 @@ def test_shared_login() -> None:
         ok("the church's display name is accepted as well as its identifier")
 
         # A church that does not hold the name answers exactly like a wrong
-        # password: same message, same status. Otherwise the field becomes a
-        # way to ask "is this name in THAT church?".
+        # password. Otherwise the field becomes a way to ask "is this name in
+        # THAT church?".
         client.cookies.clear()
         r_wrong_church = client.post("/login", data={
             "username": "spilne", "password": SHARED, "church": "church-off"})
@@ -755,15 +805,11 @@ def test_shared_login() -> None:
         assert security.SESSION_COOKIE not in r_wrong_church.cookies
         ok("a wrong church answers exactly like a wrong password")
 
-        # Having answered wrongly, the person still gets the field back —
-        # losing it would strand them on a form they cannot complete.
-        assert 'name="church"' in r_wrong_church.text
-        ok("the church field survives a failed attempt")
-
         # Nothing here leaks the list of churches: the field is free text, and
         # church B is never named to somebody probing church A's name.
-        assert "church-b" not in r_wrong_church.text
-        assert "<select" not in r_wrong_church.text
+        client.cookies.clear()
+        asked = client.post("/login", data={"username": "spilne", "password": SHARED})
+        assert "church-b" not in asked.text and "<select" not in asked.text
         ok("no church is ever listed on the login page")
 
 

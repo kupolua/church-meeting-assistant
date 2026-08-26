@@ -80,30 +80,29 @@ async def resolve_tenant_for_telegram(
             return int(row[0]) if row and row[0] is not None else None
 
 
-async def resolve_login_tenant(
+async def login_tenants(
     pool: AsyncConnectionPool, username: str, church: Optional[str] = None
-) -> tuple[Optional[int], int]:
+) -> list[int]:
     """
-    Which church should this login be checked against? (tenant_id, candidates).
+    Which churches could this login belong to? Ordered, possibly empty.
 
-    The login-side twin of resolve_tenant_for_telegram (migration 014, replacing
-    006's resolve_tenant_for_web_user): the same SECURITY DEFINER bootstrap,
-    because web_users is RLS-gated too and login has no tenant context yet.
-    Returns only the tenant id — the password hash is read afterwards INSIDE
-    that tenant's context, so this call can leak at most "such a username
-    exists", and now also "in more than one church".
+    The login-side twin of resolve_tenant_for_telegram (migration 015, replacing
+    014's resolve_login_tenant): the same SECURITY DEFINER bootstrap, because
+    web_users is RLS-gated and login has no tenant context yet.
 
-    tenant_id is None when the name is unknown, or when it is shared and the
-    caller has not said which church (or named one that does not hold it). The
-    count is what tells those apart: 0 means nobody, >1 means ask.
+    It reports candidates rather than picking one, because the password is what
+    picks — the caller checks it against each and asks the person only when two
+    answer to the same name and the same secret. Hashes are still read afterwards
+    inside each tenant's own context, so this call leaks at most "such a username
+    exists", and now also how many churches carry it.
+
+    With `church` given, the list is narrowed to that one (by identifier, or by
+    display name while it points at a single candidate) — empty if it holds no
+    such account, which the caller must not distinguish from a wrong password.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT tenant_id, n_candidates FROM resolve_login_tenant(%s, %s)",
-                (username, church),
+                "SELECT tenant_id FROM login_tenants(%s, %s)", (username, church),
             )
-            row = await cur.fetchone()
-            if row is None:
-                return None, 0
-            return (int(row[0]) if row[0] is not None else None), int(row[1])
+            return [int(r[0]) for r in await cur.fetchall()]

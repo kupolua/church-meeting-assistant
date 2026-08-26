@@ -40,6 +40,7 @@ from church_assistant.db import (
 from church_assistant.db.connection import get_pool
 from church_assistant.shared.logger import Logger
 from church_assistant.web import auth, headers, security
+from church_assistant.web.routes import auth as auth_routes
 from church_assistant.web.main import templates
 
 
@@ -171,7 +172,10 @@ async def invite_redeem(
         account = await web_users_repo.get_by_id(pool, tenant_id, user_id)
         landing = "/admin/users" if account and account["role"] == "admin" else "/dashboard"
     response = RedirectResponse(landing, status_code=303)
-    auth.set_session_cookie(
-        response, session_token, secure=headers.cookie_secure(request)
-    )
+    secure = headers.cookie_secure(request)
+    auth.set_session_cookie(response, session_token, secure=secure)
+    # Leave the church hint here above all: this is the browser of somebody who
+    # has just chosen their first password, and who is the least likely person
+    # in the system to know their church's identifier. Now they never have to.
+    auth_routes._remember_church(response, tenant_id, secure=secure)
     return response

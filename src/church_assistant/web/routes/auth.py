@@ -32,7 +32,7 @@ those failures: same message, same burnt scrypt, so it cannot be used to ask
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Form, Request
@@ -42,7 +42,7 @@ from church_assistant.db import (
     audit_repo, tenants_repo, web_sessions_repo, web_users_repo,
 )
 from church_assistant.db.connection import get_pool
-from church_assistant.db.tenant_context import resolve_login_tenant
+from church_assistant.db.tenant_context import login_tenants
 from church_assistant.shared.logger import Logger
 from church_assistant.web import auth, headers, security
 from church_assistant.web.main import templates
@@ -56,9 +56,46 @@ GENERIC_ERROR = "Невірний логін або пароль."
 LOCKED_ERROR = "Забагато невдалих спроб. Спробуйте за кілька хвилин."
 # Not an error — a question. The name is fine, it just belongs to more than one
 # church, and only its owner knows which. Nothing has been checked yet.
+# Which church this browser signed into last. A hint, never an authority: it
+# only decides who to check the password against first, and the password still
+# has to match that church's row. A stale or hand-edited value costs one extra
+# scrypt round and nothing else, so it needs no signature.
+CHURCH_HINT_COOKIE = "cma_church"
+CHURCH_HINT_MAX_AGE = 365 * 24 * 3600
+
 AMBIGUOUS_NOTICE = (
     "Такий логін є в кількох церквах. Вкажіть свою — і введіть пароль ще раз."
 )
+
+
+def _hinted_tenant(request: Request) -> Optional[int]:
+    """The church this browser used last, if it left a readable trace."""
+    raw = request.cookies.get(CHURCH_HINT_COOKIE)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _remember_church(response, tenant_id: int, *, secure: bool) -> None:
+    """
+    Leave the hint, so this browser is never asked again.
+
+    Set on every successful sign-in, including the one that ends an invite —
+    which is the important one: the person who has just chosen their password
+    knows their church least, and that flow already knows it for them.
+    """
+    response.set_cookie(
+        CHURCH_HINT_COOKIE,
+        str(tenant_id),
+        max_age=CHURCH_HINT_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path="/",
+    )
 
 # Brute-force brake. scrypt already costs ~100 ms per attempt, so this is about
 # stopping a slow grind, not a fast one — hence generous limits and a short
@@ -85,10 +122,18 @@ def _is_locked(key: str) -> bool:
     return len(recent) >= MAX_FAILURES
 
 
-def _record_failure(key: str) -> None:
+def _record_failure(key: str, checks: int = 1) -> None:
+    """
+    Spend `checks` of the budget — one entry per password verification, not per
+    submitted form. Since 015 a single submission is checked against every
+    account carrying the name, so counting submissions would let one request buy
+    N guesses. The person who pays for that is a namesake with a typo, who gets
+    fewer tries than someone with an unshared login; the person it protects is
+    whoever among the namesakes has the weakest password.
+    """
     cutoff = time.time() - LOCKOUT_WINDOW
     recent = [t for t in _failures.get(key, []) if t > cutoff]
-    recent.append(time.time())
+    recent.extend([time.time()] * max(1, checks))
     _failures[key] = recent
 
 
@@ -168,70 +213,119 @@ async def login_submit(
 
     pool = await get_pool()
 
-    # ─── 1. Tenant bootstrap (bypasses RLS by design) ────────
-    tenant_id, n_candidates = await resolve_login_tenant(
-        pool, username, church or None
-    )
+    # ─── 1. Who could this be? (bypasses RLS by design) ──────
+    # Candidates, not a decision: since 015 the password is what picks between
+    # namesakes, and it is checked against each of them below.
+    candidates = await login_tenants(pool, username, church or None)
 
-    # A shared name and nobody has said which church. Ask — and charge the
-    # brute-force budget for it, because a free answer here is an oracle for
-    # "is this name in more than one church?" that costs the prober nothing.
-    if tenant_id is None and n_candidates > 1 and not church:
-        _record_failure(key)
-        return _render_login(
-            request, username=username, ask_church=True,
-            notice=AMBIGUOUS_NOTICE, next_url=next_url,
-        )
-
-    if tenant_id is None:
-        # Unknown account — or a church that does not hold this name, which
-        # must be indistinguishable from it. Burn the same scrypt round a real
-        # check would, so timing doesn't reveal which usernames exist or where.
+    if not candidates:
+        # Unknown account — or a church that does not hold this name, which must
+        # be indistinguishable from it. Burn the same scrypt round a real check
+        # would, so timing doesn't reveal which usernames exist or where.
         security.waste_time_like_a_real_check()
         _record_failure(key)
-        # No tenant_id: we could not resolve one, so this goes to `_system`.
+        # No tenant: nothing to scope this to, so it goes to `_system`.
         # (The bad-password branch below DOES know the church and says so.)
         await _logger.warn(
             "web.login_failed",
             message=f"unknown web user {username!r}",
             metadata={"username": username, "reason": "unknown_user",
-                      "candidates": n_candidates, "church_given": bool(church)},
+                      "church_given": bool(church)},
         )
         return _render_login(
             request, error=GENERIC_ERROR, username=username, church=church,
-            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
+            next_url=next_url, status_code=401,
         )
 
-    # ─── 2. Everything below is tenant-scoped (RLS active) ───
-    user_row = await web_users_repo.get_by_username(pool, tenant_id, username)
-    if user_row is None or not user_row["is_active"]:
-        security.waste_time_like_a_real_check()
-        _record_failure(key)
-        return _render_login(
-            request, error=GENERIC_ERROR, username=username, church=church,
-            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
-        )
+    # ─── 2. Check the password — inside each candidate's own tenant ──
+    # The hint first, when this browser has one: a returning member pays one
+    # scrypt round instead of N, and the church question never reaches them.
+    # It grants nothing on its own — the password still has to match that
+    # church's row — so a stale or forged value only costs the extra round.
+    hint = _hinted_tenant(request)
+    order = candidates if hint not in candidates else (
+        [hint] + [t for t in candidates if t != hint]
+    )
 
-    if not security.verify_password(password, user_row["password_hash"]):
-        _record_failure(key)
-        await audit_repo.record(
-            pool,
-            tenant_id=tenant_id,
-            action="auth.login_failed",
-            actor=f"web:{username}",
-            resource=f"web_users/{user_row['id']}",
-            detail={"reason": "bad_password"},
-        )
+    async def _row(tid: int):
+        row = await web_users_repo.get_by_username(pool, tid, username)
+        return row if row is not None and row["is_active"] else None
+
+    if hint in candidates:
+        row = await _row(hint)
+        if row is not None and security.verify_password(
+            password, row["password_hash"]
+        ):
+            return await _finish_login(request, pool, hint, row, key, next_url)
+        # The hint was wrong for this person — a shared computer, or they moved
+        # church. Fall through and check the rest; a wrong hint must never turn
+        # a valid login into a refusal.
+        order = [t for t in order if t != hint]
+
+    # No early exit: stopping at the first match would let response time say
+    # WHICH namesake answered, which is the one thing the church question is
+    # there to keep private.
+    matches: list[tuple[int, Any]] = []
+    checked = 0
+    for tid in order:
+        row = await _row(tid)
+        if row is None:
+            continue
+        checked += 1
+        if security.verify_password(password, row["password_hash"]):
+            matches.append((tid, row))
+
+    if not matches:
+        _record_failure(key, checks=max(1, checked))
+        if len(candidates) == 1:
+            # One church, so the failure has an address and its board should see
+            # it. With namesakes there is no telling who was aimed at.
+            row = await _row(candidates[0])
+            if row is not None:
+                await audit_repo.record(
+                    pool,
+                    tenant_id=candidates[0],
+                    action="auth.login_failed",
+                    actor=f"web:{username}",
+                    resource=f"web_users/{row['id']}",
+                    detail={"reason": "bad_password"},
+                )
         await _logger.warn(
             "web.login_failed",
             message=f"bad password for {username!r}",
-            metadata={"username": username, "reason": "bad_password"},
-            tenant_id=tenant_id,
+            metadata={"username": username, "reason": "bad_password",
+                      "candidates": len(candidates)},
         )
+        # Deliberately no church field here: a wrong password is a wrong
+        # password, and asking a member for an identifier they have never seen
+        # — over a typo — is what this design exists to avoid.
         return _render_login(
             request, error=GENERIC_ERROR, username=username, church=church,
-            ask_church=n_candidates > 1, next_url=next_url, status_code=401,
+            next_url=next_url, status_code=401,
         )
+
+    if len(matches) > 1:
+        # Two people, one name, one password. This is the only case the password
+        # cannot settle, so now — and only now — the person is asked. The
+        # question says nothing about the password: it names no church, and the
+        # same page appears whichever of them is signing in.
+        _record_failure(key, checks=max(1, checked))
+        return _render_login(
+            request, username=username, ask_church=True,
+            notice=AMBIGUOUS_NOTICE, next_url=next_url,
+        )
+
+    tenant_id, user_row = matches[0]
+    return await _finish_login(request, pool, tenant_id, user_row, key, next_url)
+
+
+async def _finish_login(
+    request: Request, pool: Any, tenant_id: int, user_row: Any,
+    key: str, next_url: str,
+):
+    """The part after the password is right: church still open, then a session."""
+    username = str(user_row["username"])
+    church = ""
 
     # ─── 3. The church itself must still be active ───────────
     # `_system` (tenant 0) is inactive by design since 007, so that nobody signs
@@ -252,7 +346,7 @@ async def login_submit(
         return _render_login(
             request,
             error="Доступ до цієї церкви призупинено. Зверніться до адміністратора.",
-            username=username, church=church, ask_church=n_candidates > 1,
+            username=username, church=church,
             next_url=next_url, status_code=403,
         )
 
@@ -293,7 +387,9 @@ async def login_submit(
     await web_sessions_repo.purge_expired(pool)
 
     response = RedirectResponse(next_url, status_code=303)
-    auth.set_session_cookie(response, token, secure=headers.cookie_secure(request))
+    secure = headers.cookie_secure(request)
+    auth.set_session_cookie(response, token, secure=secure)
+    _remember_church(response, tenant_id, secure=secure)
     return response
 
 
