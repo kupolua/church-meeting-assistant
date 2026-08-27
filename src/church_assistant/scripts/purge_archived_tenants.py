@@ -54,12 +54,26 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+
 from church_assistant.db import tenants_repo
 from church_assistant.db.connection import close_pool, get_pool
 from church_assistant.ingestion.config import get_artifact_sync_remote
 from church_assistant.shared import collections, tenant_paths
 from church_assistant.shared.logger import Logger
 
+
+# Load .env before anything reads it, for the reason rag.py:55 spells out: these
+# settings are only correct if something earlier in the import chain happened to
+# call load_dotenv(), and today that something is get_pool(). It works, by
+# accident of ordering — and the accident is worth removing HERE above anywhere
+# else, because the fallback for QDRANT_URL is localhost, this machine's Qdrant
+# lives on the VPS, and a purge pointed at a Qdrant that does not exist reports
+# "не прибрано" in the same routine tone it uses for a service that is briefly
+# down, while a church's collections stay exactly where they were.
+# It never overrides an existing variable, so tests that set os.environ first
+# are unaffected.
+load_dotenv()
 
 _logger = Logger(process="purge")
 
