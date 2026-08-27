@@ -131,6 +131,72 @@
 {% endif %}
 
 <section class="dash-section">
+    <h5 class="dash-section-label">🔑 Відновлення доступу</h5>
+
+    {% if recovered %}
+    {# Shown once, like a founding link: the table keeps only the hash. #}
+    <div class="church-created">
+        <p><strong>✓ Посилання для «{{ recovered.name }}»</strong>
+           <small>(<code>{{ recovered.slug }}</code>)</small></p>
+        <table class="church-credentials">
+            <tr><td>Логін</td><td><code>{{ recovered.username }}</code></td></tr>
+        </table>
+        <p><code class="church-password">{{ recovered.url }}</code></p>
+        {% if recovered.created_new %}
+        <p class="admin-msg is-warn">
+            У церкві не було жодного адміністратора, тому додано
+            <strong>нового</strong>. Він оживе, коли людина перейде за
+            посиланням і задасть пароль.
+        </p>
+        {% endif %}
+        {% if recovered.suspended %}
+        <p class="admin-msg is-warn">
+            ⚠ Церква <strong>призупинена</strong> — за посиланням пароль
+            задасться, але всередину не пустить. Натисніть «відновити», перш
+            ніж передавати його.
+        </p>
+        {% endif %}
+        <p class="admin-msg is-warn">
+            Спрацьовує <strong>один раз</strong> і діє {{ recovered.hours }} год.
+            Попереднє посилання цього акаунта більше не діє. Людина
+            <strong>сама задає пароль</strong> — ви його не дізнаєтесь. Показане
+            один раз: у базі лише хеш.
+        </p>
+    </div>
+    {% endif %}
+
+    {# The church is a field, not a row: picking it and naming a login are one
+       decision. No inline handler could fold it into the URL anyway — CSP is
+       `script-src 'self'`. #}
+    <form class="admin-create-form"
+          hx-post="/platform/recover-admin"
+          hx-target="#platform-panel" hx-swap="innerHTML"
+          hx-confirm="Видати посилання для входу? Церква побачить це у своєму журналі.">
+        <select name="church" required aria-label="Церква">
+            {% for c in churches %}
+            <option value="{{ c.id }}">{{ c.name }} ({{ c.slug }})</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="username" maxlength="40"
+               autocapitalize="none" autocomplete="off"
+               placeholder="логін адміністратора (не обовʼязково)">
+        <input type="text" name="full_name" autocomplete="off"
+               placeholder="Імʼя — лише якщо адміна нема зовсім">
+        <button type="submit">🔑 Видати посилання</button>
+    </form>
+
+    <p><small>
+        Коли адміністратор церкви забув пароль, а видати собі нове посилання
+        нікому — це єдиний спосіб повернути церкві доступ. Ви отримуєте
+        <strong>посилання, не пароль</strong>: секрет задає його власник, і ви
+        його не побачите. Якщо адміністратор у церкві один, логін можна не
+        вказувати; якщо їх кілька — вкажіть, бо навмання не видається. Якщо не
+        лишилось жодного, вкажіть логін та імʼя — буде додано нового.
+        <strong>Кожна видача пишеться в журнал самої церкви.</strong>
+    </small></p>
+</section>
+
+<section class="dash-section">
     <h5 class="dash-section-label">🏛 Нова церква</h5>
 
     {% if created %}

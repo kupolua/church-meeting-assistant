@@ -2311,6 +2311,243 @@ def test_archive_church(ctx: dict) -> None:
 
 
 
+# ─────────────────────────────────────────────────────────────
+# 16. Recovering a church that locked itself out
+# ─────────────────────────────────────────────────────────────
+def test_recover_admin(ctx: dict) -> None:
+    """
+    The operator can hand a church back its front door — and only that.
+
+    A church issues its own links, but only an admin can, so a church whose last
+    admin forgets their password has nobody inside left to ask and no email to
+    ask instead. The panel can now re-reach one. The checks that matter are the
+    limits: a LINK and never a password, the old secret untouched until the link
+    is spent, no guessing between namesake admins, and a row in the CHURCH'S own
+    log so the crossing is never quiet.
+
+    Runs on the church test_archive_church leaves behind — restored from the
+    archive and suspended, with one admin, `parol-pastora-1`.
+    """
+    print("\n16. Відновлення доступу церкви")
+    print("-" * 66)
+
+    import re as _re
+
+    from fastapi.testclient import TestClient
+
+    from church_assistant.db import web_users_repo
+    from church_assistant.web import security as _sec
+    from church_assistant.web.main import app
+
+    tid, SLUG = ctx["tid"], ctx["slug"]
+    CH_ADMIN, ROOT, ROOT_PW = ctx["church_admin"], ctx["root"], ctx["root_pw"]
+    OLD_PW = "parol-pastora-1"
+
+    def _client() -> TestClient:
+        return TestClient(app, follow_redirects=False)
+
+    def _as_root(client: TestClient) -> None:
+        assert client.post(
+            "/login", data={"username": ROOT, "password": ROOT_PW}
+        ).status_code == 303
+
+    def _link(body: str) -> str:
+        m = _re.search(r'class="church-password">([^<]+)<', body)
+        assert m and "/invite/" in m.group(1), body[:400]
+        return m.group(1).strip().replace("http://testserver", "")
+
+    # ── Only the platform may ask ─────────────────────────────
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": OLD_PW}
+        ).status_code != 303, "a suspended church still accepts sign-in"
+
+    with _client() as client:
+        _as_root(client)
+        assert client.post(f"/platform/churches/{tid}/resume").status_code == 200
+
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": OLD_PW}
+        ).status_code == 303
+        r = client.post("/platform/recover-admin", data={"church": tid})
+        assert r.status_code == 404, r.status_code
+        ok("recovery: a church admin cannot reach it, not even for their own church")
+
+    # ── One admin: no need to name them, and they are named back ──
+    with _client() as client:
+        _as_root(client)
+        r = client.post("/platform/recover-admin", data={"church": tid})
+        assert r.status_code == 200, r.text[:300]
+        assert CH_ADMIN in r.text, "the panel did not say whose link this is"
+        first_link = _link(r.text)
+        assert OLD_PW not in r.text, "the operator was shown a password"
+        ok("one admin: a link is issued without naming anybody, and echoes who")
+
+    # Issuing takes nothing away yet — the reason an operator reaches for this
+    # is a lockout, not a revocation, and a link may never be followed.
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": OLD_PW}
+        ).status_code == 303
+        ok("issuing a link changes nothing: the old password still works")
+
+    # ── A second link kills the first (the shared invite invariant) ──
+    with _client() as client:
+        _as_root(client)
+        second_link = _link(client.post(
+            "/platform/recover-admin", data={"church": tid}).text)
+        assert second_link != first_link
+
+    with _client() as client:
+        r = client.post(first_link, data={"password": "nova-parol-11",
+                                          "password_repeat": "nova-parol-11"})
+        assert r.status_code != 303, "the superseded link still worked"
+        ok("re-issuing expires the previous link — never two doors at once")
+
+    # ── Redeeming: the person sets their own secret, old sessions die ──
+    # One client throughout: the cookie is captured, put aside while the link is
+    # spent, and offered again afterwards. Two live TestClients would mean two
+    # app lifespans over one pool singleton.
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": OLD_PW}
+        ).status_code == 303
+        stale_cookie = client.cookies[_sec.SESSION_COOKIE]
+        assert client.get("/meetings").status_code == 200
+
+        client.cookies.clear()
+        r = client.post(second_link, data={"password": "nova-parol-22",
+                                           "password_repeat": "nova-parol-22"})
+        assert r.status_code == 303, r.text[:300]
+        ok("the admin redeems the link and is signed straight in")
+
+        client.cookies.clear()
+        client.cookies.set(_sec.SESSION_COOKIE, stale_cookie)
+        assert client.get("/meetings").status_code != 200, "an old session survived"
+        ok("redeeming ended the sessions the old password was holding open")
+
+    with _client() as client:
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": OLD_PW}
+        ).status_code != 303, "the old password still works after recovery"
+        assert client.post(
+            "/login", data={"username": CH_ADMIN, "password": "nova-parol-22"}
+        ).status_code == 303
+        ok("the new password is the only one that works, and nobody else set it")
+
+    # ── The church can see it happened ────────────────────────
+    async def _church_log() -> list:
+        pool = await get_pool()
+        try:
+            return await audit_repo.list_recent(pool, tid, limit=50)
+        finally:
+            await close_pool()
+
+    events = asyncio.run(_church_log())
+    rec = [e for e in events if e["action"] == "platform.admin_recovery_issued"]
+    assert len(rec) == 2, [e["action"] for e in events][:10]
+    assert ROOT in str(rec[0]["actor"]), rec[0]["actor"]
+    assert rec[0]["detail"]["username"] == CH_ADMIN
+    ok("every issue is written to the church's own log, naming the operator")
+
+    # ── Namesake admins: it refuses rather than guesses ───────
+    def sec_hash() -> str:
+        return _sec.hash_password(_sec.new_session_token())
+
+    async def _second_admin() -> None:
+        pool = await get_pool()
+        try:
+            await web_users_repo.add_web_user(
+                pool, tid, username="drugiy-pastor",
+                password_hash=sec_hash(), full_name="Другий Пастор", role="admin")
+        finally:
+            await close_pool()
+
+    asyncio.run(_second_admin())
+
+    with _client() as client:
+        _as_root(client)
+        r = client.post("/platform/recover-admin", data={"church": tid})
+        assert "/invite/" not in r.text, "it picked one of two admins on its own"
+        assert CH_ADMIN in r.text and "drugiy-pastor" in r.text
+        ok("two admins: it refuses and lists them rather than guess")
+
+        r = client.post("/platform/recover-admin",
+                        data={"church": tid, "username": "nemaye-takoho"})
+        assert "/invite/" not in r.text and CH_ADMIN in r.text
+        ok("an admin login that does not exist is refused, with the real ones shown")
+
+        r = client.post("/platform/recover-admin",
+                        data={"church": tid, "username": "drugiy-pastor"})
+        assert "/invite/" in r.text and "drugiy-pastor" in r.text
+        ok("naming one of several admins issues that one's link")
+
+    # ── No admins left: the case the CLI used to be the only answer to ──
+    async def _switch_off_admins() -> None:
+        pool = await get_pool()
+        try:
+            for a in await web_users_repo.list_admins(pool, tid):
+                await web_users_repo.set_role(pool, tid, int(a["id"]), "member")
+        finally:
+            await close_pool()
+
+    asyncio.run(_switch_off_admins())
+
+    with _client() as client:
+        _as_root(client)
+        r = client.post("/platform/recover-admin", data={"church": tid})
+        assert "/invite/" not in r.text and "не лишилось" in r.text
+        ok("no admin at all: it asks for a login and a name instead of failing")
+
+        r = client.post("/platform/recover-admin",
+                        data={"church": tid, "username": CH_ADMIN,
+                              "full_name": "Хтось Інший"})
+        assert "/invite/" not in r.text, "it created a duplicate login"
+        ok("a login already used in that church is refused, roles are not handed out")
+
+        r = client.post("/platform/recover-admin",
+                        data={"church": tid, "username": "novyi-pastor",
+                              "full_name": "Новий Пастор"})
+        assert "/invite/" in r.text, r.text[:300]
+        new_link = _link(r.text)
+        ok("a church with no admin gets a new one, as a link and not a password")
+
+    async def _new_admin_row() -> dict:
+        pool = await get_pool()
+        try:
+            u = await web_users_repo.get_by_username(pool, tid, "novyi-pastor")
+            return dict(u)
+        finally:
+            await close_pool()
+
+    row = asyncio.run(_new_admin_row())
+    assert row["role"] == "admin" and not row["is_active"]
+    assert not row["is_platform_admin"], "a recovered admin inherited the platform"
+    ok("the created account is admin, inactive until claimed, with no platform powers")
+
+    with _client() as client:
+        r = client.post(new_link, data={"password": "parol-novoho-33",
+                                        "password_repeat": "parol-novoho-33"})
+        assert r.status_code == 303 and r.headers["location"] == "/admin/users"
+        assert client.get("/platform").status_code == 404
+        ok("they land in their own church's admin page, and see no fleet panel")
+
+    # ── An archived church is not recoverable this way ────────
+    with _client() as client:
+        _as_root(client)
+        assert client.post(f"/platform/churches/{tid}/archive",
+                           data={"confirm_slug": SLUG}).status_code == 200
+        r = client.post("/platform/recover-admin", data={"church": tid})
+        assert "/invite/" not in r.text and "архів" in r.text.lower()
+        ok("an archived church is refused: restore it first, on purpose")
+
+        r = client.post("/platform/recover-admin", data={"church": 0})
+        assert "/invite/" not in r.text
+        ok("the platform tenant itself is not a church you can recover")
+
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -2353,7 +2590,9 @@ def main() -> int:
         test_manual_speaker()
         test_query_queue()
         test_artifact_sync()
-        test_archive_church(test_create_church())
+        church_ctx = test_create_church()
+        test_archive_church(church_ctx)
+        test_recover_admin(church_ctx)
         asyncio.run(phase_audit())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)

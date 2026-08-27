@@ -52,6 +52,38 @@ async def create(
         return int(row[0])
 
 
+async def issue(
+    pool: AsyncConnectionPool,
+    tenant_id: int,
+    *,
+    web_user_id: int,
+    token_hash: str,
+    created_by: str,
+) -> int:
+    """
+    Replace whatever link an account had with this one. Returns the invite id.
+
+    expire-then-create, in this order, is the invariant: an account must never
+    hold two working links at once. The usual reason to issue a second is that
+    the first went somewhere it should not have, and leaving it alive keeps open
+    the exact door the re-issue was meant to close.
+
+    It lives here rather than in the routes because there are now two callers
+    with different authority — a church admin inside their own church, and the
+    platform operator recovering one from outside — and the invariant belongs to
+    invites, not to either caller. Two copies of it is one copy too many: the
+    day one grows a condition, the other silently stops enforcing it.
+    """
+    await expire_pending_for_user(pool, tenant_id, web_user_id)
+    return await create(
+        pool,
+        tenant_id,
+        web_user_id=web_user_id,
+        token_hash=token_hash,
+        created_by=created_by,
+    )
+
+
 async def resolve(
     pool: AsyncConnectionPool, token_hash: str,
 ) -> Optional[dict[str, Any]]:

@@ -135,6 +135,30 @@ async def list_all(
         return [dict(r) for r in await cur.fetchall()]
 
 
+async def list_admins(
+    pool: AsyncConnectionPool, tenant_id: int,
+) -> list[dict[str, Any]]:
+    """
+    A church's admin accounts — who they are and whether they are switched on.
+
+    Four columns, never the hash, and never a member. Its caller is the platform
+    panel's recovery route, which has to answer one question: is there still
+    somebody here who can let people in? Handing that route list_all() would put
+    every member of every church one attribute access away from an operator who
+    is allowed to know neither their names nor their number.
+
+    Disabled admins are included, because a church whose only admin was switched
+    off is precisely a church that needs recovering, and redeeming an invite
+    turns the account back on.
+    """
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT id, username, full_name, is_active FROM web_users "
+            "WHERE role = 'admin' ORDER BY is_active DESC, created_at ASC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
 async def count_active(pool: AsyncConnectionPool, tenant_id: int) -> int:
     async with tenant_cursor(pool, tenant_id) as cur:
         await cur.execute("SELECT count(*) FROM web_users WHERE is_active = TRUE")

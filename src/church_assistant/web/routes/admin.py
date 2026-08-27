@@ -258,18 +258,15 @@ async def _issue_invite(
     """
     Mint a single-use link for an account. Returns (url, hours it lives).
 
-    Any live invite for the same account is expired first. Two working links for
-    one person is one more than anybody intended: the usual reason to re-issue
-    is that the first went somewhere it should not have, and leaving it alive
-    keeps open the exact door the admin came here to close.
+    Any live invite for the same account is expired first — see
+    web_invites_repo.issue, which owns that invariant now that the platform
+    panel issues links too.
 
     The token exists in this response and nowhere else — the table gets its
     hash, the log gets neither.
     """
-    await web_invites_repo.expire_pending_for_user(pool, tenant_id, user_id)
-
     token = security.new_session_token()
-    await web_invites_repo.create(
+    await web_invites_repo.issue(
         pool,
         tenant_id,
         web_user_id=user_id,
