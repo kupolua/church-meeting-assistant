@@ -235,6 +235,37 @@ async def test_db_layer(pool) -> None:
     await web_users_repo.reactivate(pool, TENANT_B, b_id)
     ok("an inactive account is not a candidate")
 
+    # ── 017: the state of the CHURCH counts too, and the two are not the
+    #    same test. archive() never touches accounts, so before 017 an
+    #    archived church went on holding its people's names — and the live
+    #    namesake was asked to choose between their own church and one that
+    #    no longer existed.
+    from church_assistant.db import tenants_repo as _tenants
+
+    await _tenants.archive(pool, TENANT_B)
+    assert await login_tenants(pool, "spilne") == [TENANT_A]
+    ok("an archived church stops holding a login name (017)")
+
+    # Naming it explicitly is refused the same way a fictional church is: the
+    # form must not become a way to ask whether a name lives in there.
+    assert await login_tenants(pool, "spilne", "church-b") == []
+    assert await login_tenants(pool, "spilne", "Церква Б") == []
+    ok("naming the archived church answers like naming one that never existed")
+
+    await _tenants.restore(pool, TENANT_B)          # comes back suspended…
+    await _tenants.set_active(pool, TENANT_B, True)  # …and letting people in is its own step
+
+    # ⚠️ THE REGRESSION THIS GUARDS. The filter is deleted_at, never is_active.
+    # A SUSPENDED church must stay a candidate so its members reach the message
+    # that says access is paused — and `_system` (tenant 0) is inactive by
+    # design, so filtering on is_active would take the platform login with it.
+    await _tenants.set_active(pool, TENANT_B, False)
+    assert await login_tenants(pool, "spilne") == [TENANT_A, TENANT_B], \
+        "a suspended church stopped being a candidate — 017 filtered is_active"
+    assert await login_tenants(pool, "spilne", "church-b") == [TENANT_B]
+    await _tenants.set_active(pool, TENANT_B, True)
+    ok("a suspended church is still a candidate — suspension is not the archive")
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -811,6 +842,58 @@ def test_shared_login() -> None:
         asked = client.post("/login", data={"username": "spilne", "password": SHARED})
         assert "church-b" not in asked.text and "<select" not in asked.text
         ok("no church is ever listed on the login page")
+
+
+
+    # ── 017, end to end: the case found by hand on 27.08 ──
+    # Outside the TestClient block on purpose. The pool is a module singleton
+    # bound to whichever loop opened it, and the app's lifespan owns it while a
+    # client is alive — so tenant state is changed between clients, each of
+    # which opens and closes its own, exactly as section 14 does.
+    import asyncio as _aio
+
+    from church_assistant.db import tenants_repo as _tenants
+
+    async def _tenant_state(tid: int, *, archived: bool) -> None:
+        pool = await get_pool()
+        try:
+            if archived:
+                await _tenants.archive(pool, tid)
+            else:
+                # restore() brings it back suspended; letting people in is its
+                # own decision, so the test has to make it too.
+                await _tenants.restore(pool, tid)
+                await _tenants.set_active(pool, tid, True)
+        finally:
+            await close_pool()
+
+    _aio.run(_tenant_state(TENANT_B, archived=True))
+    try:
+        # Archive church B and the question disappears: a church in the archive
+        # stops holding the name. Before 017 the live member of church A was
+        # asked to choose between their own church and one that no longer
+        # existed — and answering with the dead one was met with "доступ
+        # призупинено. Зверніться до адміністратора", of a church that has none.
+        with TestClient(app, follow_redirects=False) as client:
+            r = client.post("/login", data={"username": "spilne", "password": SHARED})
+            assert r.status_code == 303, (r.status_code, r.text[:200])
+            assert 'name="church"' not in r.text
+            assert "⛪ church-a" in client.get("/dashboard").text
+            ok("archived church B: the namesake in A signs straight in, unasked")
+
+        # And the archived church's own member gets the ordinary refusal — the
+        # same one a church that never held the name gives, not a separate
+        # sentence that would announce the church's state to anyone asking.
+        with TestClient(app, follow_redirects=False) as client:
+            r = client.post("/login", data={"username": "spilne",
+                                            "password": SHARED, "church": "church-b"})
+            assert r.status_code == 401, r.status_code
+            assert "Невірний логін або пароль" in r.text
+            assert "призупинено" not in r.text, \
+                "an archived church is being reported as suspended"
+            ok("its own member gets the generic refusal, not 'призупинено'")
+    finally:
+        _aio.run(_tenant_state(TENANT_B, archived=False))
 
 
 # ─────────────────────────────────────────────────────────────
