@@ -2548,6 +2548,158 @@ def test_recover_admin(ctx: dict) -> None:
 
 
 
+# ─────────────────────────────────────────────────────────────
+# 17. Purging a church — and the churches that cannot be purged
+# ─────────────────────────────────────────────────────────────
+async def test_tenant_purge(pool) -> None:
+    """
+    Deleting a church has to work, and has to be impossible for the wrong one.
+
+    Until 016 neither was true. Every foreign key into tenants was NO ACTION, so
+    the purge died on the first audit_log row and had never once completed; and
+    the refusal meant to protect the founding corpus asked where its artifact
+    folder sat, which stopped being the shared data root when the folders moved
+    on 25.08 — leaving `default` guarded by nothing but the same foreign keys
+    the fix was about to remove.
+
+    So the two halves are tested together, because shipping either alone is the
+    bug: the cascade is what makes purge possible, the trigger is what keeps it
+    aimed.
+    """
+    print("\n17. Видалення церкви — і церкви, які видалити не можна")
+    print("-" * 66)
+
+    import psycopg
+
+    from church_assistant.db import (
+        audit_repo, tenants_repo, web_invites_repo, web_sessions_repo,
+        web_users_repo,
+    )
+    from church_assistant.db.tenant_context import tenant_cursor
+    from church_assistant.scripts import purge_archived_tenants as purge
+    from church_assistant.web import security as _sec
+
+    TABLES = ("audit_log", "errors", "ingestion_jobs", "logs", "queries",
+              "users", "web_invites", "web_sessions", "web_users")
+
+    async def _delete_tenant(tid: int) -> None:
+        """Its own connection: a refusal aborts the transaction it happens in."""
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("DELETE FROM tenants WHERE id = %s", (tid,))
+
+    async def _counts(tid: int) -> dict:
+        out = {}
+        async with tenant_cursor(pool, tid) as cur:
+            for t in TABLES:
+                await cur.execute(f"SELECT count(*) FROM {t}")
+                out[t] = (await cur.fetchone())[0]
+        return out
+
+    async def _populate(tid: int) -> None:
+        uid = await web_users_repo.add_web_user(
+            pool, tid, username="purge-victim",
+            password_hash=_sec.hash_password("x" * 12),
+            full_name="Той, кого приберуть", role="admin")
+        await web_sessions_repo.create(
+            pool, tid, web_user_id=uid,
+            token_hash=_sec.hash_token(_sec.new_session_token()),
+            ttl_seconds=3600, user_agent="smoke", ip="127.0.0.1")
+        await web_invites_repo.create(
+            pool, tid, web_user_id=uid,
+            token_hash=_sec.hash_token(_sec.new_session_token()),
+            created_by="smoke")
+        await audit_repo.record(
+            pool, tenant_id=tid, action="smoke.purge_fixture",
+            actor="smoke", resource=f"web_users/{uid}", detail={})
+        async with tenant_cursor(pool, tid) as cur:
+            await cur.execute(
+                "INSERT INTO logs (tenant_id, level, process, event, message) "
+                "VALUES (%s, 'INFO', 'cli', 'smoke.purge_fixture', 'fixture')",
+                (tid,))
+
+    # ── The founding corpus cannot be deleted, by either name ──
+    for tid, what in ((0, "_system"), (1, "the founding corpus")):
+        try:
+            await _delete_tenant(tid)
+            raise AssertionError(f"tenant {tid} ({what}) was deleted")
+        except psycopg.errors.RaiseException:
+            pass
+    ok("tenant 0 and tenant 1 are refused by the database itself")
+
+    assert purge._protected_reason(1, "anything") is not None
+    assert purge._protected_reason(0, "anything") is not None
+    assert purge._protected_reason(9, "default") is not None, \
+        "LEGACY_TENANT_SLUG is not protected by name"
+    assert purge._protected_reason(9, "some-church") is None
+    ok("the script refuses them too — before a vector or a file is touched")
+
+    # Renaming must not unprotect it: the guard is by id, not by slug.
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT slug FROM tenants WHERE id = 1")
+            was = (await cur.fetchone())[0]
+            await cur.execute("UPDATE tenants SET slug = 'renamed-away' WHERE id = 1")
+    try:
+        await _delete_tenant(1)
+        raise AssertionError("renaming the founding church unprotected it")
+    except psycopg.errors.RaiseException:
+        pass
+    finally:
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE tenants SET slug = %s WHERE id = 1", (was,))
+    ok("renaming it does not unprotect it — the guard is on the id")
+
+    # ── A live church with people in it is not deletable at all ──
+    live_id = await tenants_repo.create_tenant(
+        pool, slug=f"smoke-live-{secrets.token_hex(3)}", name="Жива церква")
+    await _populate(live_id)
+    try:
+        await _delete_tenant(live_id)
+        raise AssertionError("a live church with accounts was deleted outright")
+    except psycopg.errors.RaiseException:
+        pass
+    ok("a church that is not archived and has people cannot be deleted")
+
+    # ── …but a half-registered empty one still can (delete_if_empty) ──
+    empty_id = await tenants_repo.create_tenant(
+        pool, slug=f"smoke-empty-{secrets.token_hex(3)}", name="Порожня")
+    assert await tenants_repo.delete_if_empty(pool, empty_id) is True
+    ok("an empty, never-claimed tenant is still removable — registration rollback")
+
+    assert await tenants_repo.delete_if_empty(pool, live_id) is False
+    ok("delete_if_empty still refuses a church that has accounts")
+
+    # ── Archived: the purge completes, and takes every table with it ──
+    await tenants_repo.archive(pool, live_id)
+    before = await _counts(live_id)
+    assert before["web_users"] and before["web_sessions"] and before["web_invites"]
+    assert before["audit_log"] and before["logs"], before
+    await _delete_tenant(live_id)
+    ok(f"an archived church deletes, cascading {sum(before.values())} rows")
+
+    # Counted through the tenant's own context, not with a bare WHERE: the
+    # policies cast current_setting('app.current_tenant') to bigint, so a query
+    # on these tables outside any context dies on the empty string rather than
+    # answering. (That is the same trap the trigger fell into a moment ago.)
+    after = await _counts(live_id)
+    assert not any(after.values()), after
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT count(*) FROM tenants WHERE id = %s", (live_id,))
+            assert (await cur.fetchone())[0] == 0
+    ok("nothing survives in any of the nine tables, audit_log included")
+
+    # The founding corpus is untouched by all of the above.
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT slug FROM tenants WHERE id = 1")
+            assert (await cur.fetchone()) is not None, "the founding church is gone"
+    ok("`default` is still there, which is the only result that matters")
+
+
+
 async def phase_db() -> None:
     pool = await get_pool()
     try:
@@ -2562,6 +2714,18 @@ async def phase_audit() -> None:
     try:
         await test_audit(pool)
         await test_system_tenant(pool)
+    finally:
+        await close_pool()
+
+
+async def phase_purge() -> None:
+    """
+    Last, and on its own pool: it deletes tenants, so nothing may run after it
+    that still expects the sandbox seed to be intact.
+    """
+    pool = await get_pool()
+    try:
+        await test_tenant_purge(pool)
     finally:
         await close_pool()
 
@@ -2594,6 +2758,7 @@ def main() -> int:
         test_archive_church(church_ctx)
         test_recover_admin(church_ctx)
         asyncio.run(phase_audit())
+        asyncio.run(phase_purge())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
 
