@@ -240,11 +240,20 @@ stop_services() {
 
 # Stop the infra containers this script manages (Postgres + Qdrant).
 # Ollama is a native service, not a container — left untouched.
+#
+# Runs in BOTH roles. In the worker role the application talks to the VPS, so
+# these two are not serving it — but they are still running here, and stopping
+# them is the whole point of --stop. What they are still good for locally is
+# worth knowing before someone "tidies up" this call again: cma-postgres holds
+# the cma_mt3 test sandbox and is borrowed by deploy/backup_from_vps.sh as a
+# pg_dump/pg_restore client of the right version. Both start again on demand.
 stop_containers() {
     if [[ -z "$DOCKER" ]] || ! "$DOCKER" info >/dev/null 2>&1; then
         warn "Docker недоступний — контейнери не чіпаю"
         return
     fi
+    [[ "$ROLE" == "worker" ]] && \
+        info "роль worker: застосунок ходить на VPS, але контейнери тут — зупиняю їх"
     for spec in "$PG_CONTAINER:Postgres" "$QDRANT_CONTAINER:Qdrant"; do
         local name="${spec%%:*}" desc="${spec##*:}"
         if [[ "$("$DOCKER" inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
@@ -311,12 +320,18 @@ case "$MODE" in
     --stop)
         hdr "⏹  Зупинка church_assistant-сервісів"
         stop_services
-        if [[ "$ROLE" == "worker" ]]; then
-            info "контейнери не чіпав — Postgres і Qdrant на VPS"
-        else
-            hdr "⏹  Зупинка контейнерів"
-            stop_containers
-        fi
+        # ⚠️ NOT skipped in the worker role. It was, and the reasoning looked
+        # right — "Postgres and Qdrant are on the VPS now, there is nothing here
+        # to stop" — but it confuses what the APPLICATION uses with what is
+        # RUNNING ON THIS LAPTOP. The role moved the database; it did not remove
+        # the container. cma-postgres is still here (the test sandbox lives in
+        # it, and backup_from_vps.sh borrows it as a pg_dump client), and so are
+        # the langfuse containers, and both hold memory this machine needs for
+        # Gemma. Since the early return also swallowed stop_extra_containers,
+        # the one option whose entire purpose is "give the laptop back" stopped
+        # working precisely on the machine that needs it.
+        hdr "⏹  Зупинка контейнерів"
+        stop_containers
         ok "готово"
         exit 0
         ;;
