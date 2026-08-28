@@ -513,6 +513,64 @@ async def edit_ruling(
     return RedirectResponse(f"/meetings/{date}", status_code=303)
 
 
+@router.post("/{date}/protocol/approve")
+async def approve_protocol(request: Request, date: str, confirm: str = Form("")):
+    """
+    Freeze the minutes. One way, and the database is what makes it so.
+
+    ⚠️ IT ASKS FOR THE NUMBER TO BE TYPED, not for a click. This is the archive
+    pattern (platform.py), and it belongs here more than there: archiving keeps
+    a church's data for a year and can be undone with one button, while approval
+    can never be undone at all — 018's trigger refuses every later edit, from
+    this route, from a future one, and from psql at midnight. By the second time
+    a person sees a confirm dialog the hand answers it before the eye reads it;
+    typing "07-09-2026/1" is not something the hand does on its own.
+
+    An empty protocol cannot be approved. Not paternalism — a protocol with no
+    agenda is a mis-click on a page somebody opened to look at, and freezing it
+    would mean opening a second one for the same date, which the unique index
+    refuses.
+    """
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    number = protocols_repo.number(protocol)
+
+    if protocol["status"] == "approved":
+        return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+    if confirm.strip() != number:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Щоб затвердити протокол, введіть його номер «{number}» точно.",
+        )
+
+    items = await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="Порожній протокол затвердити не можна — немає жодного питання.",
+        )
+
+    await protocols_repo.set_status(
+        pool, tenant_id, int(protocol["id"]), "approved",
+        approved_by=current_user(request).user_id,
+    )
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="protocol.approved",
+        actor=current_user(request).actor,
+        resource=f"meeting_protocols/{protocol['id']}",
+        detail={"meeting_date": date, "number": number, "items": len(items)},
+    )
+    await _logger.warn(
+        "protocol.approved",
+        message=f"{current_user(request).username} затвердив протокол {number} "
+                f"({len(items)} питань) — редагування закрито назавжди",
+        tenant_id=tenant_id,
+    )
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
 @router.get("/{date}/topics.pdf")
 async def meeting_topics_pdf(request: Request, date: str):
     """
@@ -542,6 +600,55 @@ async def meeting_topics_pdf(request: Request, date: str):
     disposition = (
         f'attachment; filename="{ascii_name}"; '
         f"filename*=UTF-8''{quote(filename)}"
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": disposition},
+    )
+
+
+@router.get("/{date}/protocol.pdf")
+async def meeting_protocol_pdf(request: Request, date: str):
+    """
+    The minutes, as the document a council signs.
+
+    ⚠️ APPROVED ONLY. A draft is a working copy — Gemma's wording still in half
+    the fields, votes not yet typed, the chair mid-edit — and a PDF is the form
+    in which a document leaves the system and stops being correctable. Handing
+    one out before approval means a file circulating with "Ukraines Ukraines"
+    in it under a chair's name, which is precisely what the whole degeneration
+    filter exists to prevent. Everyone can read the draft on the page; only the
+    approved one becomes a file.
+
+    Readable by anyone in the church, not just the chair: it is their minutes.
+    """
+    pool = await get_pool()
+    tenant_id = current_tenant(request)
+
+    protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Протокол не відкрито")
+    if protocol["status"] != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Протокол ще не затверджено — PDF буде після затвердження.",
+        )
+
+    items = await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
+    number = protocols_repo.number(protocol)
+    try:
+        pdf = pdf_export.build_protocol_pdf(protocol, items, number)
+    except pdf_export.FontNotFound as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    # "07-09-2026/1" carries a slash, which is a path separator in every
+    # filesystem this will land on.
+    safe_number = number.replace("/", "-")
+    ascii_name = f"protocol-{date}.pdf"
+    disposition = (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(f'Протокол {safe_number}.pdf')}"
     )
     return Response(
         content=pdf,

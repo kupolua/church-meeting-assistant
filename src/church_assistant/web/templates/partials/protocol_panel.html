@@ -241,17 +241,49 @@
     </form>
     {% endif %}
 
+    {# ─── Підписи ──────────────────────────────────────────── #}
+    <h5 class="dash-section-label">Підписи</h5>
+    <table class="protocol-signatures">
+        <tr><td>Голова зустрічі</td>
+            <td>{{ protocol.chair_name or '—' }}</td>
+            <td class="sig-line">_______________</td></tr>
+        <tr><td>Секретар</td>
+            <td>{{ protocol.secretary or '—' }}</td>
+            <td class="sig-line">_______________</td></tr>
+    </table>
+    <p><small>
+        Підписується на роздруку. Підпис як дія в системі — окреме рішення,
+        воно в беклозі (п.15).
+    </small></p>
+
     {% if is_chair and protocol.status != 'approved' %}
     <div class="protocol-foot">
         <button type="submit" form="protocol-header">Зберегти</button>
         <small>Зберігає секретаря, кворум і список присутніх.
             Питання порядку денного зберігаються кожне окремо.</small>
     </div>
-    {% endif %}
 
-    <p><small>
-        «Слухали / Вирішили / Голосували / Постановили», підписи й затвердження —
-        наступні кроки.
-    </small></p>
+    {# Approval is the last thing on the page, below the signatures, because
+       that is the order in which the document is finished — and deliberately
+       far from "Зберегти", which a hand reaches for without looking. #}
+    <div class="protocol-approve">
+        <form method="post"
+              action="/meetings/{{ current_date }}/protocol/approve">
+            <label>Щоб затвердити, введіть номер протоколу
+                <input type="text" name="confirm" required autocomplete="off"
+                       placeholder="{{ protocol_number }}"
+                       aria-label="Номер протоколу для підтвердження"></label>
+            <button type="submit" class="dash-btn dash-btn-danger">
+                🔒 Затвердити протокол
+            </button>
+        </form>
+        <p class="admin-msg is-warn">
+            Після затвердження протокол <strong>не редагується ніколи</strong> —
+            ані цією сторінкою, ані будь-якою іншою: зміну відхиляє сама база.
+            Номер друкується не з недовіри, а тому, що скасувати цю дію
+            неможливо.
+        </p>
+    </div>
+    {% endif %}
     {% endif %}
 </section>

@@ -201,11 +201,100 @@ def build_topics_pdf(
     )
 
 
+def build_protocol_pdf(
+    protocol: dict,
+    items: Sequence[dict],
+    number: str,
+) -> bytes:
+    """
+    Render the formal minutes: header, questions, signatures.
+
+    Composed from build_document_pdf rather than drawn separately. That function
+    already carries the two things a Cyrillic protocol needs and nobody wants to
+    debug twice — a font that actually contains the alphabet, and a bullet font
+    that does too (a Latin-1 bullet extracts as "(cid:127)", so copying text out
+    of an archived protocol yields mojibake at the start of every point).
+
+    ⚠️ The signatures are a final SECTION, not a footer, because the underlying
+    renderer has no footer. That is honest for a document that is signed after
+    it is read: the lines belong at the end of the text, not at the bottom of
+    whichever page the text happened to stop on.
+    """
+    d = protocol["meeting_date"]
+    attendees = [a for a in (protocol.get("attendees") or []) if str(a).strip()]
+
+    head = [f"<b>Дата:</b> {d:%d.%m.%Y}"]
+    if protocol.get("chair_name"):
+        head.append(f"<b>Голова зустрічі:</b> {_escape(protocol['chair_name'])}")
+    if protocol.get("secretary"):
+        head.append(f"<b>Секретар:</b> {_escape(protocol['secretary'])}")
+    if attendees:
+        head.append(f"<b>Присутні ({len(attendees)}):</b> "
+                    + ", ".join(_escape(str(a)) for a in attendees))
+    if protocol.get("quorum"):
+        head.append(f"<b>Кворум:</b> {_escape(protocol['quorum'])}")
+
+    sections: list[Topic] = []
+    for n, item in enumerate(items, 1):
+        body: list[str] = []
+        if item.get("status") == "not_considered":
+            body.append("**Не розглянуто.**")
+        if (item.get("heard") or "").strip():
+            body.append("**Слухали:** " + item["heard"].strip())
+        if (item.get("resolved") or "").strip():
+            body.append("**Вирішили:** " + item["resolved"].strip())
+        if item.get("votes_for") is not None:
+            body.append(
+                f"**Голосували:** за — {item['votes_for']}, "
+                f"проти — {item['votes_against']}, "
+                f"утрималось — {item['votes_abstain']}"
+            )
+        rulings = item.get("rulings") or []
+        if rulings:
+            body.append("**Постановили:**")
+            for r in rulings:
+                tail = []
+                if (r.get("responsible") or "").strip():
+                    tail.append(f"відповідальний — {r['responsible'].strip()}")
+                if (r.get("due") or "").strip():
+                    tail.append(f"термін — {r['due'].strip()}")
+                suffix = f" ({'; '.join(tail)})" if tail else ""
+                body.append(f"- {r['text'].strip()}{suffix}")
+        if not body:
+            # A question with nothing under it is a real state — it was on the
+            # agenda and the meeting reached nothing worth writing. Saying so
+            # beats a heading followed by silence, which reads as a bug.
+            body.append("Без записів.")
+        # No "Питання N." prefix: build_document_pdf already numbers sections,
+        # and the first version printed "1. Питання 1. Бюджет".
+        sections.append(Topic(title=item["question"], body="\n".join(body)))
+
+    # ⚠️ The signatures are NOT a section. build_document_pdf numbers what it is
+    # given, and the first version printed "2. Підписи" — reading as though the
+    # council had signing on its agenda. They go in the footer note instead,
+    # which is also where a reader expects them.
+    signatures = (
+        f"<b>Голова зустрічі:</b> {_escape(protocol.get('chair_name') or '')}"
+        "  ______________________<br/><br/>"
+        f"<b>Секретар:</b> {_escape(protocol.get('secretary') or '')}"
+        "  ______________________"
+    )
+
+    return build_document_pdf(
+        f"Протокол № {number}",
+        sections,
+        header_note="<br/>".join(head),
+        footer_note=signatures,
+        empty_message="У протоколі немає жодного питання.",
+    )
+
+
 def build_document_pdf(
     title: str,
     sections: Iterable[Topic],
     header_note: Optional[str] = None,
     empty_message: str = "Документ порожній.",
+    footer_note: Optional[str] = None,
 ) -> bytes:
     """
     Render a title + numbered sections to PDF bytes.
@@ -286,6 +375,18 @@ def build_document_pdf(
                 story.append(Paragraph(text, styles["bullet"], bulletText="•"))
             else:
                 story.append(Paragraph(text, styles["subbullet"], bulletText="–"))
+
+    # Closing block — signatures for a protocol, nothing for anything else. It
+    # is flowed with the text rather than pinned to the page bottom on purpose:
+    # a document is signed after it is read, so the lines belong where the
+    # reading ends, not wherever the last page happened to run out.
+    if footer_note:
+        story.append(Spacer(1, 8 * mm))
+        story.append(HRFlowable(
+            width="100%", thickness=0.6, color=colors.HexColor("#cccccc"),
+            spaceBefore=0, spaceAfter=3 * mm,
+        ))
+        story.append(Paragraph(footer_note, styles["intro"]))
 
     story.append(Spacer(1, 4 * mm))
 
