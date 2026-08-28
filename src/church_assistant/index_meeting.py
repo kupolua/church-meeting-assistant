@@ -680,8 +680,15 @@ def index_one_meeting(
 
     # Connect Qdrant
     log(f"\n  Connecting to Qdrant...")
+    # ⚠️ NOT localhost. It was, hardcoded, and that stopped being true on 24.08
+    # when Qdrant moved to the VPS with the plane split — silently, because
+    # nothing has been ingested since 18.08 and no other code path uses this
+    # line. The next real upload would have died here, after three hours of
+    # transcription and analysis, on the last step. QDRANT_URL is what the rest
+    # of the project reads (shared/rag.py, health.py); this is that, and the
+    # localhost default now means "no QDRANT_URL set", not "the server is here".
     from qdrant_client import QdrantClient
-    qdrant = QdrantClient(host="localhost", port=6333)
+    qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 
     for kind in ALL_KINDS:
         ensure_collection(qdrant, names[kind])

@@ -1297,6 +1297,49 @@ def test_sessions() -> None:
 # 9. Idle timeout, Secure cookie, and the self-service sessions page
 # ─────────────────────────────────────────────────────────────
 
+def test_no_pinned_service_addresses() -> None:
+    """
+    Nothing may pin a service address in code — the addresses moved once.
+
+    index_meeting.py and query.py both built their Qdrant client as
+    `QdrantClient(host="localhost", port=6333)`. That was true until 24.08, when
+    the plane split moved Qdrant to the VPS, and then it was silently false: the
+    web's own queries go through shared/rag.py (which reads QDRANT_URL), so
+    nothing complained, and nothing had been ingested since 18.08 to notice. The
+    next upload would have failed on the last step, after three hours of
+    transcription — and re-indexing from artifacts, which is the recovery path
+    after restoring a backup, could not run at all.
+
+    A grep, not a unit test, because the failure is a literal in source and the
+    only reliable moment to catch it is before it ships.
+    """
+    print("\n9b. Жодної зашитої адреси сервісу в коді")
+    print("-" * 66)
+
+    import re as _re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent / "src" / "church_assistant"
+    # host= together with an explicit port is the shape that pins an address.
+    # `url=os.getenv("QDRANT_URL", "http://localhost:6333")` is the correct form
+    # and is not matched: the literal there is a default, not a destination.
+    pinned = _re.compile(r'Client\(\s*host\s*=\s*["\']')
+    offenders = []
+    for f in sorted(root.rglob("*.py")):
+        for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if pinned.search(line):
+                offenders.append(f"{f.relative_to(root)}:{i}: {line.strip()}")
+    assert not offenders, "зашита адреса сервісу:\n  " + "\n  ".join(offenders)
+    ok("жоден клієнт не будується з host=\"...\" — адреси лише з оточення")
+
+    # And the ones that read it must agree on the variable and the default.
+    for mod in ("index_meeting.py", "query.py"):
+        text = (root / mod).read_text(encoding="utf-8")
+        assert 'os.getenv("QDRANT_URL"' in text, f"{mod} не читає QDRANT_URL"
+    assert 'QDRANT_URL' in (root / "shared" / "rag.py").read_text(encoding="utf-8")
+    ok("index_meeting, query і rag читають ту саму QDRANT_URL")
+
+
 def test_hardening() -> None:
     print("\n9. Idle timeout / Secure cookie / «мої сесії»")
     print("-" * 66)
@@ -2832,6 +2875,7 @@ def main() -> int:
         test_shared_login()      # ditto
         test_admin_ui()          # ditto
         test_sessions()
+        test_no_pinned_service_addresses()
         test_hardening()
         test_pdf_export()
         test_manual_speaker()

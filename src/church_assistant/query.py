@@ -376,8 +376,11 @@ def run_query(
     # If reranking, pull a wider candidate pool (4×limit) then narrow.
     pool_size = limit * RERANK_POOL_MULTIPLIER if rerank else limit
     log(f"  Searching Qdrant (pool {pool_size})...", "dim")
+    # Same hardcoded address, same date it stopped being true — see the note in
+    # index_meeting.py. The web's own queries go through shared/rag.py, which
+    # reads QDRANT_URL correctly, so only this CLI was affected.
     from qdrant_client import QdrantClient
-    client = QdrantClient(host="localhost", port=6333)
+    client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
 
     # `collection` names a kind; the tenant decides whose index of that kind.
     full_collection = collections.collection_name(
