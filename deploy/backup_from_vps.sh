@@ -96,4 +96,5 @@ find "$DEST" -maxdepth 1 -type f -empty \( -name 'cma-*.dump' -o -name 'roles-*.
 
 echo
 ok "бекап у $DEST ($(du -sh "$DEST" | cut -f1))"
-echo "  відновлення: deploy/migrate/import_to_vps.sh або pg_restore -d cma <dump>"
+echo "  відновлення: docs/restore_drill.md (перевірена процедура, 28.08)"
+echo "  ⚠️  roles-*.sql перепаролює ролі КЛАСТЕРА — лише в окремий контейнер"
