@@ -36,7 +36,8 @@ from psycopg_pool import AsyncConnectionPool
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db import tenants_repo
-from church_assistant.ingestion import artifact_sync, stages
+from church_assistant.ingestion import artifact_sync
+from church_assistant.ingestion import protocol_draft, stages
 from church_assistant.ingestion.paths import meeting_dir_for
 from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.ingestion.paths import resolve_for
@@ -207,6 +208,26 @@ async def _run_analysis(
         metadata={"indexed": auto_index, "polished": str(paths.polished)},
         tenant_id=tenant_id,
     )
+
+    # ── "Слухали", drafted from the topics that now exist ────────
+    #
+    # AFTER mark_completed and in its own try, deliberately. The meeting is
+    # processed and usable at this point; a draft is a convenience laid on top.
+    # Failing the job over it would throw away three hours of transcription and
+    # analysis to save the chair some typing — and the retry would redo all of
+    # it. The chair writes "Слухали" by hand either way if this is quiet.
+    try:
+        report = await protocol_draft.draft_heard(
+            pool, tenant_id, str(job["meeting_date"]), meeting_dir,
+        )
+        if report:
+            await progress("protocol", "Чернетка «Слухали» готова")
+    except Exception as e:
+        await _log.warn(
+            "protocol.draft_failed",
+            message=f"job #{job_id} ({job['meeting_date']}): {type(e).__name__}: {e}",
+            tenant_id=tenant_id,
+        )
 
 
 # ─────────────────────────────────────────────────────────────

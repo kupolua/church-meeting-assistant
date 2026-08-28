@@ -2569,6 +2569,68 @@ def test_root_as_namesake() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 19. Reading Gemma's answer back, believing nothing
+# ─────────────────────────────────────────────────────────────
+def test_protocol_draft_parse() -> None:
+    """
+    The parser between Gemma and the minutes.
+
+    The call itself needs Ollama and two minutes, so it is not in this suite —
+    but the part that decides what gets WRITTEN is pure, and it is the part that
+    can quietly put another meeting's wording under a question nobody proofreads
+    again. A topic index Gemma invented, a question number that does not exist,
+    a topic handed to two questions at once: each is a sentence in a signed
+    document, so each is checked here rather than trusted there.
+    """
+    print("\n19. Розбір відповіді Gemma для «Слухали»")
+    print("-" * 66)
+
+    from church_assistant.ingestion.protocol_draft import _parse
+
+    got = _parse('{"1": [1, 3], "2": [2], "inshe": [4]}', n_items=2, n_topics=4)
+    assert got == {1: [1, 3], 2: [2]}, got
+    ok("звичайна відповідь розбирається, «inshe» відкидається")
+
+    # Gemma answers with JSON, and sometimes with JSON wrapped in politeness.
+    got = _parse('Ось розподіл:\n```json\n{"1": [2]}\n```\nСподіваюсь допоміг.',
+                 n_items=1, n_topics=3)
+    assert got == {1: [2]}, got
+    ok("JSON знаходиться всередині зайвого тексту")
+
+    # A topic number that does not exist would attach nothing — or worse, the
+    # wrong thing — to a question in a document somebody signs.
+    got = _parse('{"1": [1, 99, 0, -2]}', n_items=1, n_topics=3)
+    assert got == {1: [1]}, got
+    ok("вигаданий номер теми відкидається, справжній лишається")
+
+    # An agenda item that does not exist: the agenda is written by a person and
+    # Gemma may not extend it.
+    got = _parse('{"1": [1], "7": [2]}', n_items=1, n_topics=2)
+    assert got == {1: [1]}, got
+    ok("неіснуюче питання порядку денного ігнорується")
+
+    # Rule 3: one topic belongs to one item. First claim wins, so the result
+    # cannot depend on which order the model happened to emit its keys in.
+    got = _parse('{"1": [1, 2], "2": [2, 3]}', n_items=2, n_topics=3)
+    assert got == {1: [1, 2], 2: [3]}, got
+    assert sorted(i for v in got.values() for i in v) == [1, 2, 3]
+    ok("тема не потрапляє у два питання одночасно")
+
+    got = _parse('{"1": ["2", null, {}, [1]]}', n_items=1, n_topics=3)
+    assert got == {1: [2]}, got
+    ok("сміття замість номерів не ламає розбір")
+
+    for bad in ("зовсім не JSON", "", "тут нема фігурних дужок"):
+        try:
+            _parse(bad, n_items=1, n_topics=1)
+            raise AssertionError(f"порожня відповідь {bad!r} пройшла як валідна")
+        except ValueError:
+            pass
+    ok("відповідь без JSON — помилка, а не тихо порожній розподіл")
+
+
+
+# ─────────────────────────────────────────────────────────────
 # 16. Recovering a church that locked itself out
 # ─────────────────────────────────────────────────────────────
 def test_recover_admin(ctx: dict) -> None:
@@ -3016,6 +3078,7 @@ def main() -> int:
         test_archive_church(church_ctx)
         test_recover_admin(church_ctx)
         test_root_as_namesake()
+        test_protocol_draft_parse()
         asyncio.run(phase_audit())
         asyncio.run(phase_purge())
     finally:

@@ -65,7 +65,11 @@
         інтерфейсу: зміну відхиляє сама база.
     </p>
     {% elif is_chair %}
-    <form class="protocol-header-form" method="post"
+    {# The form has no submit button of its own — it lives at the foot of the
+       section, past the agenda, because that is where a person finishes
+       reading. Associated by id rather than by nesting: a <form> may not
+       contain another <form>, and the agenda items each need their own. #}
+    <form id="protocol-header" class="protocol-header-form" method="post"
           action="/meetings/{{ current_date }}/protocol/header">
         <label>Секретар
             <input type="text" name="secretary" autocomplete="off"
@@ -79,7 +83,6 @@
                absent to it, and a quorum cannot rest on that. #}
             <textarea name="attendees" rows="6"
                       placeholder="Павло Кулаковський">{{ protocol.attendees | join('\n') }}</textarea></label>
-        <button type="submit">Зберегти</button>
     </form>
     {% else %}
     <p><small>Протокол веде
@@ -178,6 +181,14 @@
                placeholder="Наступне питання порядку денного">
         <button type="submit">+ Додати питання</button>
     </form>
+    {% endif %}
+
+    {% if is_chair and protocol.status != 'approved' %}
+    <div class="protocol-foot">
+        <button type="submit" form="protocol-header">Зберегти</button>
+        <small>Зберігає секретаря, кворум і список присутніх.
+            Питання порядку денного зберігаються кожне окремо.</small>
+    </div>
     {% endif %}
 
     <p><small>
