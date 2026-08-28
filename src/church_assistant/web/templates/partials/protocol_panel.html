@@ -13,14 +13,18 @@
            the section, past the signatures, because it cannot be undone and a
            button that freezes a document should not sit where a mis-click
            reaches for "download". #}
-        {% if protocol.status == 'approved' %}
+        {# The draft downloads too. Circulating it for agreement happens BEFORE
+           approval, and approval cannot be undone — refusing to export a draft
+           would have forced the chair to freeze the document before anybody was
+           allowed to read it. The file is stamped instead of withheld. #}
         <a class="dash-btn" href="/meetings/{{ current_date }}/protocol.pdf">
-            ⬇ Скачати протокол у PDF
+            {% if protocol.status == 'approved' %}⬇ Скачати протокол у PDF
+            {% else %}⬇ Скачати проект протоколу (PDF){% endif %}
         </a>
-        {% else %}
+        {% if protocol.status != 'approved' %}
         <button class="dash-btn" disabled
-                title="Буде доступно, коли зробимо розсилку (беклог 13)">
-            ✉ Розіслати проект протоколу всім учасникам
+                title="Автоматична розсилка — беклог 13. Поки що: скачати PDF і надіслати самому.">
+            ✉ Розіслати учасникам
         </button>
         {% endif %}
         {% endif %}

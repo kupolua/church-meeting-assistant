@@ -613,13 +613,19 @@ async def meeting_protocol_pdf(request: Request, date: str):
     """
     The minutes, as the document a council signs.
 
-    ⚠️ APPROVED ONLY. A draft is a working copy — Gemma's wording still in half
-    the fields, votes not yet typed, the chair mid-edit — and a PDF is the form
-    in which a document leaves the system and stops being correctable. Handing
-    one out before approval means a file circulating with "Ukraines Ukraines"
-    in it under a chair's name, which is precisely what the whole degeneration
-    filter exists to prevent. Everyone can read the draft on the page; only the
-    approved one becomes a file.
+    ⚠️ A DRAFT RENDERS TOO, and the first version refusing it was a design
+    error, not caution. Circulating the draft for agreement is the step BEFORE
+    approval, and approval is irreversible — so a chair who could only export an
+    approved protocol would have had to freeze the document before anyone was
+    allowed to read it, which inverts the whole review.
+
+    The concern that produced the refusal was real: a draft still carries
+    Gemma's wording in half its fields, and a file is the form in which a
+    document leaves the system and stops being correctable. It is answered by
+    STAMPING rather than withholding — "ПРОЕКТ" in the title, a warning as the
+    first line, and a diagonal watermark on every page, because a draft gets
+    printed and forwarded a page at a time to people who never saw the covering
+    message.
 
     Readable by anyone in the church, not just the chair: it is their minutes.
     """
@@ -629,12 +635,6 @@ async def meeting_protocol_pdf(request: Request, date: str):
     protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
     if protocol is None:
         raise HTTPException(status_code=404, detail="Протокол не відкрито")
-    if protocol["status"] != "approved":
-        raise HTTPException(
-            status_code=409,
-            detail="Протокол ще не затверджено — PDF буде після затвердження.",
-        )
-
     items = await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
     number = protocols_repo.number(protocol)
     try:
@@ -645,10 +645,15 @@ async def meeting_protocol_pdf(request: Request, date: str):
     # "07-09-2026/1" carries a slash, which is a path separator in every
     # filesystem this will land on.
     safe_number = number.replace("/", "-")
-    ascii_name = f"protocol-{date}.pdf"
+    draft = protocol["status"] != "approved"
+    # The filename says it too: this file gets saved, mailed on and opened a
+    # week later by someone who no longer remembers which one it was.
+    ascii_name = f"{'draft-' if draft else ''}protocol-{date}.pdf"
+    human = (f"ПРОЕКТ протоколу {safe_number}.pdf" if draft
+             else f"Протокол {safe_number}.pdf")
     disposition = (
         f'attachment; filename="{ascii_name}"; '
-        f"filename*=UTF-8''{quote(f'Протокол {safe_number}.pdf')}"
+        f"filename*=UTF-8''{quote(human)}"
     )
     return Response(
         content=pdf,

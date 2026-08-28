@@ -215,6 +215,14 @@ def build_protocol_pdf(
     that does too (a Latin-1 bullet extracts as "(cid:127)", so copying text out
     of an archived protocol yields mojibake at the start of every point).
 
+    A DRAFT RENDERS TOO, and is stamped so it cannot be mistaken for minutes:
+    "ПРОЕКТ" in the title, a warning as the first line of the header, and a
+    diagonal watermark on every page. Refusing to render a draft looked like
+    caution and was a design error — circulating the draft for agreement is the
+    step BEFORE approval, and approval is irreversible, so a chair who could
+    only export an approved protocol would have to freeze the document before
+    anyone was allowed to read it.
+
     ⚠️ The signatures are a final SECTION, not a footer, because the underlying
     renderer has no footer. That is honest for a document that is signed after
     it is read: the lines belong at the end of the text, not at the bottom of
@@ -222,8 +230,13 @@ def build_protocol_pdf(
     """
     d = protocol["meeting_date"]
     attendees = [a for a in (protocol.get("attendees") or []) if str(a).strip()]
+    approved = protocol.get("status") == "approved"
 
     head = [f"<b>Дата:</b> {d:%d.%m.%Y}"]
+    if not approved:
+        # First line of the document, before the date. A reader who opens this
+        # on a phone sees it before anything else.
+        head.insert(0, "<b>ПРОЕКТ — не затверджено, на узгодженні.</b>")
     if protocol.get("chair_name"):
         head.append(f"<b>Голова зустрічі:</b> {_escape(protocol['chair_name'])}")
     if protocol.get("secretary"):
@@ -281,11 +294,13 @@ def build_protocol_pdf(
     )
 
     return build_document_pdf(
-        f"Протокол № {number}",
+        (f"Протокол № {number}" if approved
+         else f"ПРОЕКТ протоколу № {number}"),
         sections,
         header_note="<br/>".join(head),
         footer_note=signatures,
         empty_message="У протоколі немає жодного питання.",
+        draft_mark=None if approved else "ПРОЕКТ",
     )
 
 
@@ -295,6 +310,7 @@ def build_document_pdf(
     header_note: Optional[str] = None,
     empty_message: str = "Документ порожній.",
     footer_note: Optional[str] = None,
+    draft_mark: Optional[str] = None,
 ) -> bytes:
     """
     Render a title + numbered sections to PDF bytes.
@@ -402,7 +418,22 @@ def build_document_pdf(
     )
 
     def draw_footer(canvas, document) -> None:
-        """Page number, and the title repeated so a loose page is identifiable."""
+        """Page number, the title, and — for a draft — an unmissable watermark."""
+        # ⚠️ DIAGONAL AND ON EVERY PAGE. A draft is circulated for agreement, so
+        # it will be printed, forwarded and read a page at a time by people who
+        # never saw the covering message. A line in the header is invisible on
+        # page three; this is not. It exists so that "circulate the draft" and
+        # "hand out the minutes" can never be the same object — which is why the
+        # draft may be downloaded at all.
+        if draft_mark:
+            canvas.saveState()
+            canvas.setFont(FONT_NAME_BOLD, 58)
+            canvas.setFillColor(colors.Color(0.85, 0.15, 0.15, alpha=0.13))
+            canvas.translate(A4[0] / 2, A4[1] / 2)
+            canvas.rotate(35)
+            canvas.drawCentredString(0, 0, draft_mark)
+            canvas.restoreState()
+
         canvas.saveState()
         canvas.setFont(FONT_NAME, 8)
         canvas.setFillColor(colors.HexColor("#888888"))
