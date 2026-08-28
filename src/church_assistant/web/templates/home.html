@@ -26,4 +26,32 @@
         </p>
     </footer>
 </div>
+
+    {% if chair_choices %}
+    {# Opening a meeting BEFORE it happens is the whole point: the agenda is
+       written first, and the recording turns up hours after the meeting ends.
+       Admin only — somebody has to name the chair, and the chair of a meeting
+       that does not exist yet cannot name themselves. #}
+    <section class="dash-section">
+        <h5 class="dash-section-label">🗓 Відкрити зустріч</h5>
+        <form class="admin-create-form" method="post" action="/meetings/open">
+            <input type="date" name="meeting_date" required aria-label="Дата зустрічі">
+            <select name="chair_id" required aria-label="Ведучий">
+                {% for u in chair_choices %}
+                <option value="{{ u.id }}">{{ u.full_name }} ({{ u.username }})</option>
+                {% endfor %}
+            </select>
+            <input type="text" name="secretary" autocomplete="off"
+                   placeholder="Секретар (не обовʼязково)">
+            <button type="submit">+ Відкрити</button>
+        </form>
+        <p><small>
+            Створює протокол на цю дату й призначає ведучого. Далі порядок денний
+            вносить <strong>він</strong> — і тільки він редагує протокол цієї
+            зустрічі. Дата може бути й минулою: раду, яку забули відкрити наперед,
+            усе одно треба оформити.
+        </small></p>
+    </section>
+    {% endif %}
+
 {% endblock %}

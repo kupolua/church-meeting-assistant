@@ -1,0 +1,95 @@
+{#
+  The protocol — first section of a meeting, and the only one that is written
+  rather than derived. Everything below it (учасники, теми, стенограма) comes
+  out of the audio and can be rebuilt; this cannot.
+#}
+<section class="protocol-block">
+    <div class="section-head">
+        <h4>Протокол{% if protocol_number %} № {{ protocol_number }}{% endif %}</h4>
+
+        {% if protocol %}
+        {# Before approval the button circulates a draft; after it, the document
+           itself. Approve is deliberately NOT here — it lives at the foot of
+           the section, past the signatures, because it cannot be undone and a
+           button that freezes a document should not sit where a mis-click
+           reaches for "download". #}
+        {% if protocol.status == 'approved' %}
+        <a class="dash-btn" href="/meetings/{{ current_date }}/protocol.pdf">
+            ⬇ Скачати протокол у PDF
+        </a>
+        {% else %}
+        <button class="dash-btn" disabled
+                title="Буде доступно, коли зробимо розсилку (беклог 13)">
+            ✉ Розіслати проект протоколу всім учасникам
+        </button>
+        {% endif %}
+        {% endif %}
+    </div>
+
+    {% if not protocol %}
+    <p class="admin-msg is-warn">
+        Протокол для цієї зустрічі ще не відкрито.
+        {% if me.role == 'admin' %}
+        Відкрити його можна на сторінці <a href="/meetings">«Зустрічі»</a> —
+        там же призначається ведучий.
+        {% else %}
+        Його відкриває адміністратор церкви.
+        {% endif %}
+    </p>
+    {% else %}
+
+    <table class="protocol-head">
+        <tr><td>Дата</td><td>{{ protocol.meeting_date.strftime('%d.%m.%Y') }}</td></tr>
+        <tr><td>Голова (ведучий)</td>
+            <td>{{ protocol.chair_name or '—' }}
+                {% if protocol.chair_username %}
+                <small>({{ protocol.chair_username }})</small>{% endif %}</td></tr>
+        <tr><td>Секретар</td><td>{{ protocol.secretary or '—' }}</td></tr>
+        <tr><td>Присутні</td>
+            <td>{% if protocol.attendees %}{{ protocol.attendees | join(', ') }}
+                {% else %}<em>не підтверджені</em>{% endif %}</td></tr>
+        <tr><td>Кворум</td><td>{{ protocol.quorum or '—' }}</td></tr>
+        <tr><td>Стан</td>
+            <td>
+                {% if protocol.status == 'approved' %}
+                <strong>затверджено</strong>
+                <small>{{ protocol.approved_at.strftime('%d.%m.%Y %H:%M') }}</small>
+                {% elif protocol.status == 'review' %}на узгодженні
+                {% else %}чернетка{% endif %}
+            </td></tr>
+    </table>
+
+    {% if protocol.status == 'approved' %}
+    <p class="admin-msg is-warn">
+        Протокол затверджено — редагування неможливе. Це не налаштування
+        інтерфейсу: зміну відхиляє сама база.
+    </p>
+    {% elif is_chair %}
+    <form class="protocol-header-form" method="post"
+          action="/meetings/{{ current_date }}/protocol/header">
+        <label>Секретар
+            <input type="text" name="secretary" autocomplete="off"
+                   value="{{ protocol.secretary }}"></label>
+        <label>Кворум
+            <input type="text" name="quorum" autocomplete="off"
+                   placeholder="5 із 7" value="{{ protocol.quorum }}"></label>
+        <label>Присутні <small>(по одному в рядку)</small>
+            {# Typed, not ticked off a list of diarized speakers: that list says
+               who SPOKE. A member who sat through the meeting in silence is
+               absent to it, and a quorum cannot rest on that. #}
+            <textarea name="attendees" rows="6"
+                      placeholder="Павло Кулаковський">{{ protocol.attendees | join('\n') }}</textarea></label>
+        <button type="submit">Зберегти</button>
+    </form>
+    {% else %}
+    <p><small>Протокол веде
+        {{ protocol.chair_name or 'призначений ведучий' }} — редагувати може
+        лише він.</small></p>
+    {% endif %}
+
+    <p><small>
+        Порядок денний, «Слухали / Вирішили / Голосували / Постановили»,
+        підписи й затвердження — наступні кроки.
+    </small></p>
+    {% endif %}
+</section>

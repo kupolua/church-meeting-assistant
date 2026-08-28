@@ -4,22 +4,27 @@ Meetings routes:
     GET  /meetings/{date}/topics.pdf — the Теми section as a printable PDF
     GET  /meetings/{date}/audio     — stream the meeting recording (HTTP Range support)
     GET  /meetings/{date}/speakers  — edit speaker→name mapping for a processed meeting
+    POST /meetings/open             — admin opens a FUTURE meeting (date + chair)
+    POST /meetings/{date}/protocol/header — the chair fills in the parts above the agenda
     POST /meetings/{date}/speakers  — save speakers.json + queue a full re-run
 """
 
 from __future__ import annotations
 
 import mimetypes
+from datetime import datetime
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
+from church_assistant.db import audit_repo
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
+from church_assistant.db import protocols_repo, web_users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import manual_speakers
 from church_assistant.ingestion import speaker_review as review
@@ -28,7 +33,9 @@ from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index, pdf_export, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
-from church_assistant.web.tenant import current_tenant, current_tenant_slug
+from church_assistant.web.tenant import (
+    current_tenant, current_tenant_slug, current_user, require_admin,
+)
 
 
 router = APIRouter(prefix="/meetings")
@@ -76,25 +83,61 @@ def _find_audio(meetings_dir: Path, date: str) -> Optional[Path]:
     return matches[0] if matches else None
 
 
+async def summaries_with_protocols(
+    meetings_dir: Path, pool: Any, tenant_id: int,
+) -> list[Any]:
+    """
+    Every meeting this church has — on disk OR in the database.
+
+    A meeting used to be a folder, so listing them was a directory scan. Since
+    018 the earliest thing a meeting has is its PROTOCOL: the agenda is written
+    before anyone presses record, and the folder appears hours after the meeting
+    ends. Scanning folders alone would hide exactly the meetings somebody is
+    preparing for — the ones a list is most useful for.
+
+    Folder-backed entries win where both exist: they carry topic counts and
+    attendees, and a protocol adds nothing the summary shows.
+    """
+    summaries = meetings_index.list_all_summaries(meetings_dir)
+    have = {s.date for s in summaries}
+    for p in await protocols_repo.list_all(pool, tenant_id):
+        d = f"{p['meeting_date']:%Y-%m-%d}"
+        if d in have:
+            continue
+        summaries.append(meetings_index.MeetingSummary(
+            date=d, folder=meetings_dir / d,
+        ))
+    summaries.sort(key=lambda s: s.date, reverse=True)
+    return summaries
+
+
 @router.get("/{date}", response_class=HTMLResponse)
 async def meeting_detail(request: Request, date: str):
     """Render meeting detail page for a given date (YYYY-MM-DD)."""
     tpaths = _tenant_paths(request)
-    detail = meetings_index.load_detail(tpaths.meetings, date)
-    if detail is None:
-        # Also the answer when the meeting belongs to ANOTHER church: the
-        # lookup never leaves this tenant's folder, so it simply isn't there.
-        raise HTTPException(
-            status_code=404,
-            detail=f"Meeting {date!r} not found",
-        )
-
-    summaries = meetings_index.list_all_summaries(tpaths.meetings)
-
-    # If a speakers re-edit is currently re-running, surface it (the page still
-    # shows the old names until the new protocol is ready).
     pool = await get_pool()
     tenant_id = current_tenant(request)
+
+    detail = meetings_index.load_detail(tpaths.meetings, date)
+    protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+
+    if detail is None:
+        # A meeting with an agenda and no recording yet: the protocol is written
+        # before anyone presses record, so the page has to open on it alone.
+        # Without a protocol either, this is genuinely nothing — and it is also
+        # the answer when the meeting belongs to ANOTHER church, because neither
+        # lookup can leave this tenant (one is its folder, the other is RLS).
+        if protocol is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Meeting {date!r} not found",
+            )
+        detail = meetings_index.MeetingDetail(date=date, folder=tpaths.meetings / date)
+
+    summaries = await summaries_with_protocols(tpaths.meetings, pool, tenant_id)
+
+    # If a speakers re-edit is currently re-running, surface it (the page still
+    # shows the old names until the new digest is ready).
     active_job = await jobs_repo.get_by_date(pool, tenant_id, date)
     reprocessing = (
         active_job is not None and active_job["status"] in jobs_repo.ACTIVE_STATUSES
@@ -124,8 +167,127 @@ async def meeting_detail(request: Request, date: str):
             "reprocess_job": active_job if reprocessing else None,
             "known_names": known_names,
             "changes": review.load_changes(detail.folder),
+            "me": current_user(request),
+            "protocol": protocol,
+            "protocol_number": (
+                protocols_repo.number(protocol) if protocol else None
+            ),
+            # Only the chair of THIS meeting writes it up. Not a church-wide
+            # role: two meetings can be written up by two people at once, which
+            # a role could not express.
+            "is_chair": bool(
+                protocol and protocol["chair_id"] == current_user(request).user_id
+            ),
+            "chair_choices": await web_users_repo.list_active(pool, tenant_id),
         },
     )
+
+
+@router.post("/open")
+async def open_meeting(
+    request: Request,
+    meeting_date: str = Form(...),
+    chair_id: int = Form(...),
+    secretary: str = Form(""),
+):
+    """
+    Open a meeting before it happens: a date, a chair, and a protocol to fill.
+
+    ADMIN, not the chair — somebody has to be able to name the chair, and the
+    chair of a meeting that does not exist yet cannot name themselves.
+
+    The date is deliberately unconstrained. A council writes up a meeting it
+    forgot to open beforehand, and refusing past dates would send them to psql
+    to do it anyway. What IS refused is a second protocol for a date that
+    already has one, and that refusal lives in the unique index rather than in
+    this check, so a race loses cleanly.
+    """
+    require_admin(request)
+    pool = await get_pool()
+    tenant_id = current_tenant(request)
+
+    try:
+        d = datetime.strptime(meeting_date.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Дата має бути YYYY-MM-DD")
+
+    chair = await web_users_repo.get_by_id(pool, tenant_id, chair_id)
+    if chair is None or not chair["is_active"]:
+        raise HTTPException(status_code=400, detail="Такого ведучого немає")
+
+    try:
+        protocol_id = await protocols_repo.create(
+            pool, tenant_id,
+            meeting_date=d,
+            chair_id=chair_id,
+            secretary=secretary,
+            created_by=current_user(request).actor,
+        )
+    except protocols_repo.ProtocolExists:
+        # Not an error worth a page: the meeting is open, which is what the
+        # person wanted. Send them to it.
+        return RedirectResponse(f"/meetings/{d:%Y-%m-%d}", status_code=303)
+
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="protocol.opened",
+        actor=current_user(request).actor,
+        resource=f"meeting_protocols/{protocol_id}",
+        detail={"meeting_date": f"{d:%Y-%m-%d}", "chair": chair["username"]},
+    )
+    return RedirectResponse(f"/meetings/{d:%Y-%m-%d}", status_code=303)
+
+
+@router.post("/{date}/protocol/header")
+async def save_protocol_header(
+    request: Request,
+    date: str,
+    secretary: str = Form(""),
+    quorum: str = Form(""),
+    attendees: str = Form(""),
+):
+    """
+    The parts above the agenda, written by the chair of this meeting.
+
+    Attendees arrive as one name per line rather than as checkboxes over the
+    diarized speakers, because the two lists are not the same thing: diarization
+    knows who SPOKE, and a member who sat through the meeting in silence is
+    absent to it. A quorum line cannot rest on that, so the chair types it.
+    """
+    pool = await get_pool()
+    tenant_id = current_tenant(request)
+
+    protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Протокол не відкрито")
+    if protocol["chair_id"] != current_user(request).user_id:
+        # 403 and not 404: the protocol is openly there on the page they are
+        # looking at, and pretending otherwise would only be confusing.
+        raise HTTPException(
+            status_code=403, detail="Протокол веде інша людина")
+
+    names = [n.strip() for n in attendees.splitlines() if n.strip()]
+    try:
+        await protocols_repo.update_header(
+            pool, tenant_id, int(protocol["id"]),
+            secretary=secretary, quorum=quorum, attendees=names,
+        )
+    except protocols_repo.ProtocolFrozen:
+        raise HTTPException(
+            status_code=409,
+            detail="Протокол затверджено — редагування неможливе",
+        )
+
+    await audit_repo.record(
+        pool,
+        tenant_id=tenant_id,
+        action="protocol.header_edited",
+        actor=current_user(request).actor,
+        resource=f"meeting_protocols/{protocol['id']}",
+        detail={"meeting_date": date, "attendees": len(names)},
+    )
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
 
 
 @router.get("/{date}/topics.pdf")

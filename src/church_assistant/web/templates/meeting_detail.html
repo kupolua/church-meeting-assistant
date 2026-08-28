@@ -31,6 +31,9 @@
     {% endif %}
 
     {# ─── Attendees ─── #}
+    {# Протокол іде першим: він єдиний, що пишеться, а не виводиться. #}
+    {% include "partials/protocol_panel.html" %}
+
     <section class="attendees-block">
         <div class="attendees-head">
             <h4>Учасники</h4>
