@@ -2438,6 +2438,137 @@ def test_archive_church(ctx: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 18. `root` as a namesake — the platform login must survive it
+# ─────────────────────────────────────────────────────────────
+def test_root_as_namesake() -> None:
+    """
+    A church may name an account `root`, and the operator must still get in.
+
+    Item 6.3 of the namesake test plan, the one question nobody had answered:
+    the platform lives in tenant 0, which is is_active = FALSE **by design**
+    since 007 so that nobody signs in "as the platform" for free. Once a church
+    claims the same login, the platform account becomes a namesake — and the
+    question "which church?" is asked about a tenant that is not a church.
+
+    Automated rather than performed by hand, deliberately. The manual answer
+    costs a fixture in production and, if wrong, the operator's own way into
+    /platform; this costs nothing and holds every run. Migration 017 made it
+    worth pinning down for a second reason: it added a tenant join to all three
+    branches of login_tenants, and tenant 0 survives it only because the filter
+    is deleted_at and not is_active — the exact distinction 017's own comment
+    turns on.
+    """
+    print("\n18. `root` як тезка — платформовий вхід мусить вціліти")
+    print("-" * 66)
+
+    import asyncio as _aio
+
+    from fastapi.testclient import TestClient
+
+    from church_assistant.db import tenants_repo, web_users_repo
+    from church_assistant.db.tenant_context import tenant_cursor
+    from church_assistant.web import security as _sec
+    from church_assistant.web.main import app
+
+    NAME = "root"
+    PW_PLATFORM = "korin-platformy-11"
+    PW_CHURCH = "korin-cerkvy-22"
+    SLUG = f"qa-root-{secrets.token_hex(3)}"
+
+    def _client() -> TestClient:
+        return TestClient(app, follow_redirects=False)
+
+    async def _setup() -> int:
+        pool = await get_pool()
+        try:
+            uid = await web_users_repo.add_web_user(
+                pool, 0, username=NAME, full_name="Оператор",
+                password_hash=_sec.hash_password(PW_PLATFORM), role="admin")
+            async with tenant_cursor(pool, 0) as cur:
+                await cur.execute(
+                    "UPDATE web_users SET is_platform_admin = TRUE WHERE id = %s",
+                    (uid,))
+            tid = await tenants_repo.create_tenant(pool, slug=SLUG, name="Церква Корінь")
+            await web_users_repo.add_web_user(
+                pool, tid, username=NAME, full_name="Пастор",
+                password_hash=_sec.hash_password(PW_CHURCH), role="admin")
+            return tid
+        finally:
+            await close_pool()
+
+    async def _same_password(tid: int) -> None:
+        """Make the church's `root` share the platform's password."""
+        pool = await get_pool()
+        try:
+            u = await web_users_repo.get_by_username(pool, tid, NAME)
+            await web_users_repo.set_password_hash(
+                pool, tid, int(u["id"]), _sec.hash_password(PW_PLATFORM))
+        finally:
+            await close_pool()
+
+    async def _teardown(tid: int) -> None:
+        pool = await get_pool()
+        try:
+            await tenants_repo.archive(pool, tid)
+            async with pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("DELETE FROM tenants WHERE id = %s", (tid,))
+            async with tenant_cursor(pool, 0) as cur:
+                await cur.execute("DELETE FROM web_users WHERE username = %s", (NAME,))
+        finally:
+            await close_pool()
+
+    tid = _aio.run(_setup())
+    try:
+        # ── Different passwords: the password already says who this is ──
+        with _client() as client:
+            r = client.post("/login", data={"username": NAME, "password": PW_PLATFORM})
+            assert r.status_code == 303, (r.status_code, r.text[:200])
+            assert client.get("/platform").status_code == 200
+            ok("різні паролі: платформовий `root` заходить одразу, без питання")
+
+        with _client() as client:
+            r = client.post("/login", data={"username": NAME, "password": PW_CHURCH})
+            assert r.status_code == 303
+            assert client.get("/platform").status_code == 404
+            assert f"⛪ {SLUG}" in client.get("/dashboard").text
+            ok("той самий логін церковним паролем веде в церкву, не в панель")
+
+        # ── Same password: now the question is unavoidable ──
+        _aio.run(_same_password(tid))
+
+        with _client() as client:
+            r = client.post("/login", data={"username": NAME, "password": PW_PLATFORM})
+            assert r.status_code == 200, r.status_code
+            assert 'name="church"' in r.text
+            assert SLUG not in r.text and "_system" not in r.text
+            ok("однакові паролі: питає церкву, не називаючи жодної")
+
+        # ── THE ANSWER TO 6.3 ──
+        # `_system` is accepted even though tenant 0 is inactive: login_tenants
+        # filters deleted_at (tenant 0 has none), and _finish_login's exception
+        # is narrow — tenant 0 AND the account carries is_platform_admin.
+        with _client() as client:
+            r = client.post("/login", data={"username": NAME,
+                                            "password": PW_PLATFORM,
+                                            "church": "_system"})
+            assert r.status_code == 303, (r.status_code, r.text[:300])
+            assert client.get("/platform").status_code == 200
+            ok("`_system` приймається як відповідь → оператор у /platform")
+
+        with _client() as client:
+            r = client.post("/login", data={"username": NAME,
+                                            "password": PW_PLATFORM,
+                                            "church": SLUG})
+            assert r.status_code == 303
+            assert client.get("/platform").status_code == 404
+            ok("та сама пара з назвою церкви веде в церкву — розводяться відповіддю")
+    finally:
+        _aio.run(_teardown(tid))
+
+
+
+# ─────────────────────────────────────────────────────────────
 # 16. Recovering a church that locked itself out
 # ─────────────────────────────────────────────────────────────
 def test_recover_admin(ctx: dict) -> None:
@@ -2884,6 +3015,7 @@ def main() -> int:
         church_ctx = test_create_church()
         test_archive_church(church_ctx)
         test_recover_admin(church_ctx)
+        test_root_as_namesake()
         asyncio.run(phase_audit())
         asyncio.run(phase_purge())
     finally:
