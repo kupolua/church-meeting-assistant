@@ -87,9 +87,102 @@
         лише він.</small></p>
     {% endif %}
 
+    {# ─── Порядок денний ───────────────────────────────────── #}
+    <h5 class="dash-section-label">Порядок денний</h5>
+
+    {% if not agenda %}
     <p><small>
-        Порядок денний, «Слухали / Вирішили / Голосували / Постановили»,
-        підписи й затвердження — наступні кроки.
+        {% if is_chair and protocol.status != 'approved' %}
+        Питань ще немає. Вносьте їх <strong>до зустрічі</strong> — саме порядок
+        денний потім групує обговорене, і жодна обробка запису цього не замінить.
+        {% else %}Питань ще немає.{% endif %}
+    </small></p>
+    {% endif %}
+
+    <ol class="agenda">
+    {% for item in agenda %}
+        <li class="agenda-item{% if item.status == 'not_considered' %} is-skipped{% endif %}">
+            {% if is_chair and protocol.status != 'approved' %}
+            <form class="agenda-edit" method="post"
+                  action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}">
+                <input type="text" name="question" value="{{ item.question }}"
+                       required autocomplete="off" aria-label="Текст питання">
+                <label title="Питання, якого зустріч не досягла або залишила без рішення">
+                    <input type="checkbox" name="status" value="not_considered"
+                           {% if item.status == 'not_considered' %}checked{% endif %}>
+                    не розглянуто
+                </label>
+                <button type="submit" class="dash-btn" title="Зберегти">✓</button>
+            </form>
+            <div class="agenda-controls">
+                {# Two one-field forms rather than links: reordering changes
+                   data, and a GET that changes data is a GET a crawler will
+                   eventually press. #}
+                <form method="post"
+                      action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}/move">
+                    <input type="hidden" name="delta" value="-1">
+                    <button type="submit" class="dash-btn" title="Вище"
+                            {% if loop.first %}disabled{% endif %}>↑</button>
+                </form>
+                <form method="post"
+                      action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}/move">
+                    <input type="hidden" name="delta" value="1">
+                    <button type="submit" class="dash-btn" title="Нижче"
+                            {% if loop.last %}disabled{% endif %}>↓</button>
+                </form>
+                <form method="post"
+                      action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}/delete">
+                    {# No confirm dialog: `script-src 'self'` drops an inline
+                       onclick silently, and this form is a plain POST so
+                       hx-confirm would never fire either. Deleting an item
+                       before approval costs retyping one line; a confirmation
+                       that only appears to exist costs trust. #}
+                    <button type="submit" class="dash-btn dash-btn-danger"
+                            title="Прибрати питання">✕</button>
+                </form>
+            </div>
+            {% else %}
+            <strong>{{ item.question }}</strong>
+            {% if item.status == 'not_considered' %}
+            <span class="admin-msg is-warn">не розглянуто</span>
+            {% endif %}
+            {% endif %}
+
+            {% if item.heard or item.resolved or item.rulings %}
+            <dl class="agenda-body">
+                {% if item.heard %}<dt>Слухали</dt><dd>{{ item.heard }}</dd>{% endif %}
+                {% if item.resolved %}<dt>Вирішили</dt><dd>{{ item.resolved }}</dd>{% endif %}
+                {% if item.votes_for is not none %}
+                <dt>Голосували</dt>
+                <dd>за {{ item.votes_for }} · проти {{ item.votes_against }}
+                    · утрималось {{ item.votes_abstain }}</dd>
+                {% endif %}
+                {% if item.rulings %}
+                <dt>Постановили</dt>
+                <dd><ol>{% for r in item.rulings %}
+                    <li>{{ r.text }}
+                        {% if r.responsible %}<small>— {{ r.responsible }}</small>{% endif %}
+                        {% if r.due %}<small>({{ r.due }})</small>{% endif %}</li>
+                {% endfor %}</ol></dd>
+                {% endif %}
+            </dl>
+            {% endif %}
+        </li>
+    {% endfor %}
+    </ol>
+
+    {% if is_chair and protocol.status != 'approved' %}
+    <form class="agenda-add" method="post"
+          action="/meetings/{{ current_date }}/protocol/items">
+        <input type="text" name="question" required autocomplete="off"
+               placeholder="Наступне питання порядку денного">
+        <button type="submit">+ Додати питання</button>
+    </form>
+    {% endif %}
+
+    <p><small>
+        «Слухали / Вирішили / Голосували / Постановили», підписи й затвердження —
+        наступні кроки.
     </small></p>
     {% endif %}
 </section>

@@ -6,6 +6,7 @@ Meetings routes:
     GET  /meetings/{date}/speakers  — edit speaker→name mapping for a processed meeting
     POST /meetings/open             — admin opens a FUTURE meeting (date + chair)
     POST /meetings/{date}/protocol/header — the chair fills in the parts above the agenda
+    POST /meetings/{date}/protocol/items  — the chair writes the agenda (add/edit/move/delete)
     POST /meetings/{date}/speakers  — save speakers.json + queue a full re-run
 """
 
@@ -169,6 +170,10 @@ async def meeting_detail(request: Request, date: str):
             "changes": review.load_changes(detail.folder),
             "me": current_user(request),
             "protocol": protocol,
+            "agenda": (
+                await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
+                if protocol else []
+            ),
             "protocol_number": (
                 protocols_repo.number(protocol) if protocol else None
             ),
@@ -287,6 +292,104 @@ async def save_protocol_header(
         resource=f"meeting_protocols/{protocol['id']}",
         detail={"meeting_date": date, "attendees": len(names)},
     )
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+async def _chair_protocol(request: Request, date: str) -> tuple[Any, int, dict]:
+    """
+    Load this meeting's protocol and refuse anyone but its chair.
+
+    Factored out because four routes need the identical three refusals, and a
+    permission check copied four times is a permission check that will be four
+    slightly different checks by winter.
+    """
+    pool = await get_pool()
+    tenant_id = current_tenant(request)
+    protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Протокол не відкрито")
+    if protocol["chair_id"] != current_user(request).user_id:
+        # 403, not 404: the protocol is plainly on the page they are reading.
+        raise HTTPException(status_code=403, detail="Протокол веде інша людина")
+    return pool, tenant_id, protocol
+
+
+def _frozen() -> HTTPException:
+    return HTTPException(
+        status_code=409, detail="Протокол затверджено — редагування неможливе")
+
+
+@router.post("/{date}/protocol/items")
+async def add_agenda_item(request: Request, date: str, question: str = Form(...)):
+    """
+    Add a question to the agenda.
+
+    This is the point of the whole feature: an agenda is written by a person
+    BEFORE the meeting, and that act is what groups the discussion afterwards.
+    Nothing derived from the recording can do it — clustering the topics by
+    similarity was tried on 28.08 and chained one cluster across 13 consecutive
+    meetings.
+    """
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    try:
+        await protocols_repo.add_item(
+            pool, tenant_id, int(protocol["id"]), question)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+@router.post("/{date}/protocol/items/{item_id}")
+async def edit_agenda_item(
+    request: Request, date: str, item_id: int,
+    question: str = Form(...), status: str = Form("considered"),
+):
+    """Reword a question, or mark it as one the meeting never reached."""
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    item = await protocols_repo.get_item(pool, tenant_id, item_id)
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Питання не знайдено")
+    try:
+        await protocols_repo.update_item(
+            pool, tenant_id, item_id, question=question, status=status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+@router.post("/{date}/protocol/items/{item_id}/delete")
+async def delete_agenda_item(request: Request, date: str, item_id: int):
+    """Remove a question. Positions close up behind it."""
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    item = await protocols_repo.get_item(pool, tenant_id, item_id)
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Питання не знайдено")
+    try:
+        await protocols_repo.delete_item(pool, tenant_id, item_id)
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+@router.post("/{date}/protocol/items/{item_id}/move")
+async def move_agenda_item(
+    request: Request, date: str, item_id: int, delta: int = Form(...),
+):
+    """Swap a question with its neighbour. At the ends this does nothing."""
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    item = await protocols_repo.get_item(pool, tenant_id, item_id)
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Питання не знайдено")
+    try:
+        await protocols_repo.move_item(pool, tenant_id, item_id, delta)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
     return RedirectResponse(f"/meetings/{date}", status_code=303)
 
 
