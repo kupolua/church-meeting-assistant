@@ -383,6 +383,133 @@ async def move_item(
         return True
 
 
+# ─────────────────────────────────────────────────────────────
+# Постановили — the rulings a question produced
+# ─────────────────────────────────────────────────────────────
+
+async def add_ruling(
+    pool: AsyncConnectionPool,
+    tenant_id: int,
+    item_id: int,
+    *,
+    text: str,
+    responsible: str = "",
+    due: str = "",
+) -> int:
+    """Append a ruling to a question. Returns its id."""
+    text = text.strip()
+    if not text:
+        raise ValueError("постанова не може бути порожньою")
+    from psycopg.errors import RaiseException
+    try:
+        async with tenant_cursor(pool, tenant_id) as cur:
+            await cur.execute(
+                "INSERT INTO protocol_rulings "
+                "       (tenant_id, item_id, position, text, responsible, due) "
+                "SELECT %s, %s, COALESCE(MAX(position), 0) + 1, %s, %s, %s "
+                "  FROM protocol_rulings WHERE item_id = %s "
+                "RETURNING id",
+                (tenant_id, item_id, text, responsible.strip(), due.strip(), item_id),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise RuntimeError("INSERT ... RETURNING did not return an id")
+            return int(row[0])
+    except RaiseException as e:
+        raise ProtocolFrozen(str(e).strip()) from e
+
+
+async def update_ruling(
+    pool: AsyncConnectionPool,
+    tenant_id: int,
+    ruling_id: int,
+    *,
+    text: Optional[str] = None,
+    responsible: Optional[str] = None,
+    due: Optional[str] = None,
+) -> bool:
+    """Edit one ruling. None means 'leave this field alone'."""
+    sets, params = [], []
+    for col, val in (("text", text), ("responsible", responsible), ("due", due)):
+        if val is not None:
+            sets.append(f"{col} = %s")
+            params.append(val.strip())
+    if not sets:
+        return False
+    params.append(ruling_id)
+    return await _write(
+        pool, tenant_id,
+        f"UPDATE protocol_rulings SET {', '.join(sets)} WHERE id = %s",
+        tuple(params),
+    )
+
+
+async def delete_ruling(
+    pool: AsyncConnectionPool, tenant_id: int, ruling_id: int,
+) -> bool:
+    """
+    Remove a ruling and close the gap behind it.
+
+    ⚠️ Checks the freeze here, like delete_item and for the same reason: 018's
+    trigger covers INSERT and UPDATE but not DELETE, because a DELETE guard also
+    fires on the cascade from tenants and would make a church holding one
+    approved protocol impossible to purge.
+    """
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
+        await cur.execute(
+            "SELECT r.item_id, r.position, p.status "
+            "  FROM protocol_rulings r "
+            "  JOIN protocol_items i ON i.id = r.item_id "
+            "  JOIN meeting_protocols p ON p.id = i.protocol_id "
+            " WHERE r.id = %s",
+            (ruling_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return False
+        if row["status"] == "approved":
+            raise ProtocolFrozen("protocol is approved; rulings cannot be removed")
+        await cur.execute("DELETE FROM protocol_rulings WHERE id = %s", (ruling_id,))
+        await cur.execute(
+            "UPDATE protocol_rulings SET position = position - 1 "
+            " WHERE item_id = %s AND position > %s",
+            (row["item_id"], row["position"]),
+        )
+        return True
+
+
+async def set_votes(
+    pool: AsyncConnectionPool,
+    tenant_id: int,
+    item_id: int,
+    *,
+    votes_for: Optional[int],
+    votes_against: Optional[int],
+    votes_abstain: Optional[int],
+) -> bool:
+    """
+    Record the vote, or clear it.
+
+    All three or none: "за 5" with the other two blank is not a tally, it is a
+    half-written one, and a protocol that shows it invites the reader to assume
+    the rest were zero. Passing None for all three clears the row back to
+    "not voted on", which is the honest state for a question that was only
+    discussed.
+    """
+    given = [v for v in (votes_for, votes_against, votes_abstain) if v is not None]
+    if given and len(given) != 3:
+        raise ValueError("голосування вводиться повністю: за, проти, утрималось")
+    if any(v < 0 for v in given):
+        raise ValueError("голосів не може бути менше нуля")
+    return await _write(
+        pool, tenant_id,
+        "UPDATE protocol_items "
+        "   SET votes_for = %s, votes_against = %s, votes_abstain = %s "
+        " WHERE id = %s",
+        (votes_for, votes_against, votes_abstain, item_id),
+    )
+
+
 async def _write(
     pool: AsyncConnectionPool, tenant_id: int, sql: str, params: tuple,
 ) -> bool:

@@ -222,6 +222,12 @@ async def _run_analysis(
         )
         if report:
             await progress("protocol", "Чернетка «Слухали» готова")
+            # Only after "Слухали" exists — there is nothing to conclude from
+            # otherwise, and the second pass reads what the first one wrote.
+            decided = await protocol_draft.draft_decisions(
+                pool, tenant_id, str(job["meeting_date"]))
+            if decided:
+                await progress("protocol", "Чернетка «Вирішили» готова")
     except Exception as e:
         await _log.warn(
             "protocol.draft_failed",

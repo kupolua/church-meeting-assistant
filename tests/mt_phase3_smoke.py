@@ -2628,6 +2628,58 @@ def test_protocol_draft_parse() -> None:
             pass
     ok("відповідь без JSON — помилка, а не тихо порожній розподіл")
 
+    # ── The degeneration filter, and why it is not paranoia ──
+    #
+    # Retrying a failed draft with a little sampling turned a visible failure
+    # into an invisible one: greedy decoding produced broken JSON (rejected,
+    # field left blank), and the retry produced VALID JSON containing "Чед може
+    # поспілкуватися з Україною Ukraines Ukraines Ukraines" and a Ukrainian
+    # sentence with Arabic spliced into it — with a name in the responsible
+    # field, bound for a document a council signs.
+    from church_assistant.ingestion.protocol_draft import (
+        _looks_degenerate, _parse_decision,
+    )
+
+    for good in (
+        "Провести обговорення з Юлією Бершак щодо її кандидатури на посаду",
+        "Затвердити бюджет на вересень і призначити відповідального",
+        "Рада обговорила питання, рішення не ухвалювала",
+        "",
+    ):
+        assert not _looks_degenerate(good), good
+    ok("звичайний текст протоколу фільтр не чіпає")
+
+    for bad in (
+        "Чед може поспілкуватися з Україною Ukraines  Ukraines  Ukraines  Ukraines",
+        "Підготувати чіткий переلقر у вимог та умов роботи перед зустріччю",
+        "так так так",
+    ):
+        assert _looks_degenerate(bad), bad
+    ok("повтор, чужа писемність і одноманітність — відсіюються")
+
+    resolved, rulings = _parse_decision(
+        '{"vyrishyly": "Рада затвердила бюджет на вересень",'
+        ' "postanovy": ['
+        '  {"text": "Передати кошторис бухгалтеру", "responsible": "Роман", "due": ""},'
+        '  {"text": "Ukraines Ukraines Ukraines Ukraines", "responsible": "Чед", "due": ""},'
+        '  {"text": "   ", "responsible": "", "due": ""}]}'
+    )
+    assert resolved == "Рада затвердила бюджет на вересень"
+    assert [r["text"] for r in rulings] == ["Передати кошторис бухгалтеру"], rulings
+    ok("з відповіді лишається лише те, що не сміття")
+
+    resolved, rulings = _parse_decision(
+        '{"vyrishyly": "так так так так", "postanovy": []}')
+    assert resolved == "" and rulings == []
+    ok("вироджене «Вирішили» стає порожнім — ведучий побачить, що поля нема")
+
+    # A missing person is a missing person. Inventing one produces a document
+    # that says the council made somebody responsible when it did not.
+    _, rulings = _parse_decision(
+        '{"vyrishyly": "x", "postanovy": [{"text": "Зробити", "responsible": 42}]}')
+    assert rulings == [{"text": "Зробити", "responsible": "", "due": ""}], rulings
+    ok("нерядковий відповідальний стає порожнім, а не приводом викинути постанову")
+
 
 
 # ─────────────────────────────────────────────────────────────
