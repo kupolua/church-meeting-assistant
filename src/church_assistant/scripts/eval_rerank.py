@@ -116,9 +116,15 @@ async def build_eval_set(
         hits = res.points
         cand_ids = [h.id for h in hits]
         cands = [(h.payload or {}).get("body", "").strip() for h in hits]
+        # Titles too, so the same set can be scored the way PRODUCTION reranks
+        # (rag._hit_text_for_rerank sends "title\nbody"). Kept separate rather
+        # than pre-joined: which text an arm sees is the variable under test,
+        # and baking one choice into the file would hide it.
+        cand_titles = [(h.payload or {}).get("topic_title", "").strip() for h in hits]
         items.append({
             "query": title,
             "candidates": cands,
+            "candidate_titles": cand_titles,
             "gold_index": cand_ids.index(pid) if pid in cand_ids else None,
         })
         if n % 25 == 0:
@@ -129,7 +135,88 @@ async def build_eval_set(
     return {"collection": collection, "pool": pool, "items": items}
 
 
-def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
+BASELINE_LABEL = "(без реранку — порядок Qdrant)"
+
+
+def score_vector_only(evalset: dict[str, Any]) -> dict[str, Any]:
+    """
+    The baseline every rerank number should be read against: change nothing.
+
+    Free, and fair by construction. build_eval_set stores candidates in the
+    order query_points returned them, so `gold_index` already IS the gold
+    chunk's rank under pure vector search — no model, no embedding, no second
+    retrieval. This arm differs from the others in exactly one thing, which is
+    the entire point of having it.
+
+    ⚠️ IT WAS MISSING, AND ITS ABSENCE SHAPED A DECISION. The 25.08 comparison
+    ran bge-reranker-v2-m3 against bge-reranker-base and kept v2-m3 — a true
+    answer to "which reranker", read ever since as if it answered "a reranker at
+    all". Those are different questions, and the second one is the expensive
+    one: reranking costs ~18 s per query on this machine once Gemma is resident
+    (backlog 1b), against ~1.4 s cold. Nobody had measured what that buys.
+
+    Reported with seconds = 0 and no score distributions, both honestly: there
+    is no model to time and no rerank score to place a threshold on.
+    """
+    items = evalset["items"]
+    top1 = top3 = top5 = 0
+    rr_sum = 0.0
+    not_retrieved = 0
+
+    for it in items:
+        gold = it["gold_index"]
+        if gold is None:
+            not_retrieved += 1          # a miss end-to-end, same as elsewhere
+            continue
+        pos = gold                      # its rank is where Qdrant already put it
+        if pos == 0: top1 += 1
+        if pos < 3:  top3 += 1
+        if pos < 5:  top5 += 1
+        rr_sum += 1.0 / (pos + 1)
+
+    total = len(items)
+    return {
+        "model": BASELINE_LABEL,
+        "total": total,
+        "not_retrieved": not_retrieved,
+        "top1": top1, "top3": top3, "top5": top5,
+        "mrr": rr_sum / total if total else 0.0,
+        "seconds": 0.0,
+        "gold_scores": [],
+        "other_scores": [],
+    }
+
+
+def _candidate_texts(it: dict[str, Any], mode: str) -> list[str]:
+    """
+    The text an arm actually sees. This is the variable under test.
+
+    "body"       — body only. Non-trivial by construction, which is what makes
+                   it right for comparing two rerankers: with the title present
+                   the gold candidate contains the query verbatim.
+    "production" — "title\nbody", exactly rag._hit_text_for_rerank. Right for
+                   the different question of whether to rerank AT ALL, because
+                   the vector arm it is compared against retrieved against
+                   embeddings that include the title (index_meeting builds
+                   "title\n\nbody"). Scoring bodies against a title-aware
+                   retrieval compares two arms that saw different documents, and
+                   the gap that produces is measurement, not quality.
+    """
+    if mode == "body":
+        return it["candidates"]
+    titles = it.get("candidate_titles")
+    if not titles:
+        raise SystemExit(
+            "у наборі немає candidate_titles — перезберіть його через --build "
+            "(режим 'production' потребує заголовків кандидатів)"
+        )
+    return [f"{t}\n{b}".strip() if b else t
+            for t, b in zip(titles, it["candidates"])]
+
+
+def score_model(
+    model_name: str, evalset: dict[str, Any], text_mode: str = "body",
+) -> dict[str, Any]:
     """Rerank every item with one model and report where the gold chunk lands."""
     os.environ["RERANK_MODEL"] = model_name
     # Imported here, after the env var is set: the module reads it at import.
@@ -148,7 +235,8 @@ def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
         if gold is None:
             not_retrieved += 1          # counted as a miss below, not skipped
             continue
-        ranked = local_rerank.rerank(it["query"], it["candidates"], top_k=None)
+        ranked = local_rerank.rerank(
+            it["query"], _candidate_texts(it, text_mode), top_k=None)
         order = [i for i, _ in ranked]
         pos = order.index(gold)
         if pos == 0: top1 += 1
@@ -164,7 +252,7 @@ def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
 
     total = len(items)                  # misses included — end-to-end number
     return {
-        "model": model_name,
+        "model": model_name if text_mode == "body" else f"{model_name} [production text]",
         "total": total,
         "not_retrieved": not_retrieved,
         "top1": top1, "top3": top3, "top5": top5,
@@ -178,7 +266,9 @@ def score_model(model_name: str, evalset: dict[str, Any]) -> dict[str, Any]:
 _MARKER = "@@RESULT@@"
 
 
-def _score_in_subprocess(model_name: str, evalset_path: str) -> Optional[dict[str, Any]]:
+def _score_in_subprocess(
+    model_name: str, evalset_path: str, text_mode: str = "body",
+) -> Optional[dict[str, Any]]:
     """
     Score one model in a process of its own.
 
@@ -197,7 +287,8 @@ def _score_in_subprocess(model_name: str, evalset_path: str) -> Optional[dict[st
     # exits. The result comes back on a marked line; everything else is echoed.
     proc = subprocess.Popen(
         [sys.executable, "-m", "church_assistant.scripts.eval_rerank",
-         "-i", evalset_path, "--model", model_name, "--single"],
+         "-i", evalset_path, "--model", model_name, "--single",
+         "--text-mode", text_mode],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
     result: Optional[dict[str, Any]] = None
@@ -256,9 +347,15 @@ def report(results: list[dict[str, Any]]) -> None:
     print("=" * 78)
     print("  Якість реранкінгу на корпусі")
     print("=" * 78)
+    base = next((r for r in results if r["model"] == BASELINE_LABEL), None)
     for r in results:
         t = r["total"]
         print(f"\n  {r['model']}")
+        if base is not None and r is not base:
+            d = lambda k: (r[k] - base[k]) / max(t, 1) * 100
+            print(f"    Δ проти вектора: top-1 {d('top1'):+.1f} в.п. · "
+                  f"top-3 {d('top3'):+.1f} · top-5 {d('top5'):+.1f} · "
+                  f"MRR {r['mrr'] - base['mrr']:+.3f}")
         print(f"    top-1 {_pct(r['top1'], t)} · top-3 {_pct(r['top3'], t)} · "
               f"top-5 {_pct(r['top5'], t)}")
         print(f"    MRR {r['mrr']:.3f} · {r['seconds']:.0f} с на {t} запитів "
@@ -294,20 +391,22 @@ async def _amain(args: argparse.Namespace) -> int:
 
     if args.single:
         # One model, one process — the parent reads this back off stdout.
-        print(_MARKER + json.dumps(score_model(args.model[0], evalset)))
+        print(_MARKER + json.dumps(
+            score_model(args.model[0], evalset, args.text_mode)))
         return 0
 
     print(f"  набір: {len(evalset['items'])} запитів, пул {evalset['pool']}")
-    results = []
+    # Always first, always present. It is free, and a rerank number without it
+    # cannot answer the question anyone actually has.
+    results = [score_vector_only(evalset)]
     for m in args.model:
-        r = _score_in_subprocess(m, args.input)
+        r = _score_in_subprocess(m, args.input, args.text_mode)
         if r is None:
             print(f"  ✗ {m}: процес не дожив до результату — пропускаю", flush=True)
             continue
         results.append(r)
-    if not results:
-        print("  ✗ жодна модель не оцінилась")
-        return 1
+    if len(results) == 1:
+        print("  ✗ жодна модель не оцінилась — нижче лише базова лінія")
     report(results)
     if args.json_out:
         # Scores included: ~200 KB for a corpus this size, and re-deriving them
@@ -330,6 +429,10 @@ def main() -> int:
     p.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", "http://localhost:6333"))
     p.add_argument("--pool", type=int, default=DEFAULT_POOL)
     p.add_argument("--limit", type=int, default=None, help="взяти лише перші N тем")
+    p.add_argument("--text-mode", choices=("body", "production"), default="body",
+                   help="який текст бачить реранкер: лише тіло (порівняння "
+                        "моделей) чи 'заголовок\\nтіло', як у продакшні "
+                        "(порівняння з чистим вектором)")
     p.add_argument("--json-out", default=None)
     p.add_argument("--single", action="store_true",
                    help=argparse.SUPPRESS)   # internal: score one model, emit JSON
