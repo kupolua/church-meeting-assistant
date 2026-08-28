@@ -419,6 +419,16 @@ async def add_ruling(
         raise ProtocolFrozen(str(e).strip()) from e
 
 
+async def get_ruling(
+    pool: AsyncConnectionPool, tenant_id: int, ruling_id: int,
+) -> Optional[dict[str, Any]]:
+    """One ruling — so a caller can check which question it belongs to."""
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
+        await cur.execute("SELECT * FROM protocol_rulings WHERE id = %s", (ruling_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
 async def update_ruling(
     pool: AsyncConnectionPool,
     tenant_id: int,

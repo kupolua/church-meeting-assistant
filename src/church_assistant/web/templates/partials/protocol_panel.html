@@ -151,7 +151,65 @@
             {% endif %}
             {% endif %}
 
-            {% if item.heard or item.resolved or item.rulings %}
+            {% if is_chair and protocol.status != 'approved' %}
+            {# Gemma writes into empty fields during ingestion and never over a
+               written one — which is only safe because this form exists. A
+               draft nobody can correct is a draft that has to be right, and a
+               degenerating model is not. #}
+            <form class="agenda-body-form" method="post"
+                  action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}/body">
+                <label>Слухали
+                    <textarea name="heard" rows="4"
+                              placeholder="Що обговорювали. Заповнює Gemma після обробки запису."
+                              >{{ item.heard }}</textarea></label>
+                <label>Вирішили
+                    <textarea name="resolved" rows="3"
+                              placeholder="До чого дійшла рада."
+                              >{{ item.resolved }}</textarea></label>
+                <fieldset class="votes">
+                    <legend>Голосували <small>(порожньо = не голосували)</small></legend>
+                    {# Text, not number inputs: blank has to be expressible, and
+                       most questions are discussed rather than voted on. #}
+                    <label>за <input type="text" name="votes_for" inputmode="numeric"
+                        value="{{ item.votes_for if item.votes_for is not none else '' }}"></label>
+                    <label>проти <input type="text" name="votes_against" inputmode="numeric"
+                        value="{{ item.votes_against if item.votes_against is not none else '' }}"></label>
+                    <label>утрималось <input type="text" name="votes_abstain" inputmode="numeric"
+                        value="{{ item.votes_abstain if item.votes_abstain is not none else '' }}"></label>
+                </fieldset>
+                <button type="submit">Зберегти питання {{ item.position }}</button>
+            </form>
+
+            <div class="rulings">
+                <strong>Постановили</strong>
+                {% for r in item.rulings %}
+                <form class="ruling-form" method="post"
+                      action="/meetings/{{ current_date }}/protocol/rulings/{{ r.id }}">
+                    <input type="text" name="text" required value="{{ r.text }}"
+                           aria-label="Текст постанови">
+                    <input type="text" name="responsible" value="{{ r.responsible }}"
+                           placeholder="Відповідальний" aria-label="Відповідальний">
+                    <input type="text" name="due" value="{{ r.due }}"
+                           placeholder="Термін" aria-label="Термін">
+                    <button type="submit" class="dash-btn" title="Зберегти">✓</button>
+                    <button type="submit" name="remove" value="1"
+                            class="dash-btn dash-btn-danger" title="Прибрати">✕</button>
+                </form>
+                {% endfor %}
+                <form class="ruling-form" method="post"
+                      action="/meetings/{{ current_date }}/protocol/items/{{ item.id }}/rulings">
+                    <input type="text" name="text" required
+                           placeholder="Нова постанова: що зробити"
+                           aria-label="Текст постанови">
+                    <input type="text" name="responsible" placeholder="Відповідальний"
+                           aria-label="Відповідальний">
+                    <input type="text" name="due" placeholder="Термін"
+                           aria-label="Термін">
+                    <button type="submit" class="dash-btn">+</button>
+                </form>
+            </div>
+
+            {% elif item.heard or item.resolved or item.rulings %}
             <dl class="agenda-body">
                 {% if item.heard %}<dt>Слухали</dt><dd>{{ item.heard }}</dd>{% endif %}
                 {% if item.resolved %}<dt>Вирішили</dt><dd>{{ item.resolved }}</dd>{% endif %}

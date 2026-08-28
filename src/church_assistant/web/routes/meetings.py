@@ -393,6 +393,126 @@ async def move_agenda_item(
     return RedirectResponse(f"/meetings/{date}", status_code=303)
 
 
+@router.post("/{date}/protocol/items/{item_id}/body")
+async def save_item_body(
+    request: Request, date: str, item_id: int,
+    heard: str = Form(""), resolved: str = Form(""),
+    votes_for: str = Form(""), votes_against: str = Form(""),
+    votes_abstain: str = Form(""),
+):
+    """
+    "Слухали", "Вирішили" and the vote — the chair's last word over Gemma's draft.
+
+    THE DRAFT IS A SUGGESTION AND THIS IS WHY IT CAN BE ONE. Gemma writes into
+    empty fields during ingestion and never touches a written one; without this
+    form that would make a wrong draft permanent, and a wrong draft is exactly
+    what a degenerating model produces (see protocol_draft._looks_degenerate).
+
+    Votes come in as strings, not ints, so that BLANK is expressible. A form
+    field typed `int` cannot say "this question was not put to a vote", and most
+    of them are not — a council discusses far more than it divides on.
+    """
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    item = await protocols_repo.get_item(pool, tenant_id, item_id)
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Питання не знайдено")
+
+    def _count(raw: str) -> Optional[int]:
+        raw = raw.strip()
+        if not raw:
+            return None
+        if not raw.isdigit():
+            raise HTTPException(
+                status_code=400, detail="Голоси вводяться цілим числом")
+        return int(raw)
+
+    # ⚠️ EVERYTHING IS VALIDATED BEFORE ANYTHING IS WRITTEN, and that order was
+    # bought with a bug. The first version saved the texts and then validated
+    # the vote — so a half-filled tally returned 400 with the texts already
+    # committed, and since the failing request carried no `heard`, it wiped the
+    # "Слухали" Gemma had spent two minutes drafting. A refused save must leave
+    # the question exactly as it was.
+    counts = (_count(votes_for), _count(votes_against), _count(votes_abstain))
+    given = [c for c in counts if c is not None]
+    if given and len(given) != 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Голосування вводиться повністю: за, проти, утрималось",
+        )
+
+    try:
+        await protocols_repo.update_item(
+            pool, tenant_id, item_id, heard=heard, resolved=resolved)
+        await protocols_repo.set_votes(
+            pool, tenant_id, item_id,
+            votes_for=counts[0], votes_against=counts[1], votes_abstain=counts[2],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+@router.post("/{date}/protocol/items/{item_id}/rulings")
+async def add_ruling(
+    request: Request, date: str, item_id: int,
+    text: str = Form(...), responsible: str = Form(""), due: str = Form(""),
+):
+    """Add one ruling under a question."""
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+    item = await protocols_repo.get_item(pool, tenant_id, item_id)
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Питання не знайдено")
+    try:
+        await protocols_repo.add_ruling(
+            pool, tenant_id, item_id,
+            text=text, responsible=responsible, due=due)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
+@router.post("/{date}/protocol/rulings/{ruling_id}")
+async def edit_ruling(
+    request: Request, date: str, ruling_id: int,
+    text: str = Form(...), responsible: str = Form(""), due: str = Form(""),
+    remove: str = Form(""),
+):
+    """
+    Edit a ruling, or remove it.
+
+    One route for both because they are one button-row on one form: a separate
+    delete endpoint would need its own copy of the three ownership checks, and a
+    permission check copied is a permission check that drifts.
+    """
+    pool, tenant_id, protocol = await _chair_protocol(request, date)
+
+    # A ruling reaches its protocol through its item; check that before writing,
+    # or an id from another meeting would be edited under this one's permissions.
+    ruling = await protocols_repo.get_ruling(pool, tenant_id, ruling_id)
+    if ruling is None:
+        raise HTTPException(status_code=404, detail="Постанову не знайдено")
+    item = await protocols_repo.get_item(pool, tenant_id, int(ruling["item_id"]))
+    if item is None or item["protocol_id"] != protocol["id"]:
+        raise HTTPException(status_code=404, detail="Постанову не знайдено")
+
+    try:
+        if remove:
+            await protocols_repo.delete_ruling(pool, tenant_id, ruling_id)
+        else:
+            await protocols_repo.update_ruling(
+                pool, tenant_id, ruling_id,
+                text=text, responsible=responsible, due=due)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return RedirectResponse(f"/meetings/{date}", status_code=303)
+
+
 @router.get("/{date}/topics.pdf")
 async def meeting_topics_pdf(request: Request, date: str):
     """
