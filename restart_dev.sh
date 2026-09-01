@@ -27,6 +27,46 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
+# ─────────────────────────────────────────────────────────────
+# ⚠️ NOT ON THE CONTROL PLANE
+# ─────────────────────────────────────────────────────────────
+# This is a laptop helper. It arrives on the VPS with every `git pull`, and
+# there it is loaded: `--stop` and a bare run both begin with pkill over
+# "uvicorn church_assistant.web.main:app" and "church_assistant.bot.main" —
+# which on the VPS are the church's live services, run by systemd.
+#
+# pkill sends SIGTERM, uvicorn shuts down cleanly and exits 0, and cma-web is
+# Restart=on-failure — so systemd would NOT bring it back. The church's site
+# would simply stay down. Then start_services would launch web, bot and both
+# workers as nohup processes from /srv/cma, where `uv run` without
+# UV_NO_GROUP=worker starts installing torch and the CUDA stack: 4.5 GB of GPU
+# runtime onto a box with no GPU.
+#
+# Found on 01.09 when a `--check` run there reported "Qdrant недоступний" while
+# Qdrant was serving perfectly — it was looking for the laptop's container name.
+# A wrong answer was the harmless half of what this script does here.
+#
+# The marker is the systemd unit, which exists only where the control plane is
+# installed (and cannot exist on the M1 at all — macOS has no systemd).
+if [[ -f /etc/systemd/system/cma-web.service ]]; then
+    cat >&2 <<'REFUSE'
+✗ restart_dev.sh — це помічник для ноутбука, і на контрольній площині він шкідливий.
+
+  Він убив би web і бота (pkill), а systemd їх НЕ підніме: SIGTERM → вихід 0,
+  а в юніті Restart=on-failure. Далі спробував би запустити їх повз systemd і
+  потягнув би torch на машину без GPU.
+
+  Тут потрібні інші команди:
+    systemctl status cma-web cma-telegram-bot
+    systemctl restart cma-web cma-telegram-bot
+    cd /srv/cma && set -a && . ./.env && set +a \
+      && docker compose -f deploy/docker-compose.vps.yml ps
+
+  Рецепти — docs/vps_deploy.md.
+REFUSE
+    exit 2
+fi
+
 PG_CONTAINER="${CMA_PG_CONTAINER:-cma-postgres}"
 QDRANT_CONTAINER="${CMA_QDRANT_CONTAINER:-lf-client-qdrant-1}"
 WEB_HOST="${CMA_WEB_HOST:-127.0.0.1}"
