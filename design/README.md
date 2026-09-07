@@ -10,9 +10,13 @@
 
     uv run python -m church_assistant.scripts.build_demo_page
 
-Розгорнута на **https://cma.rechurch.org.ua/demo** — статикою через Caddy,
-повз FastAPI, щоб показувати людям без акаунта. Оновлення вмісту не потребує
-перезавантаження Caddy: `handle_path /demo*` уже стоїть у `Caddyfile`.
+Розгорнути:
+
+    scp design/demo.html cma@10.10.0.1:/srv/cma-demo/index.html
+
+Це весь процес. Сторінка живе на **https://cma.rechurch.org.ua/demo** статикою
+через Caddy, повз FastAPI, щоб відкривалася без акаунта. Root не потрібен —
+теку віддано `cma` 07.09; Caddy теж перезавантажувати не треба.
 
 ## ⚠️ Дані тут вигадані, і це правило
 

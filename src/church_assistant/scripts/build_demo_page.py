@@ -10,12 +10,11 @@ page has to be showable to people who have no account, while the app behind `/`
 still requires one, and a static file cannot accidentally grow a way into the
 church's data.
 
-    scp <out> cma@10.10.0.1:/srv/cma-data/demo.html
-    # then, as root on the VPS:
-    mv /srv/cma-data/demo.html /srv/cma-demo/index.html
+    scp design/demo.html cma@10.10.0.1:/srv/cma-demo/index.html
 
-Caddy needs no reload for a content change — only the first `handle_path /demo*`
-block did, and it is already in place.
+That is the whole deploy. `/srv/cma-demo` is owned by `cma` (07.09), so updating
+the page needs no root and no Caddy reload — the `handle_path /demo*` block is
+already in the Caddyfile, and Caddy re-reads the file on every request.
 
 THE SCREENS IN design/screens/ ARE ALREADY ANONYMISED, and that is the rule, not
 a step this script performs. The mockups were drawn against the real corpus
@@ -155,8 +154,7 @@ def main() -> None:
     out.write_text(html, encoding="utf-8")
     screens = sum(len(s) for _, _, s in ROWS)
     print(f"✓ {out}  ({len(html):,} байт · {screens} екранів · {len(ROWS)} рядків)")
-    print(f"  scp {out} cma@10.10.0.1:/srv/cma-data/demo.html")
-    print("  ssh root@…  mv /srv/cma-data/demo.html /srv/cma-demo/index.html")
+    print(f"  scp {out} cma@10.10.0.1:/srv/cma-demo/index.html")
 
 
 if __name__ == "__main__":
