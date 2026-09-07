@@ -60,7 +60,7 @@
             <div class="stat-label">⏱ avg</div>
         </div>
     </div>
-    <p class="stat-breakdown"><small>💻 web: {{ stats.from_web }} • 📱 telegram: {{ stats.from_telegram }} • ✗ failed: {{ stats.failed }}</small></p>
+    <p class="stat-breakdown"><small>💻 web: {{ stats.from_web }} • ✗ failed: {{ stats.failed }}</small></p>
 </section>
 
 {# ─── Active queries with actions ─── #}
@@ -132,36 +132,4 @@
         {% endfor %}
     </ul>
     {% endif %}
-</section>
-
-{# ─── Whitelist users with deactivate action ─── #}
-<section class="dash-section">
-    <h5 class="dash-section-label">Whitelist ({{ users | length }})</h5>
-    <table class="dash-table">
-        <thead>
-            <tr><th>ім'я</th><th>роль</th><th>@username</th><th>tg id</th><th></th></tr>
-        </thead>
-        <tbody>
-            {% for u in users %}
-            <tr>
-                <td>{{ u.full_name }}</td>
-                <td>{% if u.role == 'admin' %}⭐ admin{% else %}pastor{% endif %}</td>
-                <td><small>{% if u.telegram_username %}@{{ u.telegram_username }}{% else %}—{% endif %}</small></td>
-                <td><small>{{ u.telegram_user_id }}</small></td>
-                <td class="dash-actions">
-                    {% if u.role != 'admin' %}
-                    <button class="dash-btn is-cancel"
-                            hx-post="/dashboard/users/{{ u.telegram_user_id }}/deactivate"
-                            hx-target="#dashboard-panel" hx-swap="innerHTML"
-                            hx-confirm="Деактивувати {{ u.full_name }}? Втратить доступ до бота.">
-                        ⊘ deactivate
-                    </button>
-                    {% else %}
-                    <small class="dash-admin-lock" title="admin захищений від деактивації">🔒</small>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
 </section>

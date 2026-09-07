@@ -12,7 +12,7 @@ The current default `cma` role is the container superuser — switch DB_USER to 
 dedicated app role at cutover (see the deploy notes).
 
 Resolution bootstrap: to know which tenant a request belongs to we must query
-`users` — but that is RLS-gated. resolve_tenant_for_telegram() calls a
+`users` — but that is RLS-gated. The login-side resolver calls a
 SECURITY DEFINER function that bypasses RLS just for this lookup.
 """
 
@@ -22,7 +22,6 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
 from psycopg_pool import AsyncConnectionPool
-
 
 async def set_tenant(cur: Any, tenant_id: int) -> None:
     """
@@ -35,7 +34,6 @@ async def set_tenant(cur: Any, tenant_id: int) -> None:
     await cur.execute(
         "SELECT set_config('app.current_tenant', %s, true)", (str(int(tenant_id)),)
     )
-
 
 @asynccontextmanager
 async def tenant_cursor(
@@ -61,32 +59,13 @@ async def tenant_cursor(
             await set_tenant(cur, tenant_id)
             yield cur
 
-
-async def resolve_tenant_for_telegram(
-    pool: AsyncConnectionPool, telegram_user_id: int
-) -> Optional[int]:
-    """
-    Which tenant does this Telegram user belong to? None if unknown/inactive.
-
-    Uses the SECURITY DEFINER resolver (bypasses RLS) — safe to call without a
-    tenant context (it's the bootstrap that GIVES us the tenant).
-    """
-    async with pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT resolve_tenant_for_telegram(%s)", (int(telegram_user_id),)
-            )
-            row = await cur.fetchone()
-            return int(row[0]) if row and row[0] is not None else None
-
-
 async def login_tenants(
     pool: AsyncConnectionPool, username: str, church: Optional[str] = None
 ) -> list[int]:
     """
     Which churches could this login belong to? Ordered, possibly empty.
 
-    The login-side twin of resolve_tenant_for_telegram (migration 015, replacing
+    The login-side resolver (migration 015, replacing
     014's resolve_login_tenant): the same SECURITY DEFINER bootstrap, because
     web_users is RLS-gated and login has no tenant context yet.
 

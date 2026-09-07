@@ -570,7 +570,7 @@ async def answer(
 
 
 # ─────────────────────────────────────────────────────────────
-# Formatting helpers (usable in web templates + telegram messages)
+# Formatting helpers (usable in web templates)
 # ─────────────────────────────────────────────────────────────
 
 def format_hit_short(hit: Hit, idx: int) -> str:
@@ -612,7 +612,7 @@ def score_color_hint(hit: Hit) -> str:
     """
     Return 'green' | 'yellow' | 'dim' for UI color coding.
 
-    Templates and Telegram formatters can map these to CSS or emoji.
+    Templates can map these to CSS or emoji.
     """
     if hit.reranked:
         if hit.score >= RERANK_SCORE_GOOD:

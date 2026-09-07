@@ -3,9 +3,9 @@ Query processor — run the RAG pipeline for one dequeued query.
 
 Given a query row already marked 'processing' (by fetch_next_pending), this:
     1. Runs shared.rag.answer() (embed → Qdrant → rerank → Gemma).
-    2. On success: mark_completed + deliver to Telegram (if source='telegram').
+    2. On success: mark_completed.
     3. On failure: mark_failed; requeue if under the retry cap, else notify the
-       user (Telegram) that we gave up.
+       that we gave up.
 
 Never raises — the caller's loop must keep running no matter what one query does.
 """
@@ -15,9 +15,7 @@ from __future__ import annotations
 import traceback
 from typing import Any, Optional
 
-from telegram import Bot
 
-from church_assistant.bot import delivery
 from church_assistant.db import queries_repo, tenants_repo
 from church_assistant.shared import rag
 from church_assistant.shared.logger import Logger
@@ -28,7 +26,6 @@ _log = Logger(process="worker")
 
 async def process_query(
     pool: Any,
-    bot: Optional[Bot],
     query: dict[str, Any],
     *,
     max_retries: int,
@@ -38,10 +35,7 @@ async def process_query(
 
     Args:
         pool: async DB pool
-        bot: initialized telegram Bot (for delivery); may be None if bot
-             delivery is disabled (e.g. web-only reprocessing)
-        query: the query row (must include id, question, collection, source,
-               telegram_chat_id, telegram_message_id)
+        query: the query row (must include id, question, collection, source)
         max_retries: attempts allowed before giving up permanently
     """
     query_id = query["id"]
@@ -72,7 +66,7 @@ async def process_query(
             rerank=True,
         )
     except Exception as e:
-        await _handle_failure(pool, bot, query, e, max_retries=max_retries)
+        await _handle_failure(pool, query, e, max_retries=max_retries)
         return
 
     # ─── Persist success ─────────────────────────────────────
@@ -92,7 +86,7 @@ async def process_query(
         )
     except Exception as e:
         # DB write failed after a good answer — treat as a failure so it retries.
-        await _handle_failure(pool, bot, query, e, max_retries=max_retries)
+        await _handle_failure(pool, query, e, max_retries=max_retries)
         return
 
     await _log.info(
@@ -114,17 +108,9 @@ async def process_query(
         },
     )
 
-    # ─── Deliver (Telegram) ──────────────────────────────────
-    if source == "telegram" and bot is not None:
-        # Re-fetch canonical row so delivery sees exactly what was stored.
-        completed = await queries_repo.get_by_id(pool, tenant_id, query_id)
-        if completed is not None:
-            await delivery.send_answer(bot, completed)
-
 
 async def _handle_failure(
     pool: Any,
-    bot: Optional[Bot],
     query: dict[str, Any],
     exc: Exception,
     *,
@@ -174,5 +160,3 @@ async def _handle_failure(
         tenant_id=tenant_id,
     )
 
-    if query.get("source") == "telegram" and bot is not None:
-        await delivery.send_failure(bot, query)

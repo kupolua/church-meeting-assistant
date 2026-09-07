@@ -7,7 +7,7 @@
 #        — запускає їх, якщо зупинені.
 #      - Ollama (нативний сервіс на :11434) + наявність моделі — лише перевіряє.
 # 2. Перезапускає 4 church_assistant-сервіси у фоні з логами:
-#      web (uvicorn --reload) · query-worker · ingestion-worker · telegram-bot
+#      web (uvicorn --reload) · query-worker · ingestion-worker
 #
 # Використання:
 #      ./restart_dev.sh              # повний цикл: перевірка + перезапуск
@@ -32,12 +32,12 @@ cd "$PROJECT_DIR"
 # ─────────────────────────────────────────────────────────────
 # This is a laptop helper. It arrives on the VPS with every `git pull`, and
 # there it is loaded: `--stop` and a bare run both begin with pkill over
-# "uvicorn church_assistant.web.main:app" and "church_assistant.bot.main" —
+# "uvicorn church_assistant.web.main:app" —
 # which on the VPS are the church's live services, run by systemd.
 #
 # pkill sends SIGTERM, uvicorn shuts down cleanly and exits 0, and cma-web is
 # Restart=on-failure — so systemd would NOT bring it back. The church's site
-# would simply stay down. Then start_services would launch web, bot and both
+# would simply stay down. Then start_services would launch web and both
 # workers as nohup processes from /srv/cma, where `uv run` without
 # UV_NO_GROUP=worker starts installing torch and the CUDA stack: 4.5 GB of GPU
 # runtime onto a box with no GPU.
@@ -57,8 +57,8 @@ if [[ -f /etc/systemd/system/cma-web.service ]]; then
   потягнув би torch на машину без GPU.
 
   Тут потрібні інші команди:
-    systemctl status cma-web cma-telegram-bot
-    systemctl restart cma-web cma-telegram-bot
+    systemctl status cma-web
+    systemctl restart cma-web
     cd /srv/cma && set -a && . ./.env && set +a \
       && docker compose -f deploy/docker-compose.vps.yml ps
 
@@ -238,9 +238,9 @@ check_ollama() {
 # church_assistant services
 # ─────────────────────────────────────────────────────────────
 # label | pkill-pattern | command…
-# The worker role runs only what needs the models. web and telegram-bot moved
+# The worker role runs only what needs the models. web moved
 # to the VPS so the church can upload and ask at any hour without this laptop.
-ALL_SVC_LABELS=(web query-worker ingestion-worker telegram-bot)
+ALL_SVC_LABELS=(web query-worker ingestion-worker)
 if [[ "$ROLE" == "worker" ]]; then
     SVC_LABELS=(query-worker ingestion-worker)
 else
@@ -251,7 +251,6 @@ svc_pattern() {
         web)              echo "uvicorn church_assistant.web.main:app" ;;
         query-worker)     echo "church_assistant.worker.main" ;;
         ingestion-worker) echo "church_assistant.ingestion.main" ;;
-        telegram-bot)     echo "church_assistant.bot.main" ;;
     esac
 }
 svc_cmd() {
@@ -259,12 +258,11 @@ svc_cmd() {
         web)              echo "uv run uvicorn church_assistant.web.main:app --host $WEB_HOST --port $WEB_PORT --reload" ;;
         query-worker)     echo "uv run python -m church_assistant.worker.main" ;;
         ingestion-worker) echo "uv run python -m church_assistant.ingestion.main" ;;
-        telegram-bot)     echo "uv run python -m church_assistant.bot.main" ;;
     esac
 }
 
 # Stops EVERY service, not just this role's. Switching a machine to the worker
-# role leaves a web and a bot behind from when it ran everything, and those keep
+# role leaves a web behind from when it ran everything, and those keep
 # serving whatever config they started with — a laptop quietly answering from
 # the database the rest of the system has already left.
 stop_services() {
@@ -412,7 +410,7 @@ if [[ "$ROLE" == "worker" ]]; then
     echo "  логи:      tail -f logs/{query-worker,ingestion-worker}.log"
 else
     echo "  web:       http://$WEB_HOST:$WEB_PORT/   (дашборд)"
-    echo "  логи:      tail -f logs/{web,query-worker,ingestion-worker,telegram-bot}.log"
+    echo "  логи:      tail -f logs/{web,query-worker,ingestion-worker}.log"
 fi
 echo "  зупинити:  ./restart_dev.sh --stop"
 echo

@@ -13,7 +13,7 @@ Loop:
     3. When the queue is empty, idle-sleep WORKER_POLL_INTERVAL.
 
 Graceful shutdown on SIGINT/SIGTERM: finishes the in-flight query, then closes
-the Telegram bot and DB pool.
+the DB pool.
 """
 
 from __future__ import annotations
@@ -22,9 +22,7 @@ import asyncio
 import logging
 import signal
 
-from telegram import Bot
 
-from church_assistant.bot.config import get_bot_token
 from church_assistant.db import logs_repo, queries_repo
 from church_assistant.db.connection import close_pool, get_pool
 from church_assistant.shared import health as health_mod
@@ -74,10 +72,6 @@ async def run() -> None:
     max_retries = get_max_retries()
 
     pool = await get_pool()
-
-    # Telegram bot for delivery (standalone Bot, no polling).
-    bot = Bot(get_bot_token())
-    await bot.initialize()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -130,15 +124,14 @@ async def run() -> None:
                 await _interruptible_sleep(stop, poll_interval)
                 continue
 
-            await process_query(pool, bot, query, max_retries=max_retries)
+            await process_query(pool, query, max_retries=max_retries)
             # Loop immediately to drain any remaining pending queries.
 
     finally:
         _std.info("Shutting down...")
         await _log.info("worker.stopped", message="worker shutting down")
-        await bot.shutdown()
         await close_pool()
-        _std.info("Worker stopped, bot + pool closed")
+        _std.info("Worker stopped, pool closed")
 
 
 def main() -> None:

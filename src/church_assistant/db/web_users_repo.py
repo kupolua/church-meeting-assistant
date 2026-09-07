@@ -1,7 +1,7 @@
 """
 Web accounts repository — the per-tenant web UI whitelist (MT Phase 3).
 
-Tenant-aware exactly like users_repo (the Telegram whitelist): every op runs via
+Tenant-aware: every op runs via
 tenant_cursor(pool, tenant_id) → RLS scopes it to one church. Login resolves the
 tenant FIRST (tenant_context.resolve_tenant_for_web_user, a SECURITY DEFINER
 lookup) and then calls these with that tenant_id.
