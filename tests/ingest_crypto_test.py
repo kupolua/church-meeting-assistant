@@ -153,23 +153,25 @@ async def main() -> None:
             back = root / "back" / "2026-07-27"
 
             n = artifact_crypto.encrypt_tree(src, remote, dek, t_enc, "2026-07-27")
-            assert n == 4, n
-            ok(f"зашифровано {n} артефакти, аудіо лишено як є (§4)")
+            assert n == 5, n
+            ok(f"зашифровано всі {n} файлів — винятків більше немає")
 
             names = sorted(p.name for p in remote.rglob("*") if p.is_file())
-            assert names == ["000.txt.enc", "audio.m4a", "polished.md.enc",
+            assert names == ["000.txt.enc", "audio.m4a.enc", "polished.md.enc",
                              "speakers.json.enc", "transcript.txt.enc"], names
-            ok("на сервері лежать .enc, аудіо — під своїм ім'ям")
+            ok("на сервері все під .enc, включно з аудіо")
 
             blob = (remote / "transcript.txt.enc").read_bytes()
             assert "Роман".encode() not in blob and b"transcript" not in blob
             ok("у шифротексті немає ні тексту, ні імені спікера")
 
-            assert (remote / "audio.m4a").read_bytes() == (src / "audio.m4a").read_bytes()
-            ok("аудіо доходить незмінним — свідомий виняток, не помилка")
+            raw = (src / "audio.m4a").read_bytes()
+            assert (remote / "audio.m4a.enc").read_bytes() != raw
+            assert raw[:16] not in (remote / "audio.m4a.enc").read_bytes()
+            ok("аудіо на сервері — шифротекст (рішення 07.09, §2.1)")
 
             m = artifact_crypto.decrypt_tree(remote, back, dek, t_enc, "2026-07-27")
-            assert m == 4
+            assert m == 5
             for p in sorted(src.rglob("*")):
                 if p.is_file():
                     rel = p.relative_to(src)
