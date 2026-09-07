@@ -119,10 +119,14 @@ case "$ROLE" in all|worker) : ;; *) echo "невідома CMA_ROLE: $ROLE (all|
 QDRANT_URL="$(cfg QDRANT_URL)"; QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
 OLLAMA_URL="$(cfg OLLAMA_URL)"; OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 OLLAMA_MODEL="$(cfg OLLAMA_MODEL)"; OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+# Той самий хост, що й у deploy/backup_from_vps.sh — одна змінна на обидва.
+VPS_SSH="${CMA_VPS_HOST:-cma@10.10.0.1}"
 if [[ -f .env ]]; then
     OLLAMA_URL="$(cfg OLLAMA_URL)";   OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
     QDRANT_URL="$(cfg QDRANT_URL)";   QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
     OLLAMA_MODEL="$(cfg OLLAMA_MODEL)"; OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:26b}"
+# Той самий хост, що й у deploy/backup_from_vps.sh — одна змінна на обидва.
+VPS_SSH="${CMA_VPS_HOST:-cma@10.10.0.1}"
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -215,6 +219,58 @@ check_qdrant() {
         ok "Qdrant відповідає ($QDRANT_URL)"
     else
         warn "Qdrant контейнер працює, але $QDRANT_URL/collections не відповідає"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# Чи не відстав продакшн
+# ─────────────────────────────────────────────────────────────
+#
+# Написано 07.09 після того, як VPS десять днів простояв на 28.08: уся серія
+# протоколів була написана, змержена й позначена ✅ — і не розгорнута. Знайшлося
+# випадково, бо Pavlo не побачив форму, яку ми щойно малювали.
+#
+# Дешевша страховка за будь-який процес: раз на день, коли й так робиш --check,
+# сказати вголос, на скільки комітів сервер позаду. Нічого не змінює й нічого не
+# вимагає — лише не дає розриву рости мовчки.
+#
+# М'яко в усьому: немає тунелю, немає ключа, немає git на тому боці — це не
+# помилка перевірки інфраструктури, а просто невідомо. Тому warn, ніколи err,
+# і жодного впливу на INFRA_OK.
+check_deploy_gap() {
+    [[ "$ROLE" == "worker" ]] || return 0          # питання має сенс лише з ноутбука
+    command -v git >/dev/null 2>&1 || return 0
+
+    local local_head remote_head behind ahead
+    local_head="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null)" || return 0
+
+    remote_head="$(ssh -o BatchMode=yes -o ConnectTimeout=6 "$VPS_SSH" \
+        'cd /srv/cma 2>/dev/null && git rev-parse --short HEAD' 2>/dev/null)" || {
+        warn "версію на VPS не перевірив (немає тунелю або доступу) — розрив невідомий"
+        return 0
+    }
+    [[ -n "$remote_head" ]] || { warn "версію на VPS не перевірив — порожня відповідь"; return 0; }
+
+    if [[ "$local_head" == "$remote_head" ]]; then
+        ok "VPS на тій самій версії ($remote_head)"
+        return 0
+    fi
+
+    # Скільки комітів між ними. Якщо серверного об'єкта тут немає (не спулено),
+    # рахувати нічим — кажемо про це прямо, а не мовчимо.
+    if ! git -C "$PROJECT_DIR" cat-file -e "${remote_head}^{commit}" 2>/dev/null; then
+        warn "VPS на $remote_head, тут $local_head — цього коміта тут немає, зроби git fetch"
+        return 0
+    fi
+    behind="$(git -C "$PROJECT_DIR" rev-list --count "${remote_head}..HEAD" 2>/dev/null || echo '?')"
+    ahead="$(git -C "$PROJECT_DIR" rev-list --count "HEAD..${remote_head}" 2>/dev/null || echo '?')"
+
+    if [[ "$behind" != "0" && "$behind" != "?" ]]; then
+        warn "VPS позаду на ${behind} коміт(ів): там $remote_head, тут $local_head"
+        echo "      ${C_DIM}git log --oneline ${remote_head}..HEAD${C_R}"
+    fi
+    if [[ "$ahead" != "0" && "$ahead" != "?" ]]; then
+        warn "на VPS є ${ahead} коміт(ів), яких немає тут — хтось пушив повз ноутбук"
     fi
 }
 
@@ -389,6 +445,7 @@ check_prereqs
 check_postgres
 check_qdrant
 check_ollama
+check_deploy_gap
 
 if [[ "$INFRA_OK" -ne 1 ]]; then
     err "Postgres недоступний — це жорстка залежність. Виправ і повтори."
