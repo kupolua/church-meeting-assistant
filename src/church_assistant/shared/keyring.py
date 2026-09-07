@@ -18,6 +18,12 @@ every function here returns None rather than raising. A caller that forgets to
 handle None gets a TypeError immediately in tests, which is a better failure
 than silently shipping plaintext because an exception was swallowed somewhere.
 
+EVERY QUERY GOES THROUGH tenant_cursor. church_devices and key_envelopes are
+RLS-guarded like every other tenant table, so an unbound connection sees nothing
+at all — and the symptom is not an error but an empty result, which this module
+would read as "no envelope for this node". Found by the first drill against a
+real church folder (07.09), before any church could meet it.
+
 THE PRIVATE KEY COMES FROM THE ENVIRONMENT, in the same printed format the
 recovery key uses (`crypto.recovery_from_text`). One encoding, one parser: a
 second way to spell a key is a second way to get it subtly wrong.
@@ -30,6 +36,7 @@ from typing import Any, Optional
 
 from psycopg.rows import dict_row
 
+from church_assistant.db.tenant_context import tenant_cursor
 from church_assistant.shared import crypto
 
 
@@ -66,7 +73,7 @@ def processor_private_key() -> bytes:
 async def kek_version(pool: Any, tenant_id: int) -> int:
     """0 means this church stores plaintext. Read every time: a church can be
     switched on, or rotated, while a worker is running."""
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute("SELECT kek_version FROM tenants WHERE id = %s", (tenant_id,))
         row = await cur.fetchone()
         return int(row["kek_version"]) if row else 0
@@ -84,7 +91,7 @@ async def kek_for(pool: Any, tenant_id: int) -> Optional[bytes]:
     # The processor's own envelope, at the current version. A revoked processor
     # finds nothing here, which is the correct outcome: it should stop working,
     # not fall back to plaintext.
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT e.wrapped_kek FROM key_envelopes e "
             "JOIN church_devices d ON d.id = e.device_id "
@@ -131,7 +138,7 @@ async def dek_for(pool: Any, tenant_id: int, scope: str) -> Optional[bytes]:
         return cached
 
     aad = _dek_aad(tenant_id, scope)
-    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+    async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT wrapped_dek FROM dek_envelopes "
             "WHERE tenant_id = %s AND scope = %s AND kek_version = %s",

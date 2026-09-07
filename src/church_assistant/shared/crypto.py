@@ -84,6 +84,16 @@ def new_device_keys() -> DeviceKeys:
     return DeviceKeys(private=bytes(sk), public=bytes(sk.public_key))
 
 
+def public_of(private_key: bytes) -> bytes:
+    """The public half of a private key.
+
+    Exists so nothing ever stores or configures both halves separately: a public
+    key that drifts from its private one produces envelopes the holder cannot
+    open, and nothing notices until a church stops being processable.
+    """
+    return bytes(PrivateKey(private_key).public_key)
+
+
 # ─────────────────────────────────────────────────────────────
 # Envelopes — wrapping a key for a recipient
 # ─────────────────────────────────────────────────────────────

@@ -121,6 +121,15 @@ async def main() -> None:
             await cur.execute("UPDATE tenants SET kek_version = 1 WHERE id = %s", (t_enc,))
         ok("обробний вузол — рядок kind='processor' зі своїм конвертом")
 
+        # РЕГРЕСІЯ (знайдено прогоном 07.09): keyring читає RLS-захищені
+        # church_devices і key_envelopes. З незвʼязаного зʼєднання вони
+        # повертають ПОРОЖНЬО, а не помилку — і модуль читав це як «конверта
+        # немає». Пул тут звичайний, тенант ставить сам keyring; якщо він
+        # перестане це робити, впаде саме тут.
+        keyring.forget()
+        assert await keyring.kek_for(pool, t_enc) == kek
+        ok("keyring сам звʼязує тенант — RLS не ховає конверт (регресія)")
+
         # Церква без ключа: keyring мовчки каже «плейнтекст».
         assert await keyring.kek_for(pool, t_plain) is None
         assert await keyring.dek_for(pool, t_plain, "2026-07-27") is None
