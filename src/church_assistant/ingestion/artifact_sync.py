@@ -39,11 +39,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import shlex
+import shutil
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from church_assistant.ingestion.config import get_artifact_sync_remote, get_artifact_sync_ssh
-from church_assistant.shared import tenant_paths
+from church_assistant.ingestion import artifact_crypto
+from church_assistant.shared import keyring, tenant_paths
 
 
 _std = logging.getLogger("church_assistant.ingestion.artifact_sync")
@@ -124,7 +127,24 @@ async def _rsync(src: str, dst: str, *, label: str, mkdir_remote: bool = False) 
     _std.info("✓ [%s] done", label)
 
 
-async def pull_meeting(meeting_dir: Path) -> None:
+async def _dek(pool: Any, tenant_id: Optional[int], meeting_dir: Path) -> Optional[bytes]:
+    """The data key for this meeting, or None when the church stores plaintext.
+
+    Callers that have no pool — the smoke test, and any path that predates
+    encryption — get None and the old behaviour, which is what keeps this change
+    invisible to the twenty churches at kek_version 0.
+    """
+    if pool is None or tenant_id is None:
+        return None
+    return await keyring.dek_for(pool, tenant_id, meeting_dir.name)
+
+
+async def pull_meeting(
+    meeting_dir: Path,
+    *,
+    pool: Any = None,
+    tenant_id: Optional[int] = None,
+) -> None:
     """
     Bring the meeting folder here before a phase runs.
 
@@ -138,19 +158,54 @@ async def pull_meeting(meeting_dir: Path) -> None:
     meeting_dir.parent.mkdir(parents=True, exist_ok=True)
     # Trailing slash on the source, none on the destination's parent: rsync then
     # writes INTO <parent>/<date>/ rather than creating <date>/<date>/.
-    await _rsync(f"{remote}/{rel}/", str(meeting_dir), label=f"pull {rel}")
+    dek = await _dek(pool, tenant_id, meeting_dir)
+    if dek is None:
+        await _rsync(f"{remote}/{rel}/", str(meeting_dir), label=f"pull {rel}")
+        return
+
+    # Ciphertext lands in a scratch tree and is decrypted into the real folder.
+    # Never straight into it: a failed decrypt would otherwise leave the pipeline
+    # a folder that is half blobs and half files, and it would run against that.
+    with tempfile.TemporaryDirectory(prefix="cma-pull-") as tmp:
+        staging = Path(tmp) / meeting_dir.name
+        await _rsync(f"{remote}/{rel}/", str(staging), label=f"pull {rel} (шифротекст)")
+        meeting_dir.mkdir(parents=True, exist_ok=True)
+        n = artifact_crypto.decrypt_tree(
+            staging, meeting_dir, dek, tenant_id, meeting_dir.name)
+        _std.info("pull %s: розшифровано %s файлів", rel, n)
 
 
-async def push_meeting(meeting_dir: Path) -> None:
+async def push_meeting(
+    meeting_dir: Path,
+    *,
+    pool: Any = None,
+    tenant_id: Optional[int] = None,
+) -> None:
     """Send back what the phase produced (~660 KB; the audio is already there)."""
     if not enabled():
         return
     rel = _relative(meeting_dir)
     remote = get_artifact_sync_remote().rstrip("/")
-    await _rsync(
-        f"{str(meeting_dir).rstrip('/')}/", f"{remote}/{rel}",
-        label=f"push {rel}", mkdir_remote=True,
-    )
+
+    dek = await _dek(pool, tenant_id, meeting_dir)
+    if dek is None:
+        await _rsync(
+            f"{str(meeting_dir).rstrip('/')}/", f"{remote}/{rel}",
+            label=f"push {rel}", mkdir_remote=True,
+        )
+        return
+
+    # Encrypt into a scratch mirror and send that. The working folder stays
+    # plaintext because the next stage needs it that way.
+    with tempfile.TemporaryDirectory(prefix="cma-push-") as tmp:
+        staging = Path(tmp) / meeting_dir.name
+        n = artifact_crypto.encrypt_tree(
+            meeting_dir, staging, dek, tenant_id, meeting_dir.name)
+        _std.info("push %s: зашифровано %s файлів", rel, n)
+        await _rsync(
+            f"{str(staging).rstrip('/')}/", f"{remote}/{rel}",
+            label=f"push {rel} (шифротекст)", mkdir_remote=True,
+        )
 
 
 async def pull_voice_profiles(profiles_dir: Path) -> None:

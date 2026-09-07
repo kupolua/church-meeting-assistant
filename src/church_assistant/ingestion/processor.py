@@ -111,7 +111,7 @@ async def _run_transcription(
         # diarization matches against fingerprints the web has since added to.
         # A no-op when everything lives on one machine.
         await progress("sync", "Отримую аудіо та голосові профілі")
-        await artifact_sync.pull_meeting(paths.meeting_dir)
+        await artifact_sync.pull_meeting(paths.meeting_dir, pool=pool, tenant_id=tenant_id)
         await artifact_sync.pull_voice_profiles(profiles_dir)
 
         await stages.run_transcription_phase(
@@ -124,7 +124,7 @@ async def _run_transcription(
         # Push BEFORE awaiting_review: the reviewer opens speakers.json on the
         # web, so it has to be over there before the job says it is ready.
         await progress("sync", "Відправляю транскрипт")
-        await artifact_sync.push_meeting(paths.meeting_dir)
+        await artifact_sync.push_meeting(paths.meeting_dir, pool=pool, tenant_id=tenant_id)
     except Exception as e:
         await _handle_failure(pool, job, e, requeue_status="pending", max_retries=max_retries)
         return
@@ -174,7 +174,7 @@ async def _run_analysis(
         # is the pre-review copy. Analysing it would put the old names into the
         # protocol and quietly undo the correction someone just made.
         await progress("sync", "Отримую правки спікерів")
-        await artifact_sync.pull_meeting(meeting_dir)
+        await artifact_sync.pull_meeting(meeting_dir, pool=pool, tenant_id=tenant_id)
 
         await stages.run_analysis_phase(
             paths,
@@ -186,7 +186,7 @@ async def _run_analysis(
         # Push before indexing: index_meeting reads the artifacts, and if this
         # fails the retry should re-run against a folder the web can already show.
         await progress("sync", "Відправляю протокол")
-        await artifact_sync.push_meeting(meeting_dir)
+        await artifact_sync.push_meeting(meeting_dir, pool=pool, tenant_id=tenant_id)
 
         if auto_index:
             await jobs_repo.mark_indexing(pool, tenant_id, job_id)
