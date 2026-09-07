@@ -164,6 +164,57 @@ def test_recovery_key() -> None:
     ok("втративши всі пристрої, церква розгортає KEK папером із сейфа")
 
 
+def test_field_crypto() -> None:
+    """Колонки протоколу — cloud_plan §3.1, друга половина."""
+    from church_assistant.shared import field_crypto as f
+
+    print("\nПоля протоколу")
+    dek = c.new_key()
+    text = "Проводити зустрічі лідерів раз на місяць"
+    sealed = f.seal(dek, text, 1, "protocol_items", "resolved", 42)
+    assert sealed.startswith(f.PREFIX) and text not in sealed
+    ok("значення запечатується й позначається enc.v1.")
+    assert f.unseal(dek, sealed, 1, "protocol_items", "resolved", 42) == text
+    ok("і відкривається тим самим ключем і місцем")
+
+    # Плейнтекст проходить наскрізь — це стан кожної нинішньої церкви.
+    assert f.seal(None, text, 1, "protocol_items", "resolved", 42) == text
+    assert f.unseal(None, text, 1, "protocol_items", "resolved", 42) == text
+    ok("без ключа значення проходить незміненим (kek_version = 0)")
+
+    # Повторне запечатування не має загортати двічі.
+    assert f.seal(dek, sealed, 1, "protocol_items", "resolved", 42) == sealed
+    ok("повторний seal не загортає вдруге")
+
+    for wrong, why in (
+        ((1, "protocol_items", "resolved", 43), "інший рядок"),
+        ((1, "protocol_items", "heard", 42), "інша колонка"),
+        ((1, "protocol_rulings", "resolved", 42), "інша таблиця"),
+        ((2, "protocol_items", "resolved", 42), "інша церква"),
+    ):
+        try:
+            f.unseal(dek, sealed, *wrong)
+            raise AssertionError(f"відкрилося як {why}")
+        except f.NotDecryptable:
+            pass
+    ok("не відкривається як інший рядок, колонка, таблиця чи церква")
+
+    try:
+        f.unseal(None, sealed, 1, "protocol_items", "resolved", 42)
+        raise AssertionError("позначене значення віддалося без ключа")
+    except f.NotDecryptable:
+        ok("позначене значення без ключа — гучна відмова, а не сирий base64")
+
+    row = {"id": 7, "question": "Звіт фінкомітету", "heard": "…", "resolved": "…",
+           "position": 1, "status": "considered", "votes_for": 5}
+    s = f.seal_row(dek, 1, "protocol_items", row)
+    assert all(f.is_sealed(s[k]) for k in ("question", "heard", "resolved"))
+    assert (s["position"], s["status"], s["votes_for"]) == (1, "considered", 5)
+    ok("seal_row шифрує лише §3.1-колонки, метадані лишає")
+    assert f.open_row(dek, 1, "protocol_items", s) == row
+    ok("open_row повертає рядок таким, яким він був")
+
+
 def main() -> None:
     print("Крипто-ядро (cloud_plan §5.1)")
     test_content_roundtrip()
@@ -171,6 +222,7 @@ def main() -> None:
     test_dek_under_kek()
     test_rotation_and_its_limit()
     test_recovery_key()
+    test_field_crypto()
     print(f"\n✅ {PASSED} перевірок пройдено")
 
 
