@@ -117,8 +117,20 @@ def context(*parts: object) -> bytes:
     "resolved"). Any change to how a caller spells its context makes existing
     ciphertext undecryptable, so this is a schema decision, not a convenience —
     write it once per call site and never "improve" it.
+
+    LENGTH-PREFIXED, NOT JOINED BY A SEPARATOR. A separator is safe only while
+    no part ever contains it — a promise about future call sites, and the plan's
+    own rule (§11: "не свій крипто-примітив") is that security must not rest on
+    promises of that kind. Encoding each part as its byte length followed by its
+    bytes makes ("ab", "c") and ("a", "bc") different by construction rather
+    than by convention, so a tenant slug or field name containing anything at
+    all cannot make two contexts collide.
     """
-    return "\x1f".join(str(p) for p in parts).encode("utf-8")
+    out = bytearray()
+    for part in parts:
+        raw = str(part).encode("utf-8")
+        out += len(raw).to_bytes(4, "big") + raw
+    return bytes(out)
 
 
 def encrypt(dek: bytes, plaintext: bytes, aad: bytes) -> bytes:

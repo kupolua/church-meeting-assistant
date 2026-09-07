@@ -64,6 +64,13 @@ def test_content_roundtrip() -> None:
 
     fails(lambda: c.decrypt(dek, b"short", aad), "надто короткий блоб відхиляється")
 
+    # Контекст кодується з довжинами, тож розбиття на частини не можна
+    # переграти: ("ab","c") і ("a","bc") — різні AAD за побудовою, а не тому,
+    # що ми пообіцяли не вживати роздільник у назвах полів (§11).
+    assert c.context("ab", "c") != c.context("a", "bc")
+    assert c.context("t", 1) != c.context("t1")
+    ok("склейка контексту не має зіткнень (кодування з довжинами)")
+
 
 def test_envelopes() -> None:
     print("\nКонверти")
