@@ -165,6 +165,33 @@ def decrypt(dek: bytes, blob: bytes, aad: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────
+# Wrapping a DEK under the KEK
+# ─────────────────────────────────────────────────────────────
+#
+# Symmetric here, asymmetric one layer up. The KEK is a secret every recipient
+# already shares, so sealing a DEK to each device separately would store the
+# same secret N times and make rotation N times the work for no gain. These are
+# thin names over encrypt()/decrypt() rather than new machinery — the primitive
+# is the same AEAD, and giving it a second implementation would be exactly the
+# kind of invention §11 warns about.
+
+def wrap_dek(kek: bytes, dek: bytes, aad: bytes) -> bytes:
+    """Wrap a data key under the church key. Goes to dek_envelopes.wrapped_dek."""
+    if len(dek) != KEY_BYTES:
+        raise ValueError(f"DEK must be {KEY_BYTES} bytes, got {len(dek)}")
+    return encrypt(kek, dek, aad)
+
+
+def unwrap_dek(kek: bytes, wrapped: bytes, aad: bytes) -> bytes:
+    """Inverse of wrap_dek(). Raises DecryptionFailed under a stale KEK version,
+    which is what a device sees after a rotation it has not caught up with."""
+    dek = decrypt(kek, wrapped, aad)
+    if len(dek) != KEY_BYTES:
+        raise DecryptionFailed("unwrapped value is not a key")
+    return dek
+
+
+# ─────────────────────────────────────────────────────────────
 # Recovery key — the printed third recipient
 # ─────────────────────────────────────────────────────────────
 #

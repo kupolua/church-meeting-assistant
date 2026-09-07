@@ -97,6 +97,20 @@ def test_envelopes() -> None:
     ok("KEK не зустрічається у відкритому вигляді в жодному конверті")
 
 
+def test_dek_under_kek() -> None:
+    print("\nDEK під KEK")
+    kek, dek = c.new_key(), c.new_key()
+    aad = c.context("t", 1, "dek", "2026-07-27")
+    w = c.wrap_dek(kek, dek, aad)
+    assert c.unwrap_dek(kek, w, aad) == dek
+    ok("DEK загортається під KEK і повертається")
+    assert dek not in w
+    ok("DEK не видно у відкритому вигляді в загорнутому блобі")
+    fails(lambda: c.unwrap_dek(c.new_key(), w, aad), "інша версія KEK не розгортає")
+    fails(lambda: c.unwrap_dek(kek, w, c.context("t", 1, "dek", "2026-08-03")),
+          "конверт DEK не переноситься на іншу зустріч")
+
+
 def test_rotation_and_its_limit() -> None:
     print("\nРотація й межа відкликання")
     old_kek, dek = c.new_key(), c.new_key()
@@ -154,6 +168,7 @@ def main() -> None:
     print("Крипто-ядро (cloud_plan §5.1)")
     test_content_roundtrip()
     test_envelopes()
+    test_dek_under_kek()
     test_rotation_and_its_limit()
     test_recovery_key()
     print(f"\n✅ {PASSED} перевірок пройдено")
