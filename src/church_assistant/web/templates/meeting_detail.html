@@ -19,6 +19,11 @@
         </div>
     </header>
 
+    {# ─── Зашифровано: сервер тримає цю зустріч, але не читає ─── #}
+    {% if sealed %}
+    {% with message = sealed_message %}{% include "partials/encrypted_notice.html" %}{% endwith %}
+    {% endif %}
+
     {# ─── Audio player (sticky) — timestamps in topics/стенограма seek here ─── #}
     {% if has_audio %}
     <div class="audio-player-bar">
@@ -52,7 +57,14 @@
             {% endfor %}
         </ul>
         {% else %}
+        {% if sealed %}
+        {# «Немає файлу» і «файл — шифротекст» звідси виглядають однаково, і для
+           зашифрованої церкви правдиве лише друге. Порожній стан, який називає
+           не ту причину, посилає людину шукати поламаний конвеєр. #}
+        <p><em>🔒 Список у застосунку — сервер його не читає.</em></p>
+        {% else %}
         <p><em>Учасники не розпізнані з polished.md</em></p>
+        {% endif %}
         {% endif %}
     </section>
 
@@ -87,7 +99,11 @@
             {% endfor %}
         </div>
         {% else %}
+        {% if sealed %}
+        <p><em>🔒 Теми у застосунку — сервер їх не читає.</em></p>
+        {% else %}
         <p><em>У polished.md не знайдено ### заголовків тем.</em></p>
+        {% endif %}
         {% endif %}
     </section>
 
@@ -160,7 +176,11 @@
             </form>
         </dialog>
         {% else %}
+        {% if sealed %}
+        <p><em>🔒 Стенограма у застосунку — сервер її не читає.</em></p>
+        {% else %}
         <p><em>Стенограма недоступна (немає annotated.md для цієї зустрічі).</em></p>
+        {% endif %}
         {% endif %}
     </section>
 

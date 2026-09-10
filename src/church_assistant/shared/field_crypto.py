@@ -35,6 +35,7 @@ a protocol that is internally plausible and false.
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any, Optional
 
 from church_assistant.shared import crypto
@@ -109,6 +110,50 @@ SENSITIVE: dict[str, tuple[str, ...]] = {
     "protocol_rulings": ("text", "responsible", "due"),
 }
 
+# JSONB columns from the same list. Separate because the value arrives as a
+# Python list, not a string: `attendees` is who sat in the room, which §3.1
+# calls out as exactly what a leak would expose.
+#
+# THE WHOLE LIST IS ONE BLOB, not one blob per name. Sealing each name would
+# leave the COUNT in the clear — "eleven people attended" is itself a fact about
+# a council — and would make the column a set of equal-length ciphertexts that
+# repeat across meetings whenever the same person attends twice. One blob has
+# neither property. It costs the ability to query attendance in SQL, which
+# §3.1 already gives up for every other sealed column.
+SENSITIVE_JSON: dict[str, tuple[str, ...]] = {
+    "meeting_protocols": ("attendees",),
+}
+
+
+def seal_json(
+    dek: Optional[bytes], value: Any,
+    tenant_id: int, table: str, column: str, row_id: int,
+) -> Any:
+    """Seal a JSONB value. Returns something json.dumps() can write back.
+
+    A sealed JSONB column holds a JSON *string* (the marker) where it used to
+    hold an array. Postgres is content either way, and `is_sealed` tells the
+    two apart on the way back — the same one-column-two-shapes trick the text
+    columns use, for the same reason: switching a church on stays a decision
+    rather than a migration.
+    """
+    if dek is None or value is None:
+        return value
+    if is_sealed(value):
+        return value
+    return seal(dek, json.dumps(value, ensure_ascii=False),
+                tenant_id, table, column, row_id)
+
+
+def unseal_json(
+    dek: Optional[bytes], value: Any,
+    tenant_id: int, table: str, column: str, row_id: int,
+) -> Any:
+    """Inverse of seal_json(). A plaintext array passes through untouched."""
+    if not is_sealed(value):
+        return value
+    return json.loads(unseal(dek, value, tenant_id, table, column, row_id))
+
 
 def seal_row(
     dek: Optional[bytes], tenant_id: int, table: str, row: dict[str, Any],
@@ -121,6 +166,9 @@ def seal_row(
     for col in SENSITIVE.get(table, ()):
         if col in out:
             out[col] = seal(dek, out[col], tenant_id, table, col, rid)
+    for col in SENSITIVE_JSON.get(table, ()):
+        if col in out:
+            out[col] = seal_json(dek, out[col], tenant_id, table, col, rid)
     return out
 
 
@@ -133,4 +181,7 @@ def open_row(
     for col in SENSITIVE.get(table, ()):
         if col in out:
             out[col] = unseal(dek, out[col], tenant_id, table, col, rid)
+    for col in SENSITIVE_JSON.get(table, ()):
+        if col in out:
+            out[col] = unseal_json(dek, out[col], tenant_id, table, col, rid)
     return out

@@ -109,3 +109,9 @@ app.include_router(search.router)
 app.include_router(history.router)
 app.include_router(dashboard.router)
 app.include_router(ingest.router)
+
+# Last, and after the routers on purpose: an encrypted church must never meet a
+# stack trace on a page that simply cannot be shown here. See web/encrypted.py.
+from church_assistant.web import encrypted  # noqa: E402
+
+encrypted.register(app)

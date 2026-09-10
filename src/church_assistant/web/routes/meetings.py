@@ -32,7 +32,9 @@ from church_assistant.ingestion import speaker_review as review
 from church_assistant.ingestion import speakers as speakers_util
 from church_assistant.ingestion.paths import resolve as resolve_paths
 from church_assistant.shared import meetings_index, pdf_export, tenant_paths
+from church_assistant.shared.field_crypto import NotDecryptable
 from church_assistant.shared.logger import Logger
+from church_assistant.web import encrypted
 from church_assistant.web.main import templates
 from church_assistant.web.tenant import (
     current_tenant, current_tenant_slug, current_user, require_admin,
@@ -80,7 +82,11 @@ def _find_audio(meetings_dir: Path, date: str) -> Optional[Path]:
     folder = meetings_dir / date
     if not folder.is_dir():
         return None
-    matches = sorted(folder.glob("audio.*"))
+    # `.enc` is excluded, and the glob is why it has to be: "audio.*" matches
+    # "audio.m4a.enc" perfectly happily, and the page would then hand a browser
+    # 95 MB of ciphertext behind an <audio> tag that plays nothing.
+    matches = [p for p in sorted(folder.glob("audio.*"))
+               if p.suffix != encrypted.ENC_SUFFIX]
     return matches[0] if matches else None
 
 
@@ -119,8 +125,26 @@ async def meeting_detail(request: Request, date: str):
     pool = await get_pool()
     tenant_id = current_tenant(request)
 
+    # An encrypted church, read from a node with no key, reaches this page in
+    # two halves at once: the folder is `.enc` blobs, so there is no detail to
+    # load, and the protocol columns refuse to open. Neither is an error — see
+    # web/encrypted.py — and the page is still worth rendering: the date, the
+    # number, the meetings list beside it and one sentence saying where the
+    # content is. The global handler would replace all of that with the
+    # sentence alone.
     detail = meetings_index.load_detail(tpaths.meetings, date)
-    protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+    sealed = encrypted.folder_is_sealed(tpaths.meetings / date)
+    sealed_protocol = None
+    try:
+        protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
+    except NotDecryptable:
+        # Not "no protocol": the row is there and numbered, and saying
+        # otherwise would invite an admin to open a second one for this date.
+        protocol, sealed = None, True
+        sealed_protocol = await protocols_repo.meta_by_date(pool, tenant_id, date)
+
+    if detail is None and sealed:
+        detail = meetings_index.MeetingDetail(date=date, folder=tpaths.meetings / date)
 
     if detail is None:
         # A meeting with an agenda and no recording yet: the protocol is written
@@ -170,13 +194,12 @@ async def meeting_detail(request: Request, date: str):
             "changes": review.load_changes(detail.folder),
             "me": current_user(request),
             "protocol": protocol,
-            "agenda": (
-                await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
-                if protocol else []
-            ),
+            "agenda": await _agenda(pool, tenant_id, protocol),
             "protocol_number": (
-                protocols_repo.number(protocol) if protocol else None
+                protocols_repo.number(protocol or sealed_protocol)
+                if (protocol or sealed_protocol) else None
             ),
+            "sealed_protocol": sealed_protocol,
             # Only the chair of THIS meeting writes it up. Not a church-wide
             # role: two meetings can be written up by two people at once, which
             # a role could not express.
@@ -184,8 +207,24 @@ async def meeting_detail(request: Request, date: str):
                 protocol and protocol["chair_id"] == current_user(request).user_id
             ),
             "chair_choices": await web_users_repo.list_active(pool, tenant_id),
+            "sealed": sealed,
+            "sealed_message": encrypted.READ_MESSAGE,
         },
     )
+
+
+async def _agenda(pool, tenant_id: int, protocol) -> list:
+    """The agenda, or nothing when this node cannot read it.
+
+    Separate from the protocol lookup above because the two fail independently:
+    a header that opens says nothing about whether the items will.
+    """
+    if not protocol:
+        return []
+    try:
+        return await protocols_repo.list_items(pool, tenant_id, int(protocol["id"]))
+    except NotDecryptable:
+        return []
 
 
 @router.post("/open")

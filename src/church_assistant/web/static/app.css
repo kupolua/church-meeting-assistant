@@ -1671,3 +1671,28 @@ tr.sp-add-row td { border-top: 2px dashed #b9d9c4; }
 .dash-table td code {
     white-space: nowrap;
 }
+
+/* ─── Зашифровано ─── */
+/* Not styled as an error. Nothing failed: this church asked for exactly this,
+   and a red box would tell a pastor that their privacy is a fault condition. */
+
+.encrypted-block {
+    margin-bottom: 2rem;
+    padding: 1rem 1.25rem;
+    background: var(--hit-yellow-bg);
+    border-left: 4px solid var(--hit-yellow-border);
+    border-radius: 4px;
+}
+
+.encrypted-block h4 {
+    margin: 0 0 0.4rem;
+}
+
+.encrypted-block p {
+    margin: 0 0 0.4rem;
+}
+
+.encrypted-why {
+    font-size: 0.85rem;
+    color: var(--pico-muted-color);
+}

@@ -13,6 +13,11 @@ TWO INVARIANTS LIVE IN THE DATABASE, NOT HERE, and that is deliberate:
 This module is the convenient way to reach them, never the thing that enforces
 them — a route that forgets to call it still meets both.
 
+ENCRYPTION IS THIS MODULE'S JOB, NOT ITS CALLERS'. Since 07.09 the sensitive
+columns of an encrypted church (cloud_plan §3.1) are sealed on the way in and
+opened on the way out, here — a route calls the same function it always did and
+never holds a key. See the "Encryption" section below for what that costs.
+
 A PROTOCOL MAY EXIST WITH NO MEETING FOLDER. The agenda is written before the
 meeting; the audio lands hours after it ends. So the row is keyed on
 (tenant, date) and is created first, standing alone until artifacts appear under
@@ -30,6 +35,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from church_assistant.db.tenant_context import tenant_cursor
+from church_assistant.shared import field_crypto, keyring
 
 
 STATUSES = ("draft", "review", "approved")
@@ -56,6 +62,85 @@ def number(row: dict[str, Any]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# Encryption — cloud_plan §3.1, codec in shared/field_crypto
+# ─────────────────────────────────────────────────────────────
+#
+# EVERY WRITE HERE SEALS AND EVERY READ OPENS, so no route has to remember to.
+# A church at kek_version = 0 — which is every church today — pays one indexed
+# lookup per call and takes the same path it always did.
+#
+# THE KEY IS FETCHED BEFORE THE WRITE TRANSACTION OPENS, never inside it:
+# keyring borrows its own connection, and reaching for a second one while
+# holding the first is how a small pool deadlocks under load.
+#
+# READS DEGRADE, WRITES REFUSE. A node with no key that reads gets None and
+# then a NotDecryptable it can turn into "open this in the app" (that is the
+# whole point of the marker). A node with no key that WRITES must not get None:
+# seal() would pass the text through and quietly store plaintext in a church
+# that asked for the opposite. So NoProcessorKey propagates on the write path.
+
+
+def _scope(meeting_date: Any) -> str:
+    """The DEK scope for a meeting — one key per meeting, cloud_plan §5.2.
+
+    The same string the artifact side uses for the same meeting (the folder
+    name, `artifact_sync`), so a protocol and its transcript share one key
+    rather than accumulating two per meeting for no benefit.
+    """
+    return meeting_date.isoformat() if hasattr(meeting_date, "isoformat") else str(meeting_date)
+
+
+async def _is_encrypted(pool: AsyncConnectionPool, tenant_id: int) -> bool:
+    return await keyring.kek_version(pool, tenant_id) != 0
+
+
+async def _key(
+    pool: AsyncConnectionPool, tenant_id: int, meeting_date: Any, *, writing: bool,
+) -> Optional[bytes]:
+    try:
+        return await keyring.dek_for(pool, tenant_id, _scope(meeting_date))
+    except keyring.NoProcessorKey:
+        if writing:
+            raise
+        return None
+
+
+async def _date_of(
+    pool: AsyncConnectionPool, tenant_id: int, sql: str, key_id: int,
+) -> Optional[_date]:
+    """The meeting a row belongs to — its DEK scope. One join, only when the
+    church is encrypted; a plaintext church never reaches this."""
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(sql, (key_id,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
+_DATE_OF_PROTOCOL = "SELECT meeting_date FROM meeting_protocols WHERE id = %s"
+_DATE_OF_ITEM = (
+    "SELECT p.meeting_date FROM protocol_items i "
+    "  JOIN meeting_protocols p ON p.id = i.protocol_id WHERE i.id = %s"
+)
+_DATE_OF_RULING = (
+    "SELECT p.meeting_date FROM protocol_rulings r "
+    "  JOIN protocol_items i ON i.id = r.item_id "
+    "  JOIN meeting_protocols p ON p.id = i.protocol_id WHERE r.id = %s"
+)
+
+
+async def _key_for(
+    pool: AsyncConnectionPool, tenant_id: int, sql: str, key_id: int, *, writing: bool,
+) -> Optional[bytes]:
+    """The DEK for whatever meeting the row identified by `key_id` belongs to."""
+    if not await _is_encrypted(pool, tenant_id):
+        return None
+    meeting_date = await _date_of(pool, tenant_id, sql, key_id)
+    if meeting_date is None:
+        return None                     # no such row; the caller will find out
+    return await _key(pool, tenant_id, meeting_date, writing=writing)
+
+
+# ─────────────────────────────────────────────────────────────
 # The protocol itself
 # ─────────────────────────────────────────────────────────────
 
@@ -76,6 +161,13 @@ async def create(
     both read the same maximum. The unique index on (tenant, year, seq) is the
     backstop, and it is what turns a lost race into an error instead of two
     protocols numbered 5.
+
+    TWO WRITES FOR AN ENCRYPTED CHURCH, one transaction. The AAD binds a value
+    to its row id (field_crypto), and the id does not exist until the INSERT
+    has run — so the row is written plaintext and immediately overwritten
+    sealed, before anything commits. Nothing outside this transaction ever sees
+    the first version: an interruption between the two rolls back both, and the
+    protocol simply was not opened.
     """
     sql = """
         INSERT INTO meeting_protocols
@@ -89,6 +181,7 @@ async def create(
         RETURNING id
     """
     from psycopg.errors import UniqueViolation
+    dek = await _key(pool, tenant_id, meeting_date, writing=True)
     try:
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(sql, (
@@ -98,7 +191,19 @@ async def create(
             row = await cur.fetchone()
             if row is None:
                 raise RuntimeError("INSERT ... RETURNING did not return an id")
-            return int(row[0])
+            protocol_id = int(row[0])
+            if dek is not None:
+                sealed = field_crypto.seal_row(
+                    dek, tenant_id, "meeting_protocols",
+                    {"id": protocol_id, "secretary": secretary.strip(),
+                     "created_by": created_by},
+                )
+                await cur.execute(
+                    "UPDATE meeting_protocols SET secretary = %s, created_by = %s "
+                    " WHERE id = %s",
+                    (sealed["secretary"], sealed["created_by"], protocol_id),
+                )
+            return protocol_id
     except UniqueViolation as e:
         raise ProtocolExists(
             f"protocol for {meeting_date} already exists"
@@ -108,7 +213,12 @@ async def create(
 async def get_by_date(
     pool: AsyncConnectionPool, tenant_id: int, meeting_date: str | _date,
 ) -> Optional[dict[str, Any]]:
-    """The protocol for a date, or None. Joins the chair's name for display."""
+    """The protocol for a date, or None. Joins the chair's name for display.
+
+    Raises field_crypto.NotDecryptable for an encrypted church on a node with
+    no key — the web turns that into "open this in the app" rather than
+    rendering a page with `enc.v1.…` where the secretary's name belongs.
+    """
     sql = """
         SELECT p.*, u.username AS chair_username, u.full_name AS chair_name
           FROM meeting_protocols p
@@ -118,7 +228,30 @@ async def get_by_date(
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(sql, (meeting_date,))
         row = await cur.fetchone()
-        return dict(row) if row else None
+    if row is None:
+        return None
+    protocol = dict(row)
+    dek = await _key(pool, tenant_id, protocol["meeting_date"], writing=False)
+    return field_crypto.open_row(dek, tenant_id, "meeting_protocols", protocol)
+
+
+async def meta_by_date(
+    pool: AsyncConnectionPool, tenant_id: int, meeting_date: str | _date,
+) -> Optional[dict[str, Any]]:
+    """What can be said about a protocol WITHOUT a key: its number, its date,
+    its status. Metadata only, same column list as list_all() and for the same
+    reason.
+
+    This is what the web falls back to when get_by_date() refuses to open. The
+    difference matters on the page: "there is no protocol for this meeting" and
+    "protocol № 3, which this server cannot read" are opposite statements, and
+    the first one invites an admin to open a second protocol for a date that
+    already has one.
+    """
+    for row in await list_all(pool, tenant_id):
+        if str(row["meeting_date"]) == str(meeting_date):
+            return row
+    return None
 
 
 async def list_all(
@@ -130,10 +263,19 @@ async def list_all(
     The meetings list is built from folders on disk, and a meeting whose agenda
     exists but whose audio does not has no folder — so the page needs this to
     show it at all. A protocol is the earliest thing a meeting has.
+
+    ⚠️ METADATA ONLY, and the column list is why. Everything here is open by
+    design under cloud_plan §3.1 — dates, numbering, status — so this needs no
+    key and works on a node that has none, which is what keeps the meetings
+    list alive for an encrypted church. Selecting `*` would drag `secretary`,
+    `quorum` and `attendees` through unopened and hand a template ciphertext to
+    render. Anything that needs those calls get_by_date().
     """
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(
-            "SELECT * FROM meeting_protocols ORDER BY meeting_date DESC"
+            "SELECT id, tenant_id, meeting_date, seq, protocol_year, chair_id, "
+            "       status, approved_at, approved_by, created_at, updated_at "
+            "  FROM meeting_protocols ORDER BY meeting_date DESC"
         )
         return [dict(r) for r in await cur.fetchall()]
 
@@ -148,17 +290,30 @@ async def update_header(
     attendees: Optional[list[str]] = None,
     quorum: Optional[str] = None,
 ) -> bool:
-    """Change the parts above the agenda. None means 'leave this one alone'."""
+    """Change the parts above the agenda. None means 'leave this one alone'.
+
+    One statement, unlike the inserts: the id is already known here, so the
+    values can be sealed before the UPDATE rather than after it.
+    """
+    dek = await _key_for(pool, tenant_id, _DATE_OF_PROTOCOL, protocol_id, writing=True)
+
+    def enc(column: str, value: str) -> str:
+        return field_crypto.seal(
+            dek, value, tenant_id, "meeting_protocols", column, protocol_id)
+
     sets, params = ["updated_at = NOW()"], []
     if chair_id is not None:
         sets.append("chair_id = %s"); params.append(chair_id)
     if secretary is not None:
-        sets.append("secretary = %s"); params.append(secretary.strip())
+        sets.append("secretary = %s"); params.append(enc("secretary", secretary.strip()))
     if attendees is not None:
         sets.append("attendees = %s::jsonb")
-        params.append(json.dumps(attendees, ensure_ascii=False))
+        params.append(json.dumps(
+            field_crypto.seal_json(dek, attendees, tenant_id,
+                                   "meeting_protocols", "attendees", protocol_id),
+            ensure_ascii=False))
     if quorum is not None:
-        sets.append("quorum = %s"); params.append(quorum.strip())
+        sets.append("quorum = %s"); params.append(enc("quorum", quorum.strip()))
     params.append(protocol_id)
 
     return await _write(
@@ -204,13 +359,19 @@ async def set_status(
 async def list_items(
     pool: AsyncConnectionPool, tenant_id: int, protocol_id: int,
 ) -> list[dict[str, Any]]:
-    """The agenda in order, each item carrying its rulings."""
+    """The agenda in order, each item carrying its rulings.
+
+    One key for the whole agenda: items and rulings belong to the same meeting,
+    and the DEK is per meeting.
+    """
+    dek = await _key_for(pool, tenant_id, _DATE_OF_PROTOCOL, protocol_id, writing=False)
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute(
             "SELECT * FROM protocol_items WHERE protocol_id = %s ORDER BY position",
             (protocol_id,),
         )
-        items = [dict(r) for r in await cur.fetchall()]
+        items = [field_crypto.open_row(dek, tenant_id, "protocol_items", dict(r))
+                 for r in await cur.fetchall()]
         if not items:
             return []
         await cur.execute(
@@ -220,7 +381,8 @@ async def list_items(
         )
         by_item: dict[int, list[dict[str, Any]]] = {}
         for r in await cur.fetchall():
-            by_item.setdefault(int(r["item_id"]), []).append(dict(r))
+            by_item.setdefault(int(r["item_id"]), []).append(
+                field_crypto.open_row(dek, tenant_id, "protocol_rulings", dict(r)))
         for i in items:
             i["rulings"] = by_item.get(int(i["id"]), [])
         return items
@@ -236,11 +398,15 @@ async def add_item(
     is: two people typing at once would otherwise read the same maximum, and the
     unique index on (protocol_id, position) turns that into an error rather than
     two items claiming to be third.
+
+    Sealed in a second statement inside the same transaction, for the reason
+    create() spells out: the AAD needs the id.
     """
     question = question.strip()
     if not question:
         raise ValueError("питання не може бути порожнім")
     from psycopg.errors import RaiseException
+    dek = await _key_for(pool, tenant_id, _DATE_OF_PROTOCOL, protocol_id, writing=True)
     try:
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(
@@ -253,7 +419,15 @@ async def add_item(
             row = await cur.fetchone()
             if row is None:
                 raise RuntimeError("INSERT ... RETURNING did not return an id")
-            return int(row[0])
+            item_id = int(row[0])
+            if dek is not None:
+                await cur.execute(
+                    "UPDATE protocol_items SET question = %s WHERE id = %s",
+                    (field_crypto.seal(dek, question, tenant_id,
+                                       "protocol_items", "question", item_id),
+                     item_id),
+                )
+            return item_id
     except RaiseException as e:
         raise ProtocolFrozen(str(e).strip()) from e
 
@@ -261,10 +435,13 @@ async def add_item(
 async def get_item(
     pool: AsyncConnectionPool, tenant_id: int, item_id: int,
 ) -> Optional[dict[str, Any]]:
+    dek = await _key_for(pool, tenant_id, _DATE_OF_ITEM, item_id, writing=False)
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute("SELECT * FROM protocol_items WHERE id = %s", (item_id,))
         row = await cur.fetchone()
-        return dict(row) if row else None
+    if row is None:
+        return None
+    return field_crypto.open_row(dek, tenant_id, "protocol_items", dict(row))
 
 
 async def update_item(
@@ -281,11 +458,17 @@ async def update_item(
     if status is not None and status not in ITEM_STATUSES:
         raise ValueError(f"unknown item status {status!r}")
     sets, params = [], []
-    for col, val in (("question", question), ("status", status),
-                     ("heard", heard), ("resolved", resolved)):
+    pairs = (("question", question), ("status", status),
+             ("heard", heard), ("resolved", resolved))
+    if not any(v is not None for _, v in pairs):
+        return False
+    # Only now — an update that changes nothing should not cost a key lookup.
+    dek = await _key_for(pool, tenant_id, _DATE_OF_ITEM, item_id, writing=True)
+    for col, val in pairs:
         if val is not None:
             sets.append(f"{col} = %s")
-            params.append(val.strip() if col != "status" else val)
+            params.append(val if col == "status" else field_crypto.seal(
+                dek, val.strip(), tenant_id, "protocol_items", col, item_id))
     if not sets:
         return False
     params.append(item_id)
@@ -396,11 +579,16 @@ async def add_ruling(
     responsible: str = "",
     due: str = "",
 ) -> int:
-    """Append a ruling to a question. Returns its id."""
+    """Append a ruling to a question. Returns its id.
+
+    Two statements in one transaction when the church is encrypted — see
+    create() for why the id has to exist before anything can be sealed.
+    """
     text = text.strip()
     if not text:
         raise ValueError("постанова не може бути порожньою")
     from psycopg.errors import RaiseException
+    dek = await _key_for(pool, tenant_id, _DATE_OF_ITEM, item_id, writing=True)
     try:
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(
@@ -414,7 +602,19 @@ async def add_ruling(
             row = await cur.fetchone()
             if row is None:
                 raise RuntimeError("INSERT ... RETURNING did not return an id")
-            return int(row[0])
+            ruling_id = int(row[0])
+            if dek is not None:
+                sealed = field_crypto.seal_row(
+                    dek, tenant_id, "protocol_rulings",
+                    {"id": ruling_id, "text": text,
+                     "responsible": responsible.strip(), "due": due.strip()},
+                )
+                await cur.execute(
+                    "UPDATE protocol_rulings "
+                    "   SET text = %s, responsible = %s, due = %s WHERE id = %s",
+                    (sealed["text"], sealed["responsible"], sealed["due"], ruling_id),
+                )
+            return ruling_id
     except RaiseException as e:
         raise ProtocolFrozen(str(e).strip()) from e
 
@@ -423,10 +623,13 @@ async def get_ruling(
     pool: AsyncConnectionPool, tenant_id: int, ruling_id: int,
 ) -> Optional[dict[str, Any]]:
     """One ruling — so a caller can check which question it belongs to."""
+    dek = await _key_for(pool, tenant_id, _DATE_OF_RULING, ruling_id, writing=False)
     async with tenant_cursor(pool, tenant_id, row_factory=dict_row) as cur:
         await cur.execute("SELECT * FROM protocol_rulings WHERE id = %s", (ruling_id,))
         row = await cur.fetchone()
-        return dict(row) if row else None
+    if row is None:
+        return None
+    return field_crypto.open_row(dek, tenant_id, "protocol_rulings", dict(row))
 
 
 async def update_ruling(
@@ -439,11 +642,16 @@ async def update_ruling(
     due: Optional[str] = None,
 ) -> bool:
     """Edit one ruling. None means 'leave this field alone'."""
+    pairs = (("text", text), ("responsible", responsible), ("due", due))
+    if not any(v is not None for _, v in pairs):
+        return False
+    dek = await _key_for(pool, tenant_id, _DATE_OF_RULING, ruling_id, writing=True)
     sets, params = [], []
-    for col, val in (("text", text), ("responsible", responsible), ("due", due)):
+    for col, val in pairs:
         if val is not None:
             sets.append(f"{col} = %s")
-            params.append(val.strip())
+            params.append(field_crypto.seal(
+                dek, val.strip(), tenant_id, "protocol_rulings", col, ruling_id))
     if not sets:
         return False
     params.append(ruling_id)

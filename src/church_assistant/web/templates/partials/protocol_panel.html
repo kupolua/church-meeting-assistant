@@ -30,7 +30,15 @@
         {% endif %}
     </div>
 
-    {% if not protocol %}
+    {% if not protocol and sealed_protocol %}
+    {# The row exists and is numbered; only its content is out of reach here.
+       Saying "not opened yet" would be false, and would send an admin off to
+       open a second protocol for a date that already has one. #}
+    <p class="admin-msg is-warn">
+        🔒 Протокол № {{ protocol_number }} існує, але зашифрований ключем церкви.
+        Сервер його не читає — відкрийте зустріч у застосунку.
+    </p>
+    {% elif not protocol %}
     <p class="admin-msg is-warn">
         Протокол для цієї зустрічі ще не відкрито.
         {% if me.role == 'admin' %}
