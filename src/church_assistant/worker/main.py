@@ -22,6 +22,8 @@ import asyncio
 import logging
 import signal
 
+import psycopg
+
 
 from church_assistant.db import logs_repo, queries_repo
 from church_assistant.db.connection import close_pool, get_pool
@@ -92,46 +94,78 @@ async def run() -> None:
 
     try:
         while not stop.is_set():
-            now = loop.time()
-
-            # ─── Periodic health snapshot ────────────────────
-            if health is None or (now - last_health) >= health_interval:
-                health = await health_mod.check_all()
-                last_health = loop.time()
-                await logs_repo.record_health_check(
-                    pool,
-                    ollama_up=health.ollama.up,
-                    qdrant_up=health.qdrant.up,
-                    ollama_response_time_ms=health.ollama.response_time_ms,
-                    qdrant_response_time_ms=health.qdrant.response_time_ms,
-                    notes=_health_notes(health),
+            # THE DATABASE IS ACROSS A TUNNEL, AND TUNNELS DROP. Since the split
+            # (24.08) Postgres lives on the VPS behind WireGuard; the laptop
+            # sleeps, the link renegotiates, a connection that was fine at the
+            # last poll times out at this one. That is an ordinary Tuesday, not
+            # a fault — and it used to end the process: one OperationalError
+            # left the loop, the `finally` closed the pool, and every query the
+            # church submitted afterwards sat at 'pending' until somebody
+            # noticed (10.09: nine days). The pool already discards the dead
+            # connection; all the loop has to do is not die with it.
+            try:
+                health, last_health = await _tick(
+                    pool, stop, loop, health, last_health,
+                    health_interval, poll_interval, retry_sleep, max_retries,
                 )
-                if not health.can_process_queries:
-                    _std.warning("Dependencies down: %s", _health_notes(health))
-                    await _log.warn(
-                        "worker.deps_down",
-                        message=_health_notes(health),
-                    )
-
-            # ─── Pause if we can't process ───────────────────
-            if not health.can_process_queries:
+            except psycopg.OperationalError as e:
+                _std.warning("Database unreachable, retrying in %ss: %s",
+                             retry_sleep, str(e).strip().splitlines()[0])
                 await _interruptible_sleep(stop, retry_sleep)
-                continue
-
-            # ─── Dequeue + process ───────────────────────────
-            query = await queries_repo.fetch_next_pending(pool)
-            if query is None:
-                await _interruptible_sleep(stop, poll_interval)
-                continue
-
-            await process_query(pool, query, max_retries=max_retries)
-            # Loop immediately to drain any remaining pending queries.
 
     finally:
         _std.info("Shutting down...")
         await _log.info("worker.stopped", message="worker shutting down")
         await close_pool()
         _std.info("Worker stopped, pool closed")
+
+
+async def _tick(
+    pool, stop: asyncio.Event, loop, health, last_health,
+    health_interval: float, poll_interval: float, retry_sleep: float,
+    max_retries: int,
+):
+    """One pass of the loop: a health snapshot if due, then one query if any.
+
+    Returns the (health, last_health) pair the next pass needs. Split out of
+    run() so the retry above wraps the whole pass and nothing in it — the
+    health write included, which reaches the database too.
+    """
+    now = loop.time()
+
+    # ─── Periodic health snapshot ────────────────────
+    if health is None or (now - last_health) >= health_interval:
+        health = await health_mod.check_all()
+        last_health = loop.time()
+        await logs_repo.record_health_check(
+            pool,
+            ollama_up=health.ollama.up,
+            qdrant_up=health.qdrant.up,
+            ollama_response_time_ms=health.ollama.response_time_ms,
+            qdrant_response_time_ms=health.qdrant.response_time_ms,
+            notes=_health_notes(health),
+        )
+        if not health.can_process_queries:
+            _std.warning("Dependencies down: %s", _health_notes(health))
+            await _log.warn(
+                "worker.deps_down",
+                message=_health_notes(health),
+            )
+
+    # ─── Pause if we can't process ───────────────────
+    if not health.can_process_queries:
+        await _interruptible_sleep(stop, retry_sleep)
+        return health, last_health
+
+    # ─── Dequeue + process ───────────────────────────
+    query = await queries_repo.fetch_next_pending(pool)
+    if query is None:
+        await _interruptible_sleep(stop, poll_interval)
+        return health, last_health
+
+    await process_query(pool, query, max_retries=max_retries)
+    # Return immediately to drain any remaining pending queries.
+    return health, last_health
 
 
 def main() -> None:
