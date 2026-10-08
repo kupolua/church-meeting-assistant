@@ -1,0 +1,66 @@
+# The ingestion worker (audio → transcript → protocol), on the processing node.
+# Written for the DL165 ("ai"); nothing in it is specific to that box except the
+# user and the paths.
+#
+#   sudo cp deploy/systemd/cma-ingestion-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cma-ingestion-worker
+#
+# Not restart_dev.sh, for the same reason the web tier is not: this has to come
+# back after a power cut without anyone opening a laptop. restart_dev.sh also
+# refuses to start the worker role when Ollama is unreachable, which is exactly
+# the state of a host that owns only the transcription phase.
+
+[Unit]
+Description=CMA ingestion worker (transcription + analysis phases)
+# Postgres and the artifacts are on the VPS across the tunnel. The worker would
+# survive the tunnel being late — every job claim is a fresh query, every sync a
+# fresh rsync — but starting after it keeps the first log lines clean.
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target wg-quick@wg0.service
+
+[Service]
+Type=exec
+User=kpl
+Group=kpl
+WorkingDirectory=/srv/cma
+EnvironmentFile=/srv/cma/.env
+# The stages shell out to `uv run …` by name (stages.py), and systemd's default
+# PATH has no ~/.local/bin, where the uv installer puts it. Without this the
+# worker starts fine and every job fails with "No such file or directory: 'uv'".
+Environment=PATH=/home/kpl/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# The worker group (torch, pyannote, faster-whisper, the reranker) IS wanted on
+# this host — it is the processing node — so no UV_NO_GROUP here, unlike
+# cma-web.service. On Linux the lock resolves torch to the CPU wheel (see
+# [tool.uv.sources] in pyproject), so the sync is ~1 GB, not 4.5.
+#
+# Stages run as `uv run python -m church_assistant.<module>` subprocesses from
+# stages.py; they inherit this environment, which is how WHISPER_BACKEND and the
+# HF token reach them.
+ExecStart=/home/kpl/.local/bin/uv run python -m church_assistant.ingestion.main
+
+# The loop only stops between jobs, and a transcription in flight is up to an
+# hour of GPU time. Give it room to finish rather than killing it on `restart`;
+# a killed job is requeued (INGESTION_MAX_RETRIES), so even the hard stop is safe.
+TimeoutStopSec=90min
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=10s
+
+# The GPU: Vulkan opens /dev/dri/renderD128, which the render group owns.
+SupplementaryGroups=render video
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# Home is where whisper.cpp, its models and uv's cache live, so ProtectHome is
+# off here. The artifacts and logs are the only things it writes under /srv.
+ReadWritePaths=-/srv/cma/data -/srv/cma/logs
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cma-ingestion-worker
+
+[Install]
+WantedBy=multi-user.target

@@ -23,3 +23,10 @@ PrivateKey = <VPS_PRIVATE_KEY>
 # out and this side never initiates.
 PublicKey  = <M1_PUBLIC_KEY>
 AllowedIPs = 10.10.0.2/32
+
+[Peer]
+# The DL165 ("ai") — the processing node since October 2026. Also behind NAT,
+# also dials out. Both processing peers can be on at once: during the cutover
+# the M1 kept the analysis phase while this box took transcription.
+PublicKey  = <AI_PUBLIC_KEY>
+AllowedIPs = 10.10.0.3/32

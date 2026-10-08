@@ -1,0 +1,42 @@
+# The query worker (RAG answers through Gemma + the reranker), on the processing
+# node. Companion of cma-ingestion-worker.service; same host, same .env.
+#
+#   sudo cp deploy/systemd/cma-query-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cma-query-worker
+#
+# Enable this one only when Ollama on this host answers fast enough to sit in
+# front of a person: on the DL165's CPUs gemma4:26b is a batch engine, not a
+# chat one. Until then the M1 keeps this role (CMA_ROLE=worker, restart_dev.sh).
+
+[Unit]
+Description=CMA query worker (RAG / Gemma)
+After=network-online.target wg-quick@wg0.service ollama.service
+Wants=network-online.target wg-quick@wg0.service ollama.service
+
+[Service]
+Type=exec
+User=kpl
+Group=kpl
+WorkingDirectory=/srv/cma
+EnvironmentFile=/srv/cma/.env
+# The stages shell out to `uv run …` by name (stages.py), and systemd's default
+# PATH has no ~/.local/bin, where the uv installer puts it. Without this the
+# worker starts fine and every job fails with "No such file or directory: 'uv'".
+Environment=PATH=/home/kpl/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/kpl/.local/bin/uv run python -m church_assistant.worker.main
+
+Restart=on-failure
+RestartSec=10s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=-/srv/cma/logs
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cma-query-worker
+
+[Install]
+WantedBy=multi-user.target

@@ -28,7 +28,7 @@
 -- outside the church can" (not true while processing runs on a laptop) —
 -- cloud_plan §5.0, point 3.
 --
--- Applied: 2026-09-__ (schema_version 20)
+-- Applied: 2026-10-08 (schema_version 20) — додаткова схема, kek_version=0 для всіх церков
 -- ═══════════════════════════════════════════════════════════════════════
 
 

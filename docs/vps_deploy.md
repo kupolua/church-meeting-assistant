@@ -776,3 +776,54 @@ df -h / | tail -1
 docker system df
 journalctl --disk-usage
 ```
+
+## 13. Вузол обробки: сервер «ai» замість M1 (08.10.2026)
+
+Обробка записів переїхала з ноутбука на домашній сервер HP DL165 G7
+(2× Opteron 6276, 64 ГБ, Radeon RX 580 8 ГБ) з адресою `192.168.88.18` у
+домашній мережі та `10.10.0.3` у тунелі. Веб і база лишилися на VPS як були.
+
+**Що інакше, ніж на M1.**
+- Whisper працює через `whisper.cpp` з Vulkan на RX 580 (`WHISPER_BACKEND=whisper-cpp`
+  у `.env`), бо faster-whisper не бачить цю карту (Polaris без ROCm), а на цих
+  CPU він утричі повільніший за реальний час. На карті — утричі швидший.
+  JSON на виході той самий. Обов'язково `-mc 0` (вшито в transcribe.py): з
+  переносом контексту large-v3 зациклювався на реальному записі.
+- pyannote і Gemma — на CPU. `gemma4:26b` це MoE 26B-A4B, тому CPU тягне:
+  ~8 ток/с генерація, ~74 ток/с промпт (M1: 30 / 262). Аналіз зустрічі
+  триває приблизно втричі довше, ніж на M1, відповідь на запитання — ~1,5 хв.
+- Під Linux lock-файл бере CPU-збірку torch (`[tool.uv.sources]` у pyproject);
+  на macOS нічого не змінилось.
+- Без AVX2 на цих CPU: готові колеса працюють, але все, що компілюється,
+  збирати на місці.
+
+**Як підняти з нуля.** Ubuntu Server 26.04, користувач `kpl` із sudo без пароля,
+корінь на весь диск (інсталятор за замовчуванням лишає половину LVM вільною —
+`lvextend -l +100%FREE -r`). Далі:
+
+```bash
+scp deploy/provision-ai-server.sh kpl@192.168.88.18:~/ && ssh kpl@192.168.88.18 sh provision-ai-server.sh
+# WireGuard: ключі → deploy/wireguard/wg0.ai.conf.example → /etc/wireguard/wg0.conf,
+#   peer 10.10.0.3/32 на VPS; systemctl enable --now wg-quick@wg0
+# Код: rsync робочого дерева в /srv/cma (без .venv, data, logs, .env), uv sync
+# .env: deploy/env/ai.env.example поверх .env з M1 (пароль БД, HF-токен)
+#   без коментарів після значень — systemd читає EnvironmentFile буквально
+# ssh-ключ сервера → authorized_keys користувача cma на VPS (для rsync артефактів)
+sudo cp deploy/systemd/cma-ingestion-worker.service deploy/systemd/cma-query-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cma-ingestion-worker cma-query-worker
+```
+
+**Схема.** Воркер із HEAD потребує міграції 019 (`tenants.kek_version`);
+застосована 08.10.2026 (schema_version 20) з M1 через тунель, як бекап:
+`docker exec -i -e PGPASSWORD=… cma-postgres psql -h 10.10.0.1 -U cma -d cma < …/019_key_envelopes.sql`.
+Веб на VPS лишився на `29fcec2` — йому нові таблиці байдужі.
+
+**Світло.** Сервер піднімається сам: `wg-quick@wg0`, обидва воркери, `ollama`
+і udev-правило, що тримає пам'ять карти на 2000 МГц (без монітора amdgpu
+лишає 300). Завдання, обірване вимкненням, воркер повертає в чергу
+(`INGESTION_MAX_RETRIES`). На MikroTik статична оренда має бути **без
+Client ID** (він змінюється при перевстановленні ОС), а в netplan стоїть
+`dhcp-identifier: mac` — інакше після кожного перевстановлення адреса нова.
+
+**Відкат на M1.** Зупинити обидва юніти на сервері, на M1 — `restart_dev.sh`
+з `CMA_ROLE=worker`. Схема 20 для коду на M1 теж підходить.
