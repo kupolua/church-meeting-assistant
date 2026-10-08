@@ -55,6 +55,12 @@ dev = [
 worker = [
     "faster-whisper>=1.2.1",
     "pyannote-audio>=4.0.4",
+    # torch is only here so that [tool.uv.sources] below can point Linux at the
+    # CPU wheel; uv applies sources to direct dependencies only. pyannote pins the
+    # real version range.
+    "torch",
+    "torchaudio",
+    "torchcodec",
     "sentence-transformers>=3.0.0",
     "omegaconf>=2.3.0",
 ]
@@ -63,3 +69,18 @@ worker = [
 # The worker set installs by default; the VPS opts out. See the note above for
 # why the default leans this way.
 default-groups = ["dev", "worker"]
+
+# On Linux the worker is the DL165: an RX 580 that CUDA cannot use and that
+# PyTorch cannot use either (no ROCm for Polaris). The default Linux wheel of torch
+# still ships the CUDA libraries — the 4.5 GB the comment above talks about — so
+# Linux takes the CPU-only build. macOS resolves from PyPI as before; nothing
+# changes for the M1.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchcodec = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
