@@ -59,6 +59,37 @@ def get_sequential() -> bool:
     return _bool_env("INGESTION_SEQUENTIAL", False)
 
 
+# Job statuses each phase claims. The DB function claims pending→transcribing and
+# queued_analysis→analyzing; a worker that owns only one phase must not take the
+# other's jobs, or they would sit in transcribing/analyzing on a host that never
+# finishes them.
+PHASE_STATUSES: dict[str, str] = {
+    "transcription": "pending",
+    "analysis": "queued_analysis",
+}
+
+
+def get_phases() -> tuple[str, ...]:
+    """
+    Which pipeline phases this worker claims: INGESTION_PHASES as a comma list of
+    'transcription' and/or 'analysis'. Default: both — one host does everything,
+    as the M1 always has.
+
+    The split exists for the move to the DL165: the GPU box can take transcription
+    on day one while the M1 keeps the Gemma analysis until Ollama is proven there,
+    and the two workers share the queue without stepping on each other.
+    """
+    load_dotenv()
+    raw = (os.getenv("INGESTION_PHASES") or "transcription,analysis").strip().lower()
+    phases = tuple(p.strip() for p in raw.split(",") if p.strip())
+    unknown = set(phases) - set(PHASE_STATUSES)
+    if unknown or not phases:
+        raise SystemExit(
+            f"INGESTION_PHASES={raw!r}: expected a comma list of {sorted(PHASE_STATUSES)}"
+        )
+    return phases
+
+
 def get_auto_index() -> bool:
     """Auto-run index_meeting into Qdrant after polish (full cycle)."""
     load_dotenv()

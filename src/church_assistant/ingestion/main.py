@@ -30,9 +30,11 @@ import signal
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db.connection import close_pool, get_pool
 from church_assistant.ingestion.config import (
+    PHASE_STATUSES,
     get_auto_index,
     get_health_check_interval,
     get_max_retries,
+    get_phases,
     get_poll_interval,
     get_sequential,
 )
@@ -66,6 +68,8 @@ async def run() -> None:
     max_retries = get_max_retries()
     sequential = get_sequential()
     auto_index = get_auto_index()
+    phases = get_phases()
+    phase_statuses = tuple(PHASE_STATUSES[p] for p in phases)
 
     pool = await get_pool()
 
@@ -79,8 +83,9 @@ async def run() -> None:
 
     _std.info(
         "Ingestion worker started (poll=%ss, health=%ss, max_retries=%s, "
-        "sequential=%s, auto_index=%s)",
+        "sequential=%s, auto_index=%s, phases=%s)",
         poll_interval, health_interval, max_retries, sequential, auto_index,
+        ",".join(phases),
     )
     await _log.info(
         "ingestion.started",
@@ -100,10 +105,14 @@ async def run() -> None:
                 last_health = loop.time()
 
             # Analysis + indexing need Ollama/Qdrant; transcription doesn't.
+            # On top of that, only the phases this host owns (INGESTION_PHASES).
             if health.can_process_queries:
-                allowed = ("pending", "queued_analysis")
+                allowed = tuple(s for s in ("pending", "queued_analysis") if s in phase_statuses)
             else:
-                allowed = ("pending",)
+                allowed = tuple(s for s in ("pending",) if s in phase_statuses)
+            if not allowed:
+                await _interruptible_sleep(stop, poll_interval)
+                continue
 
             # ─── Dequeue + process ───────────────────────────
             job = await jobs_repo.fetch_next_runnable(pool, allowed_statuses=allowed)
