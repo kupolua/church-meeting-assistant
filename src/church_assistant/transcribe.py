@@ -1,5 +1,8 @@
 """Whisper transcription with caching.
 
+Two engines behind one JSON contract — see WHISPER_BACKEND below. The M1 runs
+faster-whisper on the CPU; the DL165 runs whisper.cpp on the RX 580 via Vulkan.
+
 Mirrors the structure of diarization.py:
 - Long pipeline call (~2h on M1 CPU)
 - Save to disk BEFORE printing summary (so a crash at print time doesn't lose work)
@@ -27,19 +30,47 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from faster_whisper import WhisperModel
+from dotenv import load_dotenv
 
+# The stage runs as its own `uv run python -m …` process; when started by hand
+# the worker's environment is not there, so read .env the way the worker does.
+load_dotenv()
 
 # Whisper parameters — these match what gave 4+/5 quality in earlier experiments
 MODEL_NAME = "large-v3"
 LANGUAGE = "uk"
 BEAM_SIZE = 5
 COMPUTE_TYPE = "int8"  # int8 quantization — best speed/quality on M1 CPU
+
+# Which engine runs the model. Both produce the same TranscriptionResult JSON, so
+# nothing downstream (merge_transcript, polish, the web) can tell them apart.
+#
+#   faster-whisper  (default) — CTranslate2 on the CPU. What the M1 has always run.
+#   whisper-cpp     — the whisper.cpp CLI, used on the DL165 where the model runs on
+#                     the RX 580 through Vulkan. faster-whisper has no path to that
+#                     GPU (Polaris has no ROCm), and on the Opteron CPUs it is 3×
+#                     slower than real time; whisper.cpp on the card is 3× faster.
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "faster-whisper").strip().lower()
+WHISPER_CPP_BIN = Path(
+    os.getenv("WHISPER_CPP_BIN") or Path.home() / "whisper.cpp/build/bin/whisper-cli"
+)
+WHISPER_CPP_MODEL = Path(
+    os.getenv("WHISPER_CPP_MODEL")
+    or Path.home() / "whisper.cpp/models/ggml-large-v3-q8_0.bin"
+)
+# CPU threads for the parts whisper.cpp keeps on the host (sampling, feature
+# extraction). 4 is plenty when the matmuls are on the GPU; more only steals cores
+# from a diarization running alongside.
+WHISPER_CPP_THREADS = int(os.getenv("WHISPER_CPP_THREADS", "4"))
 
 
 @dataclass
@@ -91,10 +122,23 @@ class TranscriptionResult:
 
 
 def transcribe_audio(audio_path: Path) -> TranscriptionResult:
-    """Run faster-whisper transcription on the audio file.
+    """Run Whisper on the audio file with whichever backend WHISPER_BACKEND names.
 
-    This is the slow part (~2h on M1 CPU for 2h audio).
+    This is the slow part (~2h on M1 CPU for 2h audio; ~40 min on the RX 580).
     """
+    if WHISPER_BACKEND == "whisper-cpp":
+        return _transcribe_whisper_cpp(audio_path)
+    if WHISPER_BACKEND != "faster-whisper":
+        raise SystemExit(
+            f"WHISPER_BACKEND={WHISPER_BACKEND!r}: expected 'faster-whisper' or 'whisper-cpp'"
+        )
+    return _transcribe_faster_whisper(audio_path)
+
+
+def _transcribe_faster_whisper(audio_path: Path) -> TranscriptionResult:
+    """CTranslate2 on the CPU — the original path, unchanged."""
+    from faster_whisper import WhisperModel  # heavy import; only when this backend runs
+
     print(f"Loading model {MODEL_NAME} (compute_type={COMPUTE_TYPE})...")
     model = WhisperModel(MODEL_NAME, device="cpu", compute_type=COMPUTE_TYPE)
 
@@ -132,6 +176,93 @@ def transcribe_audio(audio_path: Path) -> TranscriptionResult:
         language_probability=float(info.language_probability),
         processing_time_seconds=elapsed,
         model_name=MODEL_NAME,
+        segments=segments,
+    )
+
+
+def _audio_duration_seconds(audio_path: Path) -> float | None:
+    """Duration from ffprobe, or None when ffprobe is missing or unhappy."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    proc = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(audio_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _transcribe_whisper_cpp(audio_path: Path) -> TranscriptionResult:
+    """whisper.cpp CLI → the same TranscriptionResult faster-whisper produces.
+
+    whisper.cpp reads only 16 kHz mono WAV, so the recording goes through ffmpeg
+    into a temp dir first; the JSON it writes (-oj) has per-segment offsets in ms.
+    """
+    for what, path in (("binary", WHISPER_CPP_BIN), ("model", WHISPER_CPP_MODEL)):
+        if not path.exists():
+            raise SystemExit(f"whisper.cpp {what} not found: {path} "
+                             f"(set WHISPER_CPP_BIN / WHISPER_CPP_MODEL)")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SystemExit("whisper-cpp backend needs ffmpeg on PATH to resample the audio")
+
+    print(f"whisper.cpp: {WHISPER_CPP_BIN.name}, model {WHISPER_CPP_MODEL.name}, "
+          f"language={LANGUAGE}, beam_size={BEAM_SIZE}, threads={WHISPER_CPP_THREADS}")
+    start_time = time.time()
+    with tempfile.TemporaryDirectory(prefix="whisper-cpp-") as tmp:
+        wav = Path(tmp) / "audio.wav"
+        out_prefix = Path(tmp) / "out"
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-i", str(audio_path), "-ac", "1", "-ar", "16000", str(wav)],
+            check=True,
+        )
+        # -mc 0: do not condition on the previous window's text. With the carry-over
+        # on, large-v3 fell into a loop on a real 98-minute recording (the same
+        # sentence every second from 01:10:30 to the end). faster-whisper has the
+        # same knob (condition_on_previous_text); here it is simply off.
+        cmd = [
+            str(WHISPER_CPP_BIN), "-m", str(WHISPER_CPP_MODEL), "-f", str(wav),
+            "-l", LANGUAGE, "-bs", str(BEAM_SIZE), "-t", str(WHISPER_CPP_THREADS),
+            "-mc", "0", "-oj", "-of", str(out_prefix),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            tail = "\n".join((proc.stderr or proc.stdout).splitlines()[-15:])
+            raise RuntimeError(f"whisper-cli exited {proc.returncode}:\n{tail}")
+        with (out_prefix.with_suffix(".json")).open(encoding="utf-8") as f:
+            raw = json.load(f)
+    elapsed = time.time() - start_time
+
+    segments: list[TranscriptSegment] = []
+    for item in raw.get("transcription", []):
+        text = item.get("text", "").strip()
+        if not text:
+            continue
+        offsets = item["offsets"]
+        segments.append(TranscriptSegment(
+            start=offsets["from"] / 1000.0,
+            end=offsets["to"] / 1000.0,
+            text=text,
+        ))
+
+    duration = _audio_duration_seconds(audio_path)
+    if duration is None:
+        duration = segments[-1].end if segments else 0.0
+    language = (raw.get("result") or {}).get("language") or LANGUAGE
+
+    return TranscriptionResult(
+        audio_path=str(audio_path),
+        duration=float(duration),
+        language=language,
+        # The language is forced, so whisper.cpp does not score it. 1.0 keeps the
+        # field meaningful for consumers that print or threshold it.
+        language_probability=1.0,
+        processing_time_seconds=elapsed,
+        model_name=f"{MODEL_NAME} ({WHISPER_CPP_MODEL.stem}, whisper.cpp)",
         segments=segments,
     )
 
@@ -203,7 +334,8 @@ def print_summary(result: TranscriptionResult, limit: int = 20) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Transcribe audio with faster-whisper (large-v3, Ukrainian)"
+        description="Transcribe audio with Whisper large-v3 (Ukrainian); "
+                    "engine chosen by WHISPER_BACKEND: faster-whisper (default) or whisper-cpp"
     )
     parser.add_argument(
         "audio",
