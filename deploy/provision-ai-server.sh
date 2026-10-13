@@ -22,6 +22,13 @@ for c in /sys/class/drm/card*/device; do
   grep -q 0x1002 "$c/vendor" 2>/dev/null && echo high | sudo tee "$c/power_dpm_force_performance_level" >/dev/null || true
 done
 
+echo "== Ollama тримає моделі в пам'яті (64 ГБ є; інакше кожен запит після паузи платить ~2 хв за gemma4:26b)"
+if [ -d /etc/systemd/system ] && systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+  sudo mkdir -p /etc/systemd/system/ollama.service.d
+  printf "[Service]\nEnvironment=OLLAMA_KEEP_ALIVE=-1\n" | sudo tee /etc/systemd/system/ollama.service.d/keepalive.conf >/dev/null
+  sudo systemctl daemon-reload && sudo systemctl restart ollama || true
+fi
+
 echo "== uv"
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
 export PATH="$HOME/.local/bin:$PATH"

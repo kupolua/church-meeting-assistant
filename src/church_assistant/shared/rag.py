@@ -81,6 +81,15 @@ OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))
 # three-hour transcription, and 31 GB of pageouts is what the swapping cost.
 GEMMA_KEEP_ALIVE = os.getenv("GEMMA_KEEP_ALIVE", "").strip()
 
+# Whether Gemma may "think" before answering a question. gemma4 does this by
+# default through /api/chat, and on the DL165 it is where the time goes: 700–1300
+# hidden tokens at 8 tok/s before the first visible word — 154 s vs 54 s and
+# 236 s vs 72 s on the two first real questions, with the visible answers equal
+# or better without it (the thinking run gave a bare list of dates where the
+# plain one explained what each meeting decided). Off by default; GEMMA_THINK=1
+# turns it back on.
+GEMMA_THINK = os.getenv("GEMMA_THINK", "0").strip().lower() in ("1", "true", "yes", "on")
+
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
 # Score thresholds — informational only in this module
@@ -415,6 +424,7 @@ async def call_gemma(question: str, hits: list[Hit]) -> str:
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
+        "think": GEMMA_THINK,
         "options": {
             "temperature": 0.1,
             "num_ctx": 16384,
