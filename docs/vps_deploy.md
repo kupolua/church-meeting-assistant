@@ -827,3 +827,12 @@ Client ID** (він змінюється при перевстановленні
 
 **Відкат на M1.** Зупинити обидва юніти на сервері, на M1 — `restart_dev.sh`
 з `CMA_ROLE=worker`. Схема 20 для коду на M1 теж підходить.
+
+### PDF-експорт і шрифти на VPS (14.10.2026)
+
+Експорт тем у PDF падав з «No Cyrillic-capable TTF found»: на VPS немає
+жодного шрифту з кирилицею, а `cma` не має root для `apt install
+fonts-dejavu-core`. Обхід без root: `DejaVuSans.ttf` і `DejaVuSans-Bold.ttf`
+лежать у `/srv/cma/fonts/`, а в `/srv/cma/.env` стоять `PDF_FONT_PATH` і
+`PDF_FONT_BOLD_PATH` на них. Після перевстановлення VPS або під час
+наступного візиту під root — просто поставити пакет, і змінні можна прибрати.

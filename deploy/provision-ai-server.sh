@@ -29,6 +29,10 @@ if [ -d /etc/systemd/system ] && systemctl list-unit-files ollama.service >/dev/
   sudo systemctl daemon-reload && sudo systemctl restart ollama || true
 fi
 
+echo "== needrestart не чіпає Ollama і воркери під час щоденних оновлень (перезапуск посеред чанка валить аналіз)"
+sudo mkdir -p /etc/needrestart/conf.d
+sudo install -m 644 "$(dirname "$0")/needrestart-cma.conf" /etc/needrestart/conf.d/cma.conf 2>/dev/null || echo "   (поклади deploy/needrestart-cma.conf поруч зі скриптом)"
+
 echo "== uv"
 command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
 export PATH="$HOME/.local/bin:$PATH"

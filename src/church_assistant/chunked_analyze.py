@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ MODEL_NAME = "gemma4:26b"
 NUM_CTX = 32768
 NUM_PREDICT = 8192
 TEMPERATURE = 0.0
+# Whether Gemma may "think" before writing a chunk's analysis. Default ON: this
+# is the setting every protocol so far was produced with. The question path
+# (shared/rag.py) runs with it off after measuring 3× faster answers of equal
+# quality; for the analysis the same measurement is a side-by-side run on one
+# meeting with GEMMA_THINK_ANALYSIS=0 — see docs/vps_deploy.md §13.
+THINK = os.getenv("GEMMA_THINK_ANALYSIS", "1").strip().lower() in ("1", "true", "yes", "on")
 
 # Fail criteria — anything less than this many characters is considered an empty response
 MIN_VALID_OUTPUT_CHARS = 100
@@ -265,6 +272,7 @@ def call_gemma_once(chunk: Chunk) -> tuple[str, float]:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
+        think=THINK,
         options={
             "num_ctx": NUM_CTX,
             "num_predict": NUM_PREDICT,
