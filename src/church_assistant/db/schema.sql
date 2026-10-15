@@ -332,7 +332,7 @@ ORDER BY id DESC
 LIMIT 1;
 
 -- Queue depth (for dashboard widget)
-CREATE OR REPLACE VIEW v_queue_depth AS
+CREATE OR REPLACE VIEW v_queue_depth WITH (security_invoker = true) AS
 SELECT
     count(*) FILTER (WHERE status = 'pending') AS pending,
     count(*) FILTER (WHERE status = 'processing') AS processing,
@@ -340,7 +340,10 @@ SELECT
 FROM queries;
 
 -- Today's stats
-CREATE OR REPLACE VIEW v_stats_today AS
+-- security_invoker on the three per-church aggregates: a plain view runs as its
+-- owner (the superuser), who is exempt from RLS — a second church then counted
+-- the first one's jobs. Migration 020.
+CREATE OR REPLACE VIEW v_stats_today WITH (security_invoker = true) AS
 SELECT
     count(*) AS total,
     count(*) FILTER (WHERE status = 'completed') AS completed,
@@ -352,7 +355,7 @@ FROM queries
 WHERE asked_at > NOW() - INTERVAL '24 hours';
 
 -- Ingestion queue depth (for the ingestion dashboard widget)
-CREATE OR REPLACE VIEW v_ingestion_depth AS
+CREATE OR REPLACE VIEW v_ingestion_depth WITH (security_invoker = true) AS
 SELECT
     count(*) FILTER (WHERE status = 'pending')          AS pending,
     count(*) FILTER (WHERE status = 'transcribing')     AS transcribing,

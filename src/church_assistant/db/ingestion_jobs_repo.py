@@ -327,7 +327,7 @@ async def cancel(pool: AsyncConnectionPool, tenant_id: int, job_id: int) -> None
 
 
 # ─────────────────────────────────────────────────────────────
-# Aggregations (per-tenant — RLS scopes the view automatically)
+# Aggregations (per-tenant — the view is security_invoker, so RLS applies; migration 020)
 # ─────────────────────────────────────────────────────────────
 
 async def get_depth(pool: AsyncConnectionPool, tenant_id: int) -> dict[str, int]:
