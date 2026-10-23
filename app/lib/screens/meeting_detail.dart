@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:local_auth/local_auth.dart';
 import '../api.dart';
 import '../models.dart';
 import '../session.dart';
+import '../signing.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'audio_bar.dart';
+import 'signing_key.dart';
 
 /// One meeting from the server: the protocol (Слухали / Вирішили /
 /// Постановили per point) when there is one, the topics with their
@@ -41,7 +44,9 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
     try {
       final d = await widget.session.api.meeting(widget.date);
       if (!mounted) return;
-      setState(() { m = d; error = null; });
+      final k = await DeviceSigningKey.load();
+      if (!mounted) return;
+      setState(() { m = d; error = null; _phoneHasKey = k != null && k.serverId != null; });
       // No protocol yet → open on the topics, which is what there is.
       if (d.protocol == null && d.topics.isNotEmpty) _tabs.index = 1;
       if (widget.focusTopic != null || widget.seekTc != null) _focus(d);
@@ -238,8 +243,143 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           ],
         ],
       ],
+      if (p.signing != null) ...[const SizedBox(height: 18), _signatures(d, p)],
     ]);
   }
+
+  // ─── Підписи ─────────────────────────────────────────────
+  bool _signing = false;
+  String? _signError;
+  /// Whether THIS phone holds a registered key — the server only knows the
+  /// person has one somewhere.
+  bool _phoneHasKey = false;
+
+  Widget _signatures(MeetingData d, ProtocolData p) {
+    final sg = p.signing!;
+    final status = p.meta.status;
+    return Card6(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text('Підписи присутніх', style: T.itemTitle),
+          const Spacer(),
+          if (sg.required.isNotEmpty) Text('${sg.requiredSigned} із ${sg.required.length}', style: T.meta),
+        ]),
+        const SizedBox(height: 10),
+        if (sg.required.isEmpty)
+          Text('У протоколі не вказано присутніх, тому обовʼязкових підписів немає. Підписати може будь-хто з ради.', style: T.small)
+        else
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final r in sg.required) _signerChip(r.name, signed: r.signed, stale: r.stale, member: r.userId != null),
+            for (final e in sg.extra) _signerChip(e.name, signed: true, stale: false, member: true),
+          ]),
+        if (sg.extra.isNotEmpty && sg.required.isNotEmpty) ...[const SizedBox(height: 6), Text('світліші — підписали, хоч і не в списку присутніх', style: T.small.copyWith(color: C.faint))],
+        const SizedBox(height: 12),
+        if (status == 'approved')
+          Text('Протокол затверджено${p.meta.approvedAt != null ? ' ${p.meta.approvedAt!.split('T').first}' : ''}. Доручення передано у «Стан справ».', style: T.meta.copyWith(color: C.okText))
+        else if (status == 'draft') ...[
+          Text(sg.canSendToReview ? 'Чернетка. Коли текст готовий, надішліть його на підпис.' : 'Чернетка: ведучий ще дописує протокол.', style: T.meta),
+          if (sg.canSendToReview) ...[const SizedBox(height: 10), PrimaryButton(_signing ? 'Хвилинку…' : 'Надіслати на підпис', icon: Icons.send_outlined, onPressed: _signing ? null : () => _setStatus('review'))],
+        ] else ...[
+          if (sg.mySignature == 'current') Text('Ви підписали цей текст.', style: T.meta.copyWith(color: C.okText))
+          else if (sg.mySignature == 'stale') Text('Текст змінився після вашого підпису — підпишіть ще раз.', style: T.meta.copyWith(color: C.amber)),
+          if (sg.canSign && _phoneHasKey) ...[const SizedBox(height: 10), PrimaryButton(_signing ? 'Підписую…' : 'Підписати протокол', icon: Icons.fingerprint, onPressed: _signing ? null : () => _sign(d, p))],
+          if (sg.needsKey || (sg.canSign && !_phoneHasKey)) ...[
+            const SizedBox(height: 10),
+            Text('Щоб підписати, на цьому телефоні потрібен ключ підпису.', style: T.meta.copyWith(color: C.amber)),
+            const SizedBox(height: 8),
+            SecondaryButton('Створити ключ', onPressed: () async { await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SigningKeyScreen(session: widget.session))); _load(); }),
+          ],
+          if (sg.canApprove) ...[
+            const SizedBox(height: 8),
+            SecondaryButton('Затвердити без решти підписів', onPressed: _signing ? null : () => _confirmApprove(p)),
+          ],
+        ],
+        if (_signError != null) ...[const SizedBox(height: 8), Text(_signError!, style: T.meta.copyWith(color: C.recText))],
+      ]),
+    );
+  }
+
+  Widget _signerChip(String name, {required bool signed, required bool stale, required bool member}) {
+    final first = name.split(' ').where((w) => w.isNotEmpty).toList();
+    final initials = first.take(2).map((w) => w[0].toUpperCase()).join();
+    final bg = signed ? C.okBg : (stale ? C.warnBg : C.chipBg);
+    final fg = signed ? C.okText : (stale ? C.warnText : C.muted);
+    return Tooltip(
+      message: member ? name : '$name — немає акаунта в застосунку',
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(99)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          CircleAvatar(radius: 11, backgroundColor: signed ? C.okText : (stale ? C.warnText : C.label), child: Text(initials, style: T.nav.copyWith(color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w600))),
+          const SizedBox(width: 6),
+          Text(first.isEmpty ? name : first.first, style: T.small.copyWith(color: fg)),
+          if (signed) ...[const SizedBox(width: 4), const Icon(Icons.check, size: 13, color: C.okText)],
+          if (!member) ...[const SizedBox(width: 4), const Icon(Icons.no_accounts_outlined, size: 13, color: C.faint)],
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _setStatus(String status) async {
+    setState(() { _signing = true; _signError = null; });
+    try {
+      await widget.session.api.setProtocolStatus(widget.date, status);
+      await _load();
+    } on ApiException catch (e) {
+      setState(() => _signError = e.message);
+    } finally {
+      if (mounted) setState(() => _signing = false);
+    }
+  }
+
+  Future<void> _confirmApprove(ProtocolData p) async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text('Затвердити протокол ${p.meta.number}?', style: T.h2),
+      content: Text('Після цього текст змінити не можна, а всі «Постановили» стануть дорученнями у «Стані справ». Підписи, яких бракує, уже не зберуться.', style: T.body),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Ні')), TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Затвердити'))],
+    ));
+    if (ok == true) await _setStatus('approved');
+  }
+
+  /// The signature: the phone's key over the 32 bytes of the server's hash,
+  /// behind the fingerprint or the signing password — then to the server,
+  /// which verifies before it keeps anything.
+  Future<void> _sign(MeetingData d, ProtocolData p) async {
+    final sg = p.signing!;
+    setState(() { _signing = true; _signError = null; });
+    try {
+      final key = await DeviceSigningKey.load();
+      if (key == null || key.serverId == null) {
+        setState(() => _signError = 'На цьому телефоні немає ключа підпису — створіть його в налаштуваннях.');
+        return;
+      }
+      String? password;
+      if (key.guard == KeyGuard.biometric) {
+        final ok = await LocalAuthentication().authenticate(localizedReason: 'Підписати протокол ${p.meta.number}', biometricOnly: true, persistAcrossBackgrounding: true);
+        if (!ok) return;
+      } else {
+        if (!mounted) return;
+        password = await askSigningPassword(context);
+        if (password == null) return;
+      }
+      final sigB64 = await key.sign(_hex(sg.contentHash), password: password);
+      final (approved, _) = await widget.session.api.signProtocol(widget.date, contentHash: sg.contentHash, keyId: key.serverId!, signatureB64: sigB64);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(approved ? 'Підписано. Усі присутні підписали — протокол затверджено.' : 'Підписано.')));
+      await _load();
+    } on WrongPassword {
+      setState(() => _signError = 'Невірний пароль підпису.');
+    } on ApiException catch (e) {
+      setState(() => _signError = e.message);
+      await _load();
+    } catch (e) {
+      setState(() => _signError = 'Не вдалося підписати: $e');
+    } finally {
+      if (mounted) setState(() => _signing = false);
+    }
+  }
+
+  static List<int> _hex(String h) => [for (var i = 0; i < h.length; i += 2) int.parse(h.substring(i, i + 2), radix: 16)];
 
   /// "Слухали" is free text the chair wrote; timecodes inside it, if any,
   /// become chips like everywhere else.

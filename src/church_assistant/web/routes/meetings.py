@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 
 from church_assistant.db import audit_repo
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
-from church_assistant.db import protocols_repo, web_users_repo
+from church_assistant.db import protocols_repo, tasks_repo, web_users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.ingestion import manual_speakers
 from church_assistant.ingestion import speaker_review as review
@@ -592,6 +592,12 @@ async def approve_protocol(request: Request, date: str, confirm: str = Form(""))
     await protocols_repo.set_status(
         pool, tenant_id, int(protocol["id"]), "approved",
         approved_by=current_user(request).user_id,
+    )
+    # The rulings leave the meeting and become «Стан справ» (023) — the same
+    # step the app takes when the last signature lands.
+    await tasks_repo.materialize(
+        pool, tenant_id, protocol_id=int(protocol["id"]),
+        meeting_date=protocol["meeting_date"], items=items,
     )
     await audit_repo.record(
         pool,

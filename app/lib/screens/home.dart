@@ -91,17 +91,21 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 18),
         const SectionLabel('Стан справ'),
         const SizedBox(height: 8),
-        Card6(
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const StatusBoardScreen())),
-          child: Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Доручення з протоколів', style: T.itemTitle),
-              const SizedBox(height: 3),
-              Text('зʼявляться після підпису протоколів (крок 4)', style: T.meta),
-            ])),
-            const Icon(Icons.chevron_right, color: C.label),
-          ]),
-        ),
+        Builder(builder: (_) {
+          final open = (d?.tasks['new'] ?? 0) + (d?.tasks['in_progress'] ?? 0);
+          final done = d?.tasks['done'] ?? 0;
+          return Card6(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => StatusBoardScreen(session: widget.session))),
+            child: Row(children: [
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(open == 0 ? 'Відкритих доручень немає' : '$open ${plural(open, 'доручення', 'доручення', 'доручень')} у роботі', style: T.itemTitle),
+                const SizedBox(height: 3),
+                Text(done == 0 ? 'доручення зʼявляються із затверджених протоколів' : '$done виконано', style: T.meta),
+              ])),
+              const Icon(Icons.chevron_right, color: C.label),
+            ]),
+          );
+        }),
         if (d != null && d.processing.isNotEmpty) ...[
           const SizedBox(height: 18),
           const SectionLabel('Обробка'),

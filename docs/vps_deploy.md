@@ -676,7 +676,8 @@ VPS стояв на 29fcec2 (33 коміти позаду: шифрування,
 юніта давно немає — не заважає.
 
 Того ж вечора — 022 (schema_version 23, `signing_keys`), тим самим порядком,
-бекап `cma-pre-022-*`.
+бекап `cma-pre-022-*`. 24.10 — 023 (schema_version 24, `protocol_signatures`
+і `tasks`), бекап `cma-pre-023-*`.
 
 Нове в `.env` після 021 (усе необовʼязкове): `SMTP_HOST/PORT/USER/PASSWORD/FROM`
 і `PLATFORM_NOTIFY_EMAIL`. Без SMTP код для входу з застосунку друкується в

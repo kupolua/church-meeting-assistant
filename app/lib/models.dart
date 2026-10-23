@@ -29,9 +29,10 @@ class MeetingRow {
 }
 
 class HomeData {
-  const HomeData({required this.meetings, required this.topics, required this.actionItems, required this.protocols, required this.attention, required this.processing});
+  const HomeData({required this.meetings, required this.topics, required this.actionItems, required this.protocols, required this.attention, required this.processing, this.tasks = const {}});
   final int meetings, topics, actionItems;
   final Map<String, int> protocols; // draft / review / approved
+  final Map<String, int> tasks; // new / in_progress / done / cancelled
   final List<({String date, ProtocolMeta? protocol})> attention;
   final List<({String? date, String? status})> processing;
   factory HomeData.fromJson(Map<String, dynamic> j) {
@@ -41,6 +42,7 @@ class HomeData {
       protocols: {for (final e in Map<String, dynamic>.from(c['protocols'] as Map? ?? {}).entries) e.key: (e.value as num).toInt()},
       attention: [for (final a in j['attention'] as List? ?? []) (date: a['date'] as String, protocol: a['protocol'] == null ? null : ProtocolMeta.fromJson(Map<String, dynamic>.from(a['protocol'] as Map)))],
       processing: [for (final p in j['processing'] as List? ?? []) (date: p['date'] as String?, status: p['status'] as String?)],
+      tasks: {for (final e in Map<String, dynamic>.from(j['tasks'] as Map? ?? {}).entries) e.key: (e.value as num).toInt()},
     );
   }
 }
@@ -88,20 +90,63 @@ class ProtocolItem {
       );
 }
 
+class RequiredSigner {
+  const RequiredSigner({required this.name, this.userId, required this.signed, required this.stale});
+  final String name;
+  final int? userId;
+  final bool signed, stale;
+}
+
+class Signing {
+  const Signing({required this.contentHash, required this.required, required this.requiredSigned, required this.extra,
+      this.mySignature, required this.canSign, required this.needsKey, required this.canSendToReview, required this.canApprove});
+  final String contentHash;
+  final List<RequiredSigner> required;
+  final int requiredSigned;
+  final List<({int? userId, String name, String? signedAt, String? keyLabel})> extra;
+  final String? mySignature; // current | stale | null
+  final bool canSign, needsKey, canSendToReview, canApprove;
+  factory Signing.fromJson(Map<String, dynamic> j) => Signing(
+        contentHash: j['content_hash'] as String,
+        required: [for (final r in j['required'] as List? ?? []) RequiredSigner(name: r['name'] as String? ?? '', userId: (r['user_id'] as num?)?.toInt(), signed: r['signed'] == true, stale: r['stale'] == true)],
+        requiredSigned: (j['required_signed'] as num?)?.toInt() ?? 0,
+        extra: [for (final e in j['extra'] as List? ?? []) (userId: (e['user_id'] as num?)?.toInt(), name: e['name'] as String? ?? '', signedAt: e['signed_at'] as String?, keyLabel: e['key_label'] as String?)],
+        mySignature: j['my_signature'] as String?,
+        canSign: j['can_sign'] == true, needsKey: j['needs_key'] == true,
+        canSendToReview: j['can_send_to_review'] == true, canApprove: j['can_approve'] == true,
+      );
+}
+
 class ProtocolData {
-  const ProtocolData({required this.meta, required this.chair, this.chairId, required this.secretary, required this.attendees, required this.quorum, required this.items});
+  const ProtocolData({required this.meta, required this.chair, this.chairId, required this.secretary, required this.attendees, required this.quorum, required this.items, this.signing});
   final ProtocolMeta meta;
   final String chair, secretary, quorum;
   final int? chairId;
   final List<String> attendees;
   final List<ProtocolItem> items;
+  final Signing? signing;
   factory ProtocolData.fromJson(Map<String, dynamic> j) => ProtocolData(
         meta: ProtocolMeta.fromJson(j), chair: j['chair'] as String? ?? '', chairId: (j['chair_id'] as num?)?.toInt(),
         secretary: j['secretary'] as String? ?? '', quorum: j['quorum'] as String? ?? '',
         attendees: [for (final a in j['attendees'] as List? ?? []) a.toString()],
         items: [for (final i in j['items'] as List? ?? []) ProtocolItem.fromJson(Map<String, dynamic>.from(i as Map))],
+        signing: j['signing'] == null ? null : Signing.fromJson(Map<String, dynamic>.from(j['signing'] as Map)),
       );
 }
+
+class TaskData {
+  const TaskData({required this.id, required this.text, required this.responsible, required this.due, required this.status, required this.note, this.meetingDate, this.protocolNumber, this.updatedBy, this.doneAt});
+  final int id;
+  final String text, responsible, due, status, note; // status: new | in_progress | done | cancelled
+  final String? meetingDate, protocolNumber, updatedBy, doneAt;
+  factory TaskData.fromJson(Map<String, dynamic> j) => TaskData(
+        id: j['id'] as int, text: j['text'] as String? ?? '', responsible: j['responsible'] as String? ?? '', due: j['due'] as String? ?? '',
+        status: j['status'] as String? ?? 'new', note: j['note'] as String? ?? '', meetingDate: j['meeting_date'] as String?,
+        protocolNumber: j['protocol_number'] as String?, updatedBy: j['updated_by'] as String?, doneAt: j['done_at'] as String?,
+      );
+}
+
+String taskStatusLabel(String s) => switch (s) { 'new' => 'нова', 'in_progress' => 'в роботі', 'done' => 'виконано', 'cancelled' => 'скасовано', _ => s };
 
 class MeetingData {
   const MeetingData({required this.date, required this.sealed, this.protocol, required this.attendees, required this.topics, required this.transcript, required this.hasAudio, this.audioBytes, this.processing});

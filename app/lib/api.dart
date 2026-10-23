@@ -116,6 +116,7 @@ class Api {
       throw ApiException(r.statusCode, 'Оберіть церкву',
           choose: [for (final c in detail['choose']) ChurchChoice(c['tenant_id'] as int, c['name'] as String)]);
     }
+    if (detail is Map && detail['message'] is String) throw ApiException(r.statusCode, detail['message'] as String);
     final msg = detail is String ? detail : (detail is List && detail.isNotEmpty ? 'Перевірте введені дані.' : 'Помилка ${r.statusCode}');
     throw ApiException(r.statusCode, msg);
   }
@@ -190,6 +191,28 @@ class Api {
   Future<List<SearchHitData>> search(String q) async {
     final r = await _send('GET', '/search?q=${Uri.encodeQueryComponent(q)}') as Map;
     return [for (final h in r['hits'] as List) SearchHitData.fromJson(Map<String, dynamic>.from(h as Map))];
+  }
+
+  // ─── Signing and tasks (step 4) ───
+  Future<void> setProtocolStatus(String date, String status) async { await _send('POST', '/meetings/$date/protocol/status', body: {'status': status}); }
+
+  /// Returns (approved, signing).
+  Future<(bool, Signing)> signProtocol(String date, {required String contentHash, required int keyId, required String signatureB64}) async {
+    final r = await _send('POST', '/meetings/$date/protocol/sign', body: {'content_hash': contentHash, 'key_id': keyId, 'signature': signatureB64}) as Map;
+    return (r['approved'] == true, Signing.fromJson(Map<String, dynamic>.from(r['signing'] as Map)));
+  }
+
+  Future<(List<TaskData>, Map<String, int>)> tasks() async {
+    final r = await _send('GET', '/tasks') as Map;
+    return (
+      [for (final t in r['tasks'] as List) TaskData.fromJson(Map<String, dynamic>.from(t as Map))],
+      {for (final e in Map<String, dynamic>.from(r['counts'] as Map? ?? {}).entries) e.key: (e.value as num).toInt()},
+    );
+  }
+
+  Future<TaskData?> patchTask(int id, {required String status, String? note}) async {
+    final r = await _send('POST', '/tasks/$id', body: {'status': status, 'note': ?note}) as Map;
+    return r['task'] == null ? null : TaskData.fromJson(Map<String, dynamic>.from(r['task'] as Map));
   }
 
   Future<List<PastQuery>> pastQueries() async {

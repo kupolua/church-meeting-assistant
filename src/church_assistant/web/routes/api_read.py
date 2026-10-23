@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
-from church_assistant.db import protocols_repo
+from church_assistant.db import protocols_repo, tasks_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.field_crypto import NotDecryptable
@@ -124,6 +124,7 @@ async def home(request: Request):
         },
         "attention": attention,
         "processing": [_job(j) for j in jobs],
+        "tasks": await tasks_repo.counts(pool, user.tenant_id),
     }
 
 
@@ -198,6 +199,8 @@ async def meeting(request: Request, date: str):
                                 for r in i.get("rulings", [])],
                 } for i in items],
             })
+            from church_assistant.web.routes.api_protocol import signing_block
+            proto_out["signing"] = await signing_block(pool, user, protocol, items)
 
     return {
         "date": date,
