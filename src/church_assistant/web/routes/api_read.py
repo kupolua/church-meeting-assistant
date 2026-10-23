@@ -228,3 +228,37 @@ async def search(request: Request, q: str = Query("", max_length=200)):
         entry = by_date.setdefault(m.meeting_date, {"date": m.meeting_date, "topics": []})
         entry["topics"].append({"order": m.topic_order, "title": m.topic_title, "snippet": m.snippet})
     return {"query": q, "hits": list(by_date.values())}
+
+
+# ─────────────────────────────────────────────────────────────
+# Past questions (the RAG history the web keeps in `queries`)
+# ─────────────────────────────────────────────────────────────
+
+def _query_row(q: dict[str, Any]) -> dict[str, Any]:
+    hits = q.get("hits") or []
+    return {
+        "id": int(q["id"]),
+        "question": q["question"],
+        "asked_at": _iso(q.get("asked_at")),
+        "status": q["status"],
+        "source": q.get("source"),
+        "sources": list(q.get("sources") or []),
+        "synthesis": q.get("synthesis") if q["status"] == "completed" else None,
+        "hits": [{
+            "date": h.get("meeting_date"), "title": h.get("topic_title"),
+            "score": h.get("rerank_score", h.get("vector_score")),
+        } for h in hits if isinstance(h, dict)][:12],
+        "seconds": round((q.get("total_time_ms") or 0) / 1000, 1) if q.get("total_time_ms") else None,
+    }
+
+
+@router.get("/queries")
+async def queries(request: Request, limit: int = Query(30, ge=1, le=100)):
+    """What the church has already asked — with the answers. The same rows the
+    web's /history shows; the app lists them under the search box so a
+    question asked at the desk is there on the phone."""
+    from church_assistant.db import queries_repo
+    user = await api_user(request)
+    pool = await get_pool()
+    rows = await queries_repo.list_recent(pool, user.tenant_id, limit=limit)
+    return {"queries": [_query_row(q) for q in rows if q["status"] in ("completed", "pending", "processing")]}

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api.dart';
 import '../models.dart';
 import '../session.dart';
@@ -22,7 +23,28 @@ class _SearchScreenState extends State<SearchScreen> {
   List<SearchHitData>? hits;
   bool busy = false;
   String? error;
-  final recent = <String>[];
+  List<String> recent = [];
+  List<PastQuery>? past;
+  static const _kRecent = 'cma.search.recent';
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) { if (mounted) setState(() => recent = p.getStringList(_kRecent) ?? []); }).catchError((_) {});
+    _loadPast();
+  }
+
+  Future<void> _loadPast() async {
+    try {
+      final q = await widget.session.api.pastQueries();
+      if (mounted) setState(() => past = q);
+    } on ApiException catch (_) {}
+  }
+
+  Future<void> _remember(String q) async {
+    recent.remove(q); recent.insert(0, q); if (recent.length > 8) recent.removeLast();
+    try { (await SharedPreferences.getInstance()).setStringList(_kRecent, recent); } catch (_) {}
+  }
 
   Future<void> _run(String q) async {
     q = q.trim();
@@ -31,7 +53,7 @@ class _SearchScreenState extends State<SearchScreen> {
     try {
       final r = await widget.session.api.search(q);
       if (!mounted) return;
-      recent.remove(q); recent.insert(0, q); if (recent.length > 8) recent.removeLast();
+      await _remember(q);
       setState(() => hits = r);
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
@@ -72,10 +94,14 @@ class _SearchScreenState extends State<SearchScreen> {
     ]);
   }
 
-  Widget _idle() => ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
+  Widget _idle() {
+    final p = past ?? const <PastQuery>[];
+    return RefreshIndicator(
+      onRefresh: _loadPast,
+      child: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
         if (recent.isNotEmpty) ...[
           const SectionLabel('Нещодавні запити'),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           for (final q in recent)
             ListTile(
               contentPadding: EdgeInsets.zero, dense: true,
@@ -83,9 +109,78 @@ class _SearchScreenState extends State<SearchScreen> {
               title: Text(q, style: T.body.copyWith(color: C.text)),
               onTap: () { ctl.text = q; _run(q); },
             ),
-        ] else
+          const SizedBox(height: 14),
+        ],
+        if (p.isNotEmpty) ...[
+          const SectionLabel('Запитання до архіву'),
+          const SizedBox(height: 4),
+          Text('Поставлені на сайті, з відповідями. Тап відкриває відповідь.', style: T.small),
+          const SizedBox(height: 8),
+          for (final q in p) ...[
+            Card6(
+              onTap: () => _showPast(q),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(q.question, style: T.bodyStrong),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Text((q.askedAt ?? '').split('T').first, style: T.small),
+                  if (q.sources.isNotEmpty) ...[const SizedBox(width: 10), Text('${q.sources.length} ${plural(q.sources.length, 'зустріч', 'зустрічі', 'зустрічей')}', style: T.small)],
+                  if (q.status != 'completed') ...[const SizedBox(width: 10), const Pill('в обробці', kind: PillKind.warn)],
+                ]),
+              ]),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ],
+        if (recent.isEmpty && p.isEmpty)
           const EmptyState(icon: Icons.search, title: 'Пошук по темах', text: 'Введіть слово — знайдемо зустрічі, де про це говорили, з таймкодами.'),
-      ]);
+      ]),
+    );
+  }
+
+  void _showPast(PastQuery q) {
+    showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: C.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false, initialChildSize: 0.6, maxChildSize: 0.95,
+        builder: (_, sc) => ListView(controller: sc, padding: const EdgeInsets.fromLTRB(16, 12, 16, 24), children: [
+          Center(child: Container(width: 36, height: 4, decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 14),
+          Text(q.question, style: T.h2),
+          const SizedBox(height: 4),
+          Text('${(q.askedAt ?? '').split('T').first}${q.seconds != null ? ' · відповідь за ${q.seconds} с' : ''}', style: T.small),
+          const SizedBox(height: 14),
+          if (q.synthesis != null && q.synthesis!.isNotEmpty) ...[
+            const SectionLabel('Відповідь'), const SizedBox(height: 6),
+            Text(q.synthesis!, style: T.body), const SizedBox(height: 16),
+          ],
+          if (q.hits.isNotEmpty) ...[
+            const SectionLabel('Де про це говорили'), const SizedBox(height: 8),
+            for (final h in q.hits) ...[
+              Card6(
+                onTap: h.date == null ? null : () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!))); },
+                child: Row(children: [
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(h.title ?? '', style: T.bodyStrong), const SizedBox(height: 2), Text(ukDate(h.date ?? ''), style: T.small),
+                  ])),
+                  if (h.score != null) Text(h.score!.toStringAsFixed(2), style: T.meta.copyWith(color: C.accent)),
+                  const SizedBox(width: 6), const Icon(Icons.chevron_right, color: C.label),
+                ]),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ] else if (q.sources.isNotEmpty) ...[
+            const SectionLabel('Джерела'), const SizedBox(height: 8),
+            for (final d in q.sources) ListTile(contentPadding: EdgeInsets.zero, dense: true, title: Text(ukDate(d), style: T.body), trailing: const Icon(Icons.chevron_right, color: C.label),
+                onTap: () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: d))); }),
+          ],
+          const SizedBox(height: 8),
+          SecondaryButton('Шукати це по темах', onPressed: () { Navigator.pop(ctx); ctl.text = q.question; _run(q.question); }),
+        ]),
+      ),
+    );
+  }
 
   Widget _results() {
     final h = hits;

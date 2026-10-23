@@ -162,3 +162,20 @@ String processingLabel(String? s) => switch (s) {
       'indexing' => 'індексація',
       _ => '',
     };
+
+
+class PastQuery {
+  const PastQuery({required this.id, required this.question, this.askedAt, required this.status, required this.sources, this.synthesis, required this.hits, this.seconds});
+  final int id;
+  final String question, status;
+  final String? askedAt, synthesis;
+  final List<String> sources;
+  final List<({String? date, String? title, num? score})> hits;
+  final num? seconds;
+  factory PastQuery.fromJson(Map<String, dynamic> j) => PastQuery(
+        id: j['id'] as int, question: j['question'] as String? ?? '', askedAt: j['asked_at'] as String?, status: j['status'] as String? ?? '',
+        sources: [for (final s in j['sources'] as List? ?? []) s.toString()], synthesis: j['synthesis'] as String?,
+        hits: [for (final h in j['hits'] as List? ?? []) (date: h['date'] as String?, title: h['title'] as String?, score: h['score'] as num?)],
+        seconds: j['seconds'] as num?,
+      );
+}

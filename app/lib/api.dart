@@ -192,6 +192,11 @@ class Api {
     return [for (final h in r['hits'] as List) SearchHitData.fromJson(Map<String, dynamic>.from(h as Map))];
   }
 
+  Future<List<PastQuery>> pastQueries() async {
+    final r = await _send('GET', '/queries') as Map;
+    return [for (final q in r['queries'] as List) PastQuery.fromJson(Map<String, dynamic>.from(q as Map))];
+  }
+
   /// For the audio player: the URL plus the header it must send.
   Uri audioUri(String date) => Uri.parse('$apiBase/api/v1/meetings/$date/audio');
   Map<String, String> get authHeaders => {if (token != null) 'authorization': 'Bearer $token'};
