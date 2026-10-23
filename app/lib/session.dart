@@ -3,6 +3,7 @@
 // /me on every start, so a revoked token or a freshly approved church is
 // noticed without the person doing anything.
 import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
@@ -68,7 +69,19 @@ class Session extends ChangeNotifier {
 
   void _set(SessionState s) { state = s; notifyListeners(); }
 
-  static String deviceName() {
-    try { return Platform.isAndroid ? 'Android · ${Platform.localHostname}' : Platform.operatingSystem; } catch (_) { return 'телефон'; }
+  /// "Pixel 8 · Android 15" — what a person sees when choosing which phone
+  /// to revoke, so it has to be the name on the box, not a hostname.
+  static Future<String> deviceName() async {
+    try {
+      if (Platform.isAndroid) {
+        final a = await DeviceInfoPlugin().androidInfo;
+        return '${a.manufacturer} ${a.model} · Android ${a.version.release}'.trim();
+      }
+      if (Platform.isIOS) {
+        final i = await DeviceInfoPlugin().iosInfo;
+        return '${i.name} · iOS ${i.systemVersion}';
+      }
+    } catch (_) {}
+    return Platform.operatingSystem;
   }
 }

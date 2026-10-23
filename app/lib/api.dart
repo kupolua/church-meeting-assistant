@@ -27,12 +27,15 @@ class ChurchChoice {
 
 class Me {
   const Me({required this.userId, required this.name, required this.role, this.email,
-      required this.churchId, required this.churchName, required this.churchSlug, required this.status});
+      required this.churchId, required this.churchName, required this.churchSlug, required this.status,
+      this.signingKeys = 0});
   final int userId, churchId;
   final String name, role, churchName, churchSlug;
   final String? email;
   /// pending | active | rejected | suspended | archived
   final String status;
+  /// Live signing keys this person has registered (any phone).
+  final int signingKeys;
 
   bool get isActive => status == 'active';
   bool get isAdmin => role == 'admin';
@@ -43,8 +46,35 @@ class Me {
       userId: u['id'] as int, name: u['name'] as String? ?? '', role: u['role'] as String? ?? 'member',
       email: u['email'] as String?, churchId: c['id'] as int, churchName: c['name'] as String? ?? '',
       churchSlug: c['slug'] as String? ?? '', status: c['status'] as String? ?? 'pending',
+      signingKeys: (j['signing_keys'] as num?)?.toInt() ?? 0,
     );
   }
+}
+
+class Member {
+  const Member({required this.id, required this.name, this.email, required this.role, required this.active, this.lastLoginAt, required this.signingKeys});
+  final int id;
+  final String name, role;
+  final String? email, lastLoginAt;
+  final bool active;
+  final int signingKeys;
+  bool get isAdmin => role == 'admin';
+  factory Member.fromJson(Map<String, dynamic> j) => Member(
+        id: j['id'] as int, name: j['name'] as String? ?? '', email: j['email'] as String?,
+        role: j['role'] as String? ?? 'member', active: j['active'] as bool? ?? true,
+        lastLoginAt: j['last_login_at'] as String?, signingKeys: (j['signing_keys'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class SigningKey {
+  const SigningKey({required this.id, required this.label, required this.fingerprint, required this.publicKey, this.createdAt});
+  final int id;
+  final String label, fingerprint, publicKey;
+  final String? createdAt;
+  factory SigningKey.fromJson(Map<String, dynamic> j) => SigningKey(
+        id: j['id'] as int, label: j['label'] as String? ?? '', fingerprint: j['fingerprint'] as String? ?? '',
+        publicKey: j['public_key'] as String? ?? '', createdAt: j['created_at'] as String?,
+      );
 }
 
 class Api {
@@ -61,9 +91,11 @@ class Api {
     final uri = Uri.parse('$apiBase/api/v1$path');
     http.Response r;
     try {
-      r = method == 'GET'
-          ? await http.get(uri, headers: _headers).timeout(const Duration(seconds: 20))
-          : await http.post(uri, headers: _headers, body: jsonEncode(body ?? {})).timeout(const Duration(seconds: 20));
+      r = switch (method) {
+        'GET' => await http.get(uri, headers: _headers).timeout(const Duration(seconds: 20)),
+        'DELETE' => await http.delete(uri, headers: _headers).timeout(const Duration(seconds: 20)),
+        _ => await http.post(uri, headers: _headers, body: jsonEncode(body ?? {})).timeout(const Duration(seconds: 20)),
+      };
     } on SocketException {
       throw ApiException(0, 'Немає звʼязку із сервером.');
     } on HttpException {
@@ -113,4 +145,34 @@ class Api {
   Future<void> logout() async {
     try { await _send('POST', '/auth/logout'); } catch (_) { /* the token is dropped locally regardless */ }
   }
+
+  // ─── Members (admin) ───
+  Future<List<Member>> members() async {
+    final r = await _send('GET', '/members') as Map;
+    return [for (final m in r['members'] as List) Member.fromJson(Map<String, dynamic>.from(m as Map))];
+  }
+
+  /// Returns (member, mailSent).
+  Future<(Member, bool)> invite({required String email, required String fullName, String role = 'member'}) async {
+    final r = await _send('POST', '/members', body: {'email': email, 'full_name': fullName, 'role': role}) as Map;
+    return (Member.fromJson(Map<String, dynamic>.from(r['member'] as Map)), r['mail_sent'] == true);
+  }
+
+  Future<Member> patchMember(int id, {String? role, bool? active}) async {
+    final r = await _send('POST', '/members/$id', body: {'role': ?role, 'active': ?active}) as Map;
+    return Member.fromJson(Map<String, dynamic>.from(r['member'] as Map));
+  }
+
+  // ─── Signing keys (mine) ───
+  Future<List<SigningKey>> keys() async {
+    final r = await _send('GET', '/keys') as Map;
+    return [for (final k in r['keys'] as List) SigningKey.fromJson(Map<String, dynamic>.from(k as Map))];
+  }
+
+  Future<SigningKey> registerKey({required String publicKeyB64, String? label}) async {
+    final r = await _send('POST', '/keys', body: {'public_key': publicKeyB64, 'label': ?label}) as Map;
+    return SigningKey.fromJson(Map<String, dynamic>.from(r['key'] as Map));
+  }
+
+  Future<void> revokeKey(int id) async { await _send('DELETE', '/keys/$id'); }
 }

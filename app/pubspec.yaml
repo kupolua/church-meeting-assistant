@@ -1,12 +1,14 @@
 name: cma_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ^3.13.5
 
 dependencies:
+  cryptography: ^2.9.0
+  device_info_plus: ^13.3.0
   flutter:
     sdk: flutter
   flutter_localizations:
@@ -15,6 +17,7 @@ dependencies:
   http: ^1.6.0
   intl: ^0.20.3
   local_auth: ^3.0.2
+  package_info_plus: ^10.2.2
 
 dev_dependencies:
   flutter_test:

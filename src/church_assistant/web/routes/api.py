@@ -6,6 +6,22 @@ The JSON API the mobile app speaks — step 1: signing in.
     GET  /api/v1/me                  who am I, which church, may I in
     POST /api/v1/auth/logout         revoke this token
 
+Step 2 — the council and the phones that sign (migration 022):
+
+    GET  /api/v1/members             admin: everyone in the church
+    POST /api/v1/members             admin: invite by email (account + letter)
+    POST /api/v1/members/{id}        admin: {role} and/or {active}
+    GET  /api/v1/keys                my signing keys
+    POST /api/v1/keys                register this phone's Ed25519 public key
+    DELETE /api/v1/keys/{id}         revoke one of mine
+
+AN INVITATION IS AN ACCOUNT. The admin types a colleague's address and name;
+the server creates the member there and then, active and without a password,
+and writes to the address: install the app, sign in with this email. The
+member's first sign-in is the ordinary code flow — nothing to redeem, nothing
+to type but six digits. This is deliberately not the web's link-invite: the
+app has no password to set, so there is nothing for a link to do.
+
 NO COOKIES. The app holds an opaque token in the phone's secure storage and
 sends it as `Authorization: Bearer …`. The token is a web_sessions row with
 client = 'app' (migration 021), so everything the web already knows how to do
@@ -35,7 +51,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from church_assistant.db import (
-    app_auth_repo, audit_repo, tenants_repo, web_sessions_repo, web_users_repo,
+    app_auth_repo, audit_repo, signing_keys_repo, tenants_repo,
+    web_sessions_repo, web_users_repo,
 )
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import mailer, tenant_paths
@@ -91,6 +108,22 @@ class Verify(BaseModel):
     tenant_id: Optional[int] = None
 
 
+class Invite(BaseModel):
+    email: str = Field(max_length=254)
+    full_name: str = Field(min_length=1, max_length=MAX_NAME_LEN)
+    role: str = Field(default="member", pattern="^(member|admin)$")
+
+
+class MemberPatch(BaseModel):
+    role: Optional[str] = Field(default=None, pattern="^(member|admin)$")
+    active: Optional[bool] = None
+
+
+class KeyIn(BaseModel):
+    public_key: str = Field(min_length=40, max_length=64)   # base64 of 32 bytes
+    label: Optional[str] = Field(default=None, max_length=120)
+
+
 @dataclass(frozen=True)
 class ApiUser:
     session_id: int
@@ -104,6 +137,10 @@ class ApiUser:
     @property
     def actor(self) -> str:
         return f"app:{self.username}"
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
 
 
 async def api_user(request: Request) -> ApiUser:
@@ -128,6 +165,14 @@ async def api_user(request: Request) -> ApiUser:
     return user
 
 
+async def api_admin(request: Request) -> ApiUser:
+    """The bearer token's owner, if they administer their church."""
+    user = await api_user(request)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Лише для адміністратора церкви.")
+    return user
+
+
 async def _me_payload(pool: Any, user: ApiUser) -> dict[str, Any]:
     tenant = await tenants_repo.get_by_id(pool, user.tenant_id)
     if tenant is None:
@@ -148,6 +193,7 @@ async def _me_payload(pool: Any, user: ApiUser) -> dict[str, Any]:
             # pending | active | rejected | suspended | archived
             "status": status,
         },
+        "signing_keys": len(await signing_keys_repo.list_for_user(pool, user.tenant_id, user.user_id)),
     }
 
 
@@ -408,4 +454,159 @@ async def logout(request: Request):
     user = await api_user(request)
     pool = await get_pool()
     await web_sessions_repo.revoke(pool, user.tenant_id, user.session_id)
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# Members (admin)
+# ─────────────────────────────────────────────────────────────
+
+def _member(row: dict[str, Any], keys: dict[int, int]) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]), "name": row["full_name"], "email": row.get("email"),
+        "username": row["username"], "role": row["role"], "active": bool(row["is_active"]),
+        "last_login_at": row.get("last_login_at"), "created_at": row.get("created_at"),
+        "signing_keys": keys.get(int(row["id"]), 0),
+    }
+
+
+@router.get("/members")
+async def members(request: Request):
+    admin = await api_admin(request)
+    pool = await get_pool()
+    rows = await web_users_repo.list_all(pool, admin.tenant_id)
+    keys = await signing_keys_repo.live_counts(pool, admin.tenant_id)
+    return {"members": [_member(r, keys) for r in rows if not r.get("is_platform_admin")]}
+
+
+@router.post("/members", status_code=201)
+async def invite_member(request: Request, body: Invite):
+    """
+    Add a member and tell them. Active at once, no password: their door is
+    the code sent to this address, same as everyone's.
+    """
+    admin = await api_admin(request)
+    email = app_auth_repo.normalize_email(body.email)
+    if not app_auth_repo.looks_like_email(email):
+        raise HTTPException(status_code=422, detail="Перевірте адресу електронної пошти.")
+    pool = await get_pool()
+    tenant = await tenants_repo.get_by_id(pool, admin.tenant_id)
+    try:
+        user_id = await web_users_repo.add_web_user(
+            pool, admin.tenant_id, username=email,
+            password_hash=security.hash_password(security.new_session_token()),
+            full_name=body.full_name.strip(), role=body.role, email=email,
+            notes=f"запрошено з застосунку: {admin.username}",
+        )
+    except web_users_repo.WebUserAlreadyExists:
+        raise HTTPException(status_code=409, detail="Людина з цією адресою вже є в церкві.")
+
+    sent = await mailer.send(
+        email,
+        f"Вас додано до церкви «{tenant['name']}» у CMA",
+        f"{body.full_name.strip()}, вітаємо!\n\n"
+        f"{admin.full_name or admin.username} додав(ла) вас до церкви «{tenant['name']}» "
+        f"у застосунку CMA — протоколи зустрічей ради.\n\n"
+        f"Встановіть застосунок, натисніть «Увійти» і вкажіть цю адресу: {email}. "
+        f"Пароля немає — на пошту прийде код із шести цифр.\n",
+    )
+    await audit_repo.record(
+        pool, tenant_id=admin.tenant_id, action="app.member_invited", actor=admin.actor,
+        resource=f"web_users/{user_id}", detail={"email": email, "role": body.role, "mail_sent": sent},
+    )
+    await _logger.info("api.member_invited",
+                       message=f"{admin.username} invited {email} as {body.role} (mail {'sent' if sent else 'NOT sent'})",
+                       tenant_id=admin.tenant_id)
+    row = await web_users_repo.get_by_id(pool, admin.tenant_id, user_id)
+    return {"member": _member(row, {}), "mail_sent": sent}
+
+
+@router.post("/members/{member_id}")
+async def patch_member(request: Request, member_id: int, body: MemberPatch):
+    """
+    Change a role, switch a person off or back on.
+
+    Not on yourself: an admin who demotes or disables themself leaves a church
+    with nobody to undo it. Switching someone off also ends their sessions and
+    strikes their keys — a departed member's phone must sign nothing further.
+    """
+    admin = await api_admin(request)
+    if member_id == admin.user_id:
+        raise HTTPException(status_code=400, detail="Себе змінити не можна — попросіть іншого адміністратора.")
+    pool = await get_pool()
+    row = await web_users_repo.get_by_id(pool, admin.tenant_id, member_id)
+    if row is None or row.get("is_platform_admin"):
+        raise HTTPException(status_code=404, detail="Немає такого учасника.")
+
+    changed: dict[str, Any] = {}
+    if body.role is not None and body.role != row["role"]:
+        await web_users_repo.set_role(pool, admin.tenant_id, member_id, body.role)
+        changed["role"] = body.role
+    if body.active is not None and body.active != bool(row["is_active"]):
+        if body.active:
+            await web_users_repo.reactivate(pool, admin.tenant_id, member_id)
+        else:
+            await web_users_repo.deactivate(pool, admin.tenant_id, member_id)
+            await web_sessions_repo.revoke_all_for_user(pool, admin.tenant_id, member_id)
+            await signing_keys_repo.revoke_all_for_user(pool, admin.tenant_id, member_id)
+        changed["active"] = body.active
+    if changed:
+        await audit_repo.record(
+            pool, tenant_id=admin.tenant_id, action="app.member_changed", actor=admin.actor,
+            resource=f"web_users/{member_id}", detail=changed,
+        )
+    row = await web_users_repo.get_by_id(pool, admin.tenant_id, member_id)
+    keys = await signing_keys_repo.live_counts(pool, admin.tenant_id)
+    return {"member": _member(row, keys)}
+
+
+# ─────────────────────────────────────────────────────────────
+# Signing keys (mine)
+# ─────────────────────────────────────────────────────────────
+
+def _key(k: dict[str, Any]) -> dict[str, Any]:
+    return {kk: v for kk, v in k.items() if kk != "web_user_id"}
+
+
+@router.get("/keys")
+async def my_keys(request: Request):
+    user = await api_user(request)
+    pool = await get_pool()
+    return {"keys": [_key(k) for k in await signing_keys_repo.list_for_user(pool, user.tenant_id, user.user_id)]}
+
+
+@router.post("/keys", status_code=201)
+async def register_key(request: Request, body: KeyIn):
+    user = await api_user(request)
+    try:
+        raw = signing_keys_repo.decode_public_key(body.public_key)
+    except signing_keys_repo.BadPublicKey as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    pool = await get_pool()
+    try:
+        key_id = await signing_keys_repo.add(
+            pool, user.tenant_id, web_user_id=user.user_id, public_key=raw, label=body.label or "",
+        )
+    except signing_keys_repo.KeyAlreadyRegistered:
+        raise HTTPException(status_code=409, detail="Цей ключ уже зареєстровано.")
+    await audit_repo.record(
+        pool, tenant_id=user.tenant_id, action="app.signing_key_added", actor=user.actor,
+        resource=f"signing_keys/{key_id}",
+        detail={"fingerprint": signing_keys_repo.fingerprint(raw), "label": body.label},
+    )
+    keys = await signing_keys_repo.list_for_user(pool, user.tenant_id, user.user_id)
+    return {"key": _key(next(k for k in keys if k["id"] == key_id))}
+
+
+@router.delete("/keys/{key_id}")
+async def revoke_key(request: Request, key_id: int):
+    user = await api_user(request)
+    pool = await get_pool()
+    ok = await signing_keys_repo.revoke(pool, user.tenant_id, key_id, web_user_id=user.user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Немає такого ключа.")
+    await audit_repo.record(
+        pool, tenant_id=user.tenant_id, action="app.signing_key_revoked", actor=user.actor,
+        resource=f"signing_keys/{key_id}",
+    )
     return {"ok": True}

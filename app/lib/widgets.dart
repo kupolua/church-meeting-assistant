@@ -112,7 +112,7 @@ class PrimaryButton extends StatelessWidget {
   final Color color;
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 48,
+        width: double.infinity, height: 48,
         child: FilledButton(
           style: FilledButton.styleFrom(backgroundColor: color, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
           onPressed: onPressed,
@@ -130,7 +130,7 @@ class SecondaryButton extends StatelessWidget {
   final VoidCallback? onPressed;
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 48,
+        width: double.infinity, height: 48,
         child: OutlinedButton(
           style: OutlinedButton.styleFrom(side: const BorderSide(color: C.border), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
           onPressed: onPressed,

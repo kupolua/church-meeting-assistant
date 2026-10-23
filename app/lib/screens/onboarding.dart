@@ -76,9 +76,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 18),
         _choice(Icons.add_home_work_outlined, 'Створити церкву', 'Ви адміністратор. Назва, ваше імʼя, пошта — і запит піде на розгляд.', () => setState(() => mode = _Mode.found)),
         const SizedBox(height: 10),
-        _choice(Icons.login, 'Увійти', 'У вас уже є акаунт у церкві. Код прийде на пошту.', () => setState(() => mode = _Mode.signIn)),
-        const SizedBox(height: 10),
-        Opacity(opacity: 0.55, child: _choice(Icons.qr_code_2, 'Доєднатися за запрошенням', 'Код від адміністратора вашої церкви. Зʼявиться наступним кроком.', null)),
+        _choice(Icons.login, 'Увійти', 'У вас є акаунт або адміністратор додав вас до церкви. Код прийде на пошту.', () => setState(() => mode = _Mode.signIn)),
       ];
 
   Widget _choice(IconData icon, String title, String sub, VoidCallback? onTap) => Card6(
@@ -159,7 +157,7 @@ class _CodeScreenState extends State<CodeScreen> {
     if (c.length != 6) { setState(() => error = 'Код — шість цифр.'); return; }
     setState(() { busy = true; error = null; });
     try {
-      final (token, me) = await widget.session.api.verify(email: widget.email, code: c, deviceName: Session.deviceName(), tenantId: tenantId);
+      final (token, me) = await widget.session.api.verify(email: widget.email, code: c, deviceName: await Session.deviceName(), tenantId: tenantId);
       await widget.session.signedIn(token, me);
       if (mounted) Navigator.of(context).pop(true);
     } on ApiException catch (e) {

@@ -4,6 +4,7 @@ import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'meeting_detail.dart';
+import 'settings.dart';
 import 'status_board.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -33,7 +34,11 @@ class HomeScreen extends StatelessWidget {
               Text('${me?.name ?? ''} · ${me?.isAdmin == true ? 'адміністратор' : 'учасник'}', style: T.meta),
             ]),
           ),
-          IconButton(onPressed: session.signOut, tooltip: 'Вийти', icon: const Icon(Icons.logout, color: C.label, size: 20)),
+          IconButton(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsScreen(session: session))),
+            tooltip: 'Налаштування',
+            icon: const Icon(Icons.settings_outlined, color: C.label, size: 22),
+          ),
         ]),
       ),
       const Divider1(),
