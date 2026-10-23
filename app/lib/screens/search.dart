@@ -162,10 +162,9 @@ class _SearchScreenState extends State<SearchScreen> {
               Builder(builder: (_) {
                 final h = q.hits[i];
                 return Card6(
-                  onTap: h.date == null ? null : () {
-                    Navigator.pop(ctx);
-                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!, focusTopic: h.title, seekTc: h.tc)));
-                  },
+                  // Pushed OVER the sheet, not instead of it: coming back from
+                  // the recording lands on the answer again.
+                  onTap: h.date == null ? null : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!, focusTopic: h.title, seekTc: h.tc))),
                   child: Row(children: [
                     Container(width: 26, height: 26, alignment: Alignment.center, decoration: const BoxDecoration(color: C.accentBg, shape: BoxShape.circle),
                         child: Text('${i + 1}', style: T.small.copyWith(color: C.accent, fontWeight: FontWeight.w600))),
@@ -183,7 +182,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ] else if (q.sources.isNotEmpty) ...[
             const SectionLabel('Джерела'), const SizedBox(height: 8),
             for (final d in q.sources) ListTile(contentPadding: EdgeInsets.zero, dense: true, title: Text(ukDate(d), style: T.body), trailing: const Icon(Icons.chevron_right, color: C.label),
-                onTap: () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: d))); }),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: d)))),
           ],
           const SizedBox(height: 8),
           SecondaryButton('Шукати це по темах', onPressed: () { Navigator.pop(ctx); ctl.text = q.question; _run(q.question); }),
