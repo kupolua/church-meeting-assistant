@@ -11,9 +11,13 @@ import 'audio_bar.dart';
 /// timecodes, the стенограма, and the recording under it all. Signing comes
 /// with step 4; until then the status pill is the whole story.
 class MeetingDetailScreen extends StatefulWidget {
-  const MeetingDetailScreen({super.key, required this.session, required this.date});
+  const MeetingDetailScreen({super.key, required this.session, required this.date, this.focusTopic, this.seekTc});
   final Session session;
   final String date;
+  /// From search: open on the Теми tab, scrolled to this topic, with the
+  /// recording wound to this timecode.
+  final String? focusTopic;
+  final String? seekTc;
   @override
   State<MeetingDetailScreen> createState() => _MeetingDetailScreenState();
 }
@@ -23,6 +27,7 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   final player = AudioBarController();
   MeetingData? m;
   String? error;
+  final _topicKeys = <int, GlobalKey>{};
 
   @override
   void initState() { super.initState(); _load(); }
@@ -37,12 +42,26 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
       setState(() { m = d; error = null; });
       // No protocol yet → open on the topics, which is what there is.
       if (d.protocol == null && d.topics.isNotEmpty) _tabs.index = 1;
+      if (widget.focusTopic != null || widget.seekTc != null) _focus(d);
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
     }
   }
 
   void _seek(String? tc) { if (tc != null) player.seekTo(tc); }
+
+  /// Land where the search pointed: the topic in view, the recording wound.
+  void _focus(MeetingData d) {
+    final i = widget.focusTopic == null ? -1 : d.topics.indexWhere((t) => t.title.trim() == widget.focusTopic!.trim());
+    if (i >= 0) {
+      _tabs.index = 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final ctx = _topicKeys[i]?.currentContext;
+        if (ctx != null) Scrollable.ensureVisible(ctx, alignment: 0.05, duration: const Duration(milliseconds: 300));
+      });
+    }
+    _seek(widget.seekTc);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -167,12 +186,27 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   // ─── Теми ────────────────────────────────────────────────
   Widget _topics(MeetingData d) {
     if (d.topics.isEmpty) return const EmptyState(icon: Icons.topic_outlined, title: 'Тем ще немає', text: 'Зʼявляться після обробки запису.');
-    return ListView.separated(
+    // Built eagerly (a few dozen topics), so a topic the search points at
+    // has a context to scroll to.
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      itemCount: d.topics.length,
-      separatorBuilder: (_, _) => const Divider1(),
-      itemBuilder: (_, i) {
-        final t = d.topics[i];
+      children: [
+        for (var i = 0; i < d.topics.length; i++) ...[
+          if (i > 0) const Divider1(),
+          _topicTile(d.topics[i], i),
+        ],
+      ],
+    );
+  }
+
+  Widget _topicTile(TopicData t, int i) {
+    final key = _topicKeys.putIfAbsent(i, GlobalKey.new);
+    final focused = widget.focusTopic != null && t.title.trim() == widget.focusTopic!.trim();
+    return Container(
+      key: key,
+      decoration: focused ? BoxDecoration(color: C.accentBg, borderRadius: BorderRadius.circular(6)) : null,
+      padding: focused ? const EdgeInsets.symmetric(horizontal: 8) : EdgeInsets.zero,
+      child: Builder(builder: (_) {
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -191,7 +225,7 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
               ),
           ]),
         );
-      },
+      }),
     );
   }
 

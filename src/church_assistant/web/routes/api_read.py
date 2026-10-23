@@ -48,6 +48,15 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _BULLET_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<text>.*?)\s*(?:\((?P<tc>\d{1,2}:\d{2}(?::\d{2})?)\))?[.;,]?\s*$")
 
 
+_TC_RE = re.compile(r"\((\d{1,2}:\d{2}(?::\d{2})?)\)")
+
+
+def _first_tc(text: Optional[str]) -> Optional[str]:
+    """The first timecode in a topic body or a snippet — where the talk began."""
+    m = _TC_RE.search(text or "")
+    return m.group(1) if m else None
+
+
 def _meetings_dir(user: ApiUser) -> Path:
     return tenant_paths.paths_for(user.tenant_slug).meetings
 
@@ -229,7 +238,8 @@ async def search(request: Request, q: str = Query("", max_length=200)):
     by_date: dict[str, dict[str, Any]] = {}
     for m in matches:
         entry = by_date.setdefault(m.meeting_date, {"date": m.meeting_date, "topics": []})
-        entry["topics"].append({"order": m.topic_order, "title": m.topic_title, "snippet": m.snippet})
+        entry["topics"].append({"order": m.topic_order, "title": m.topic_title, "snippet": m.snippet,
+                                "tc": _first_tc(m.snippet)})
     return {"query": q, "hits": list(by_date.values())}
 
 
@@ -245,6 +255,7 @@ def _hit(h: dict[str, Any]) -> dict[str, Any]:
         "date": p.get("meeting_date") or h.get("meeting_date"),
         "title": p.get("topic_title") or h.get("topic_title"),
         "score": h.get("score", h.get("rerank_score", h.get("vector_score"))),
+        "tc": _first_tc(p.get("body") or h.get("body")),
     }
 
 

@@ -131,10 +131,10 @@ class MeetingData {
 class SearchHitData {
   const SearchHitData({required this.date, required this.topics});
   final String date;
-  final List<({int order, String title, String snippet})> topics;
+  final List<({int order, String title, String snippet, String? tc})> topics;
   factory SearchHitData.fromJson(Map<String, dynamic> j) => SearchHitData(
         date: j['date'] as String,
-        topics: [for (final t in j['topics'] as List? ?? []) (order: (t['order'] as num?)?.toInt() ?? 0, title: t['title'] as String? ?? '', snippet: t['snippet'] as String? ?? '')],
+        topics: [for (final t in j['topics'] as List? ?? []) (order: (t['order'] as num?)?.toInt() ?? 0, title: t['title'] as String? ?? '', snippet: t['snippet'] as String? ?? '', tc: t['tc'] as String?)],
       );
 }
 
@@ -170,12 +170,12 @@ class PastQuery {
   final String question, status;
   final String? askedAt, synthesis;
   final List<String> sources;
-  final List<({String? date, String? title, num? score})> hits;
+  final List<({String? date, String? title, num? score, String? tc})> hits;
   final num? seconds;
   factory PastQuery.fromJson(Map<String, dynamic> j) => PastQuery(
         id: j['id'] as int, question: j['question'] as String? ?? '', askedAt: j['asked_at'] as String?, status: j['status'] as String? ?? '',
         sources: [for (final s in j['sources'] as List? ?? []) s.toString()], synthesis: j['synthesis'] as String?,
-        hits: [for (final h in j['hits'] as List? ?? []) (date: h['date'] as String?, title: h['title'] as String?, score: h['score'] as num?)],
+        hits: [for (final h in j['hits'] as List? ?? []) (date: h['date'] as String?, title: h['title'] as String?, score: h['score'] as num?, tc: h['tc'] as String?)],
         seconds: j['seconds'] as num?,
       );
 }

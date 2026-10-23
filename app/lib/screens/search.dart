@@ -157,12 +157,15 @@ class _SearchScreenState extends State<SearchScreen> {
           ],
           if (q.hits.isNotEmpty) ...[
             const SectionLabel('Де про це говорили'), const SizedBox(height: 4),
-            Text('Номер — це посилання [n] у відповіді. Тап відкриває зустріч.', style: T.small), const SizedBox(height: 8),
+            Text('Номер — це посилання [n] у відповіді. Тап відкриває зустріч на цій темі й перемотує запис.', style: T.small), const SizedBox(height: 8),
             for (var i = 0; i < q.hits.length; i++) ...[
               Builder(builder: (_) {
                 final h = q.hits[i];
                 return Card6(
-                  onTap: h.date == null ? null : () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!))); },
+                  onTap: h.date == null ? null : () {
+                    Navigator.pop(ctx);
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!, focusTopic: h.title, seekTc: h.tc)));
+                  },
                   child: Row(children: [
                     Container(width: 26, height: 26, alignment: Alignment.center, decoration: const BoxDecoration(color: C.accentBg, shape: BoxShape.circle),
                         child: Text('${i + 1}', style: T.small.copyWith(color: C.accent, fontWeight: FontWeight.w600))),
@@ -170,6 +173,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(h.title ?? '', style: T.bodyStrong), const SizedBox(height: 2), Text(ukDate(h.date ?? ''), style: T.small),
                     ])),
+                    if (h.tc != null) ...[const SizedBox(width: 8), Timecode(h.tc!)],
                     const SizedBox(width: 6), const Icon(Icons.chevron_right, color: C.label),
                   ]),
                 );
@@ -199,15 +203,25 @@ class _SearchScreenState extends State<SearchScreen> {
       const SizedBox(height: 14),
       for (final hit in h ?? const <SearchHitData>[]) ...[
         Card6(
-          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: hit.date))),
+          padding: const EdgeInsets.fromLTRB(13, 12, 13, 6),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(ukDate(hit.date), style: T.itemTitle),
-            const SizedBox(height: 8),
-            for (final t in hit.topics) ...[
-              Text(t.title, style: T.bodyStrong),
-              if (t.snippet.isNotEmpty && t.snippet != t.title) Text(t.snippet.replaceFirst(RegExp(r'^\s*-\s+'), ''), style: T.small),
-              const SizedBox(height: 6),
-            ],
+            const SizedBox(height: 6),
+            for (final t in hit.topics)
+              InkWell(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: hit.date, focusTopic: t.title, seekTc: t.tc))),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(t.title, style: T.bodyStrong),
+                      if (t.snippet.isNotEmpty && t.snippet != t.title) Text(_plain(t.snippet.replaceFirst(RegExp(r'^\s*-\s+'), '')).replaceAll(RegExp(r'\s*\(\d{1,2}:\d{2}(?::\d{2})?\)\.?$'), ''), style: T.small),
+                    ])),
+                    if (t.tc != null) ...[const SizedBox(width: 8), Timecode(t.tc!)],
+                    const SizedBox(width: 4), const Icon(Icons.chevron_right, color: C.label, size: 18),
+                  ]),
+                ),
+              ),
           ]),
         ),
         const SizedBox(height: 8),
