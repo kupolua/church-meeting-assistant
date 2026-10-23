@@ -675,6 +675,9 @@ VPS стояв на 29fcec2 (33 коміти позаду: шифрування,
 на VPS і копія в `~/cma-backups/` на M1. `cma-telegram-bot` у sudoers лишився,
 юніта давно немає — не заважає.
 
+Того ж вечора — 022 (schema_version 23, `signing_keys`), тим самим порядком,
+бекап `cma-pre-022-*`.
+
 Нове в `.env` після 021 (усе необовʼязкове): `SMTP_HOST/PORT/USER/PASSWORD/FROM`
 і `PLATFORM_NOTIFY_EMAIL`. Без SMTP код для входу з застосунку друкується в
 `journalctl -u cma-web` рядком `[api] code for …` — тимчасовий режим, поки
