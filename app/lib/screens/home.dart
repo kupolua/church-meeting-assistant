@@ -6,6 +6,7 @@ import '../theme.dart';
 import '../widgets.dart';
 import 'meeting_detail.dart';
 import 'settings.dart';
+import 'speaker_review.dart';
 import 'status_board.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -113,15 +114,26 @@ class _HomeScreenState extends State<HomeScreen> {
           Card6(padding: EdgeInsets.zero, child: Column(children: [
             for (var i = 0; i < d.processing.length; i++) ...[
               if (i > 0) const Divider1(),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
-                child: Row(children: [
-                  Expanded(child: Text(ukDate(d.processing[i].date ?? ''), style: T.bodyStrong.copyWith(fontSize: 14.5))),
-                  const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 1.5, color: C.accent)),
-                  const SizedBox(width: 8),
-                  Text(processingLabel(d.processing[i].status), style: T.meta),
-                ]),
-              ),
+              Builder(builder: (_) {
+                final j = d.processing[i];
+                final review = j.status == 'awaiting_review' && j.date != null;
+                return InkWell(
+                  onTap: review ? () async { await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SpeakerReviewScreen(session: widget.session, date: j.date!))); _load(); } : null,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+                    child: Row(children: [
+                      Expanded(child: Text(ukDate(j.date ?? ''), style: T.bodyStrong.copyWith(fontSize: 14.5))),
+                      if (review) ...[
+                        const Pill('звірити голоси', kind: PillKind.warn), const SizedBox(width: 4), const Icon(Icons.chevron_right, color: C.label, size: 18),
+                      ] else ...[
+                        const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 1.5, color: C.accent)),
+                        const SizedBox(width: 8),
+                        Text(processingLabel(j.status), style: T.meta),
+                      ],
+                    ]),
+                  ),
+                );
+              }),
             ],
           ])),
         ],

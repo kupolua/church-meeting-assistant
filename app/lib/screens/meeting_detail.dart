@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../widgets.dart';
 import 'audio_bar.dart';
 import 'signing_key.dart';
+import 'speaker_review.dart';
 
 /// One meeting from the server: the protocol (Слухали / Вирішили /
 /// Постановили per point) when there is one, the topics with their
@@ -162,7 +163,15 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           Text(ukDate(widget.date), style: T.screenDate),
           Text(pm != null ? 'Протокол ${pm.number}' : (d == null ? '' : '${d.topics.length} ${plural(d.topics.length, 'тема', 'теми', 'тем')}'), style: T.meta),
         ]),
-        actions: [if (d != null) Padding(padding: const EdgeInsets.only(right: 16), child: Center(child: Pill(label, kind: kind)))],
+        actions: [
+          if (d != null && (d.transcript.isNotEmpty || d.processing == 'awaiting_review'))
+            IconButton(
+              tooltip: 'Голоси',
+              icon: const Icon(Icons.record_voice_over_outlined, color: C.label),
+              onPressed: () async { await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SpeakerReviewScreen(session: widget.session, date: widget.date))); _load(); },
+            ),
+          if (d != null) Padding(padding: const EdgeInsets.only(right: 16), child: Center(child: Pill(label, kind: kind))),
+        ],
         bottom: TabBar(
           controller: _tabs,
           labelStyle: T.tab, unselectedLabelStyle: T.tab.copyWith(color: C.muted),

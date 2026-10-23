@@ -224,3 +224,32 @@ class PastQuery {
         seconds: j['seconds'] as num?,
       );
 }
+
+
+class SpeakerRow {
+  const SpeakerRow({required this.label, required this.name, this.flag, required this.manual, required this.totalHms, required this.segments, required this.samples});
+  final String label, name, totalHms;
+  final String? flag; // review | no_match | invalid | manual | null
+  final bool manual;
+  final int segments;
+  final List<({String hms, int sec})> samples;
+  factory SpeakerRow.fromJson(Map<String, dynamic> j) => SpeakerRow(
+        label: j['label'] as String, name: j['name'] as String? ?? '', flag: j['flag'] as String?, manual: j['manual'] == true,
+        totalHms: j['total_hms'] as String? ?? '', segments: (j['segments'] as num?)?.toInt() ?? 0,
+        samples: [for (final s in j['samples'] as List? ?? []) (hms: s['hms'] as String? ?? '', sec: (s['sec'] as num?)?.toInt() ?? 0)],
+      );
+}
+
+class SpeakerReviewData {
+  const SpeakerReviewData({required this.mode, this.jobId, required this.rows, required this.knownNames, required this.hasAudio});
+  final String mode; // review | busy | edit
+  final int? jobId;
+  final List<SpeakerRow> rows;
+  final List<String> knownNames;
+  final bool hasAudio;
+  factory SpeakerReviewData.fromJson(Map<String, dynamic> j) => SpeakerReviewData(
+        mode: j['mode'] as String? ?? 'edit', jobId: (j['job_id'] as num?)?.toInt(),
+        rows: [for (final r in j['rows'] as List? ?? []) SpeakerRow.fromJson(Map<String, dynamic>.from(r as Map))],
+        knownNames: [for (final n in j['known_names'] as List? ?? []) n.toString()], hasAudio: j['has_audio'] == true,
+      );
+}

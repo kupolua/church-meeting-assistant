@@ -6,6 +6,7 @@ import '../theme.dart';
 import '../widgets.dart';
 import 'meeting_detail.dart';
 import 'new_meeting.dart';
+import 'speaker_review.dart';
 
 class MeetingsScreen extends StatefulWidget {
   const MeetingsScreen({super.key, required this.session});
@@ -74,7 +75,14 @@ class _MeetingsScreenState extends State<MeetingsScreen> {
             ? '${m.topics} ${plural(m.topics, 'тема', 'теми', 'тем')}${m.attendees > 0 ? ' · ${m.attendees} ${plural(m.attendees, 'присутній', 'присутні', 'присутніх')}' : ''}'
             : (m.protocol != null ? 'лише порядок денний' : 'без запису');
     return Card6(
-      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: m.date))),
+      onTap: () async {
+        if (m.processing == 'awaiting_review') {
+          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SpeakerReviewScreen(session: widget.session, date: m.date)));
+          _load();
+        } else {
+          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: m.date)));
+        }
+      },
       child: Row(children: [
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(ukDate(m.date), style: T.itemTitle),
@@ -90,6 +98,7 @@ class _MeetingsScreenState extends State<MeetingsScreen> {
 /// One rule for every list: what the pill on a meeting says.
 (String, PillKind) statusPill(MeetingRow m) {
   if (m.sealed) return ('зашифровано', PillKind.draft);
+  if (m.processing == 'awaiting_review') return ('звірити голоси', PillKind.warn);
   if (m.processing != null) return ('обробляється', PillKind.warn);
   return switch (m.protocol?.status) {
     'approved' => ('протокол затверджено', PillKind.ok),

@@ -6,6 +6,7 @@ import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'meeting_detail.dart';
+import 'speaker_review.dart';
 
 class RecordScreen extends StatefulWidget {
   const RecordScreen({super.key, required this.session});
@@ -59,7 +60,14 @@ class _RecordScreenState extends State<RecordScreen> {
                   const SizedBox(height: 8),
                   for (final m in list) ...[
                     Card6(
-                      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: m.date))),
+                      onTap: () async {
+                        if (m.processing == 'awaiting_review') {
+                          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SpeakerReviewScreen(session: widget.session, date: m.date)));
+                          _load();
+                        } else {
+                          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: m.date)));
+                        }
+                      },
                       child: Row(children: [
                         Expanded(
                           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

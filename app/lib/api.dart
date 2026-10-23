@@ -215,6 +215,15 @@ class Api {
     return r['task'] == null ? null : TaskData.fromJson(Map<String, dynamic>.from(r['task'] as Map));
   }
 
+  // ─── Speaker review ───
+  Future<SpeakerReviewData> speakers(String date) async => SpeakerReviewData.fromJson(Map<String, dynamic>.from(await _send('GET', '/meetings/$date/speakers') as Map));
+
+  /// Returns (how, jobId): how is 'review' (pipeline continues) or 'reprocess'.
+  Future<(String, int)> saveSpeakers(String date, Map<String, String> names) async {
+    final r = await _send('POST', '/meetings/$date/speakers', body: {'names': names}) as Map;
+    return (r['how'] as String, (r['job_id'] as num).toInt());
+  }
+
   Future<List<PastQuery>> pastQueries() async {
     final r = await _send('GET', '/queries') as Map;
     return [for (final q in r['queries'] as List) PastQuery.fromJson(Map<String, dynamic>.from(q as Map))];
