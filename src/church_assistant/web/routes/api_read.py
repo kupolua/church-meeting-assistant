@@ -234,6 +234,17 @@ async def search(request: Request, q: str = Query("", max_length=200)):
 # Past questions (the RAG history the web keeps in `queries`)
 # ─────────────────────────────────────────────────────────────
 
+def _hit(h: dict[str, Any]) -> dict[str, Any]:
+    """A stored hit is {score, payload:{meeting_date, topic_title, body…}} —
+    the Qdrant point as the worker saved it. Older rows kept the fields flat."""
+    p = h.get("payload") if isinstance(h.get("payload"), dict) else h
+    return {
+        "date": p.get("meeting_date") or h.get("meeting_date"),
+        "title": p.get("topic_title") or h.get("topic_title"),
+        "score": h.get("score", h.get("rerank_score", h.get("vector_score"))),
+    }
+
+
 def _query_row(q: dict[str, Any]) -> dict[str, Any]:
     hits = q.get("hits") or []
     return {
@@ -244,10 +255,7 @@ def _query_row(q: dict[str, Any]) -> dict[str, Any]:
         "source": q.get("source"),
         "sources": list(q.get("sources") or []),
         "synthesis": q.get("synthesis") if q["status"] == "completed" else None,
-        "hits": [{
-            "date": h.get("meeting_date"), "title": h.get("topic_title"),
-            "score": h.get("rerank_score", h.get("vector_score")),
-        } for h in hits if isinstance(h, dict)][:12],
+        "hits": [_hit(h) for h in hits if isinstance(h, dict)][:12],
         "seconds": round((q.get("total_time_ms") or 0) / 1000, 1) if q.get("total_time_ms") else None,
     }
 
