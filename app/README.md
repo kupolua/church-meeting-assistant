@@ -16,7 +16,12 @@
     brew install --cask flutter            # один раз
     cd app && flutter pub get
     flutter run                            # на підключеному телефоні або емуляторі
-    flutter build apk --debug              # build/app/outputs/flutter-apk/app-debug.apk
+    ./build_apk.sh                         # release → ~/Documents/ReChurch/CMA_app/cma-app-<version>.apk
+    ./build_apk.sh http://10.0.2.2:8010    # …-dev.apk проти локального сервера
+
+Версія береться з `pubspec.yaml` (`version: 0.1.0+1`): підніміть її там перед
+збіркою, і файл назветься сам. Зараз 0.1.x — етап входу; 0.2 — запрошення й ключ
+пристрою; 0.3 — читання даних.
 
 Телефон: увімкнути «Налагодження через USB», підключити кабелем, `flutter devices`
 має його показати. Емулятор: `~/Library/Android/sdk/emulator/emulator -avd Medium_Phone_API_35`.
