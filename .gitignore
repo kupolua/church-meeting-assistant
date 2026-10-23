@@ -53,3 +53,6 @@ backups/
 
 # Migration export (deploy/migrate/export_from_m1.sh) — dumps, snapshots, ~2 GB
 migrate-out/
+
+# Built APKs for sideloading (50 MB each) — kept beside the repo, never in it
+CMA_app/

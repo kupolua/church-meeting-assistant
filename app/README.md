@@ -16,7 +16,7 @@
     brew install --cask flutter            # один раз
     cd app && flutter pub get
     flutter run                            # на підключеному телефоні або емуляторі
-    ./build_apk.sh                         # release → ~/Documents/ReChurch/CMA_app/cma-app-<version>.apk
+    ./build_apk.sh                         # release → <repo>/CMA_app/cma-app-<version>.apk
     ./build_apk.sh http://10.0.2.2:8010    # …-dev.apk проти локального сервера
 
 Версія береться з `pubspec.yaml` (`version: 0.1.0+1`): підніміть її там перед
