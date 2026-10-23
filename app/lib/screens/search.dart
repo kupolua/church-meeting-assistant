@@ -153,21 +153,27 @@ class _SearchScreenState extends State<SearchScreen> {
           const SizedBox(height: 14),
           if (q.synthesis != null && q.synthesis!.isNotEmpty) ...[
             const SectionLabel('Відповідь'), const SizedBox(height: 6),
-            Text(q.synthesis!, style: T.body), const SizedBox(height: 16),
+            Text(_plain(q.synthesis!), style: T.body), const SizedBox(height: 16),
           ],
           if (q.hits.isNotEmpty) ...[
-            const SectionLabel('Де про це говорили'), const SizedBox(height: 8),
-            for (final h in q.hits) ...[
-              Card6(
-                onTap: h.date == null ? null : () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!))); },
-                child: Row(children: [
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(h.title ?? '', style: T.bodyStrong), const SizedBox(height: 2), Text(ukDate(h.date ?? ''), style: T.small),
-                  ])),
-                  if (h.score != null) Text(h.score!.toStringAsFixed(2), style: T.meta.copyWith(color: C.accent)),
-                  const SizedBox(width: 6), const Icon(Icons.chevron_right, color: C.label),
-                ]),
-              ),
+            const SectionLabel('Де про це говорили'), const SizedBox(height: 4),
+            Text('Номер — це посилання [n] у відповіді. Тап відкриває зустріч.', style: T.small), const SizedBox(height: 8),
+            for (var i = 0; i < q.hits.length; i++) ...[
+              Builder(builder: (_) {
+                final h = q.hits[i];
+                return Card6(
+                  onTap: h.date == null ? null : () { Navigator.pop(ctx); Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: h.date!))); },
+                  child: Row(children: [
+                    Container(width: 26, height: 26, alignment: Alignment.center, decoration: const BoxDecoration(color: C.accentBg, shape: BoxShape.circle),
+                        child: Text('${i + 1}', style: T.small.copyWith(color: C.accent, fontWeight: FontWeight.w600))),
+                    const SizedBox(width: 10),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(h.title ?? '', style: T.bodyStrong), const SizedBox(height: 2), Text(ukDate(h.date ?? ''), style: T.small),
+                    ])),
+                    const SizedBox(width: 6), const Icon(Icons.chevron_right, color: C.label),
+                  ]),
+                );
+              }),
               const SizedBox(height: 8),
             ],
           ] else if (q.sources.isNotEmpty) ...[
@@ -209,3 +215,12 @@ class _SearchScreenState extends State<SearchScreen> {
     ]);
   }
 }
+
+
+/// The answer is stored as light markdown ("**2026-07-27**:", "*text*"); the
+/// app shows it as text, so the markers go and the citations [n] stay.
+String _plain(String md) => md
+    .replaceAll(RegExp(r'\*\*(.+?)\*\*'), r'$1')
+    .replaceAll(RegExp(r'(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)'), r'$1')
+    .replaceAll(RegExp(r'^\s*#+\s*', multiLine: true), '')
+    .trim();
