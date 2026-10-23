@@ -1,16 +1,38 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../mock_data.dart';
+import '../api.dart';
+import '../models.dart';
+import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'meeting_detail.dart';
 
-class RecordScreen extends StatelessWidget {
-  const RecordScreen({super.key});
+class RecordScreen extends StatefulWidget {
+  const RecordScreen({super.key, required this.session});
+  final Session session;
+  @override
+  State<RecordScreen> createState() => _RecordScreenState();
+}
+
+class _RecordScreenState extends State<RecordScreen> {
+  List<MeetingRow>? items;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final m = await widget.session.api.meetings();
+      if (mounted) setState(() => items = m.where((x) => x.hasAudio || x.processing != null).toList());
+    } on ApiException catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
+    final list = items ?? const <MeetingRow>[];
+    final mb = list.fold<int>(0, (n, m) => n + (m.audioBytes ?? 0)) ~/ 1048576;
     return Column(children: [
-      ScreenHeader(title: 'Запис', subtitle: mockEnabled ? '6 файлів · 421 МБ' : 'ще немає записів'),
+      ScreenHeader(title: 'Запис', subtitle: list.isEmpty ? 'ще немає записів' : '${list.length} ${plural(list.length, 'файл', 'файли', 'файлів')} · $mb МБ'),
       Container(
         color: C.surface,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -28,27 +50,31 @@ class RecordScreen extends StatelessWidget {
       ),
       const Divider1(),
       Expanded(
-        child: !mockEnabled
-            ? const EmptyState(icon: Icons.upload_file_outlined, title: 'Записів ще немає', text: 'Перший запис стане першою зустріччю церкви.')
-            : ListView(padding: const EdgeInsets.fromLTRB(16, 14, 16, 10), children: [
-          const SectionLabel('Завантажені'),
-          const SizedBox(height: 8),
-          for (final m in meetings.take(6)) ...[
-            Card6(
-              child: Row(children: [
-                Expanded(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(m.date, style: T.itemTitle),
-                    const SizedBox(height: 4),
-                    Text('${m.duration} · ${m.sizeMb} МБ', style: T.meta),
-                  ]),
-                ),
-                m.status == ProtocolStatus.draft ? const Pill('звірка спікерів', kind: PillKind.warn) : const Pill('оброблено'),
-              ]),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ]),
+        child: RefreshIndicator(
+          onRefresh: _load,
+          child: list.isEmpty
+              ? ListView(children: const [EmptyState(icon: Icons.upload_file_outlined, title: 'Записів ще немає', text: 'Перший запис стане першою зустріччю церкви.')])
+              : ListView(padding: const EdgeInsets.fromLTRB(16, 14, 16, 10), children: [
+                  const SectionLabel('Завантажені'),
+                  const SizedBox(height: 8),
+                  for (final m in list) ...[
+                    Card6(
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: m.date))),
+                      child: Row(children: [
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(ukDate(m.date), style: T.itemTitle),
+                            const SizedBox(height: 4),
+                            Text(m.audioBytes == null ? '—' : '${m.audioBytes! ~/ 1048576} МБ', style: T.meta),
+                          ]),
+                        ),
+                        m.processing != null ? Pill(processingLabel(m.processing), kind: PillKind.warn) : const Pill('оброблено'),
+                      ]),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ]),
+        ),
       ),
     ]);
   }

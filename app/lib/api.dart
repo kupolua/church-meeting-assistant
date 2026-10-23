@@ -4,6 +4,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'models.dart';
 
 /// Where the server is. Overridden at build time:
 ///   flutter run --dart-define=CMA_API=http://10.0.2.2:8010   (emulator → this Mac)
@@ -175,4 +176,23 @@ class Api {
   }
 
   Future<void> revokeKey(int id) async { await _send('DELETE', '/keys/$id'); }
+
+  // ─── Reading (step 3) ───
+  Future<HomeData> home() async => HomeData.fromJson(Map<String, dynamic>.from(await _send('GET', '/home') as Map));
+
+  Future<List<MeetingRow>> meetings() async {
+    final r = await _send('GET', '/meetings') as Map;
+    return [for (final m in r['meetings'] as List) MeetingRow.fromJson(Map<String, dynamic>.from(m as Map))];
+  }
+
+  Future<MeetingData> meeting(String date) async => MeetingData.fromJson(Map<String, dynamic>.from(await _send('GET', '/meetings/$date') as Map));
+
+  Future<List<SearchHitData>> search(String q) async {
+    final r = await _send('GET', '/search?q=${Uri.encodeQueryComponent(q)}') as Map;
+    return [for (final h in r['hits'] as List) SearchHitData.fromJson(Map<String, dynamic>.from(h as Map))];
+  }
+
+  /// For the audio player: the URL plus the header it must send.
+  Uri audioUri(String date) => Uri.parse('$apiBase/api/v1/meetings/$date/audio');
+  Map<String, String> get authHeaders => {if (token != null) 'authorization': 'Bearer $token'};
 }

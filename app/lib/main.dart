@@ -67,7 +67,10 @@ class _ShellState extends State<Shell> {
     final shut = C.border;
     return Scaffold(
       body: SafeArea(bottom: false, child: IndexedStack(index: i, children: [
-        _first(), const RecordScreen(), const MeetingsScreen(), const SearchScreen(),
+        _first(),
+        if (open) RecordScreen(session: session) else const SizedBox(),
+        if (open) MeetingsScreen(session: session) else const SizedBox(),
+        if (open) SearchScreen(session: session) else const SizedBox(),
       ])),
       bottomNavigationBar: NavigationBar(
         selectedIndex: i,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../mock_data.dart';
+import '../api.dart';
+import '../models.dart';
 import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
@@ -7,12 +8,32 @@ import 'meeting_detail.dart';
 import 'settings.dart';
 import 'status_board.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.session});
   final Session session;
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  HomeData? data;
+  String? error;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final d = await widget.session.api.home();
+      if (mounted) setState(() { data = d; error = null; });
+    } on ApiException catch (e) {
+      if (mounted) setState(() => error = e.message);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final session = widget.session;
     final me = session.me;
     final initials = (me?.name ?? '').split(' ').where((w) => w.isNotEmpty).take(2).map((w) => w[0].toUpperCase()).join();
     return Column(children: [
@@ -42,98 +63,80 @@ class HomeScreen extends StatelessWidget {
         ]),
       ),
       const Divider1(),
-      Expanded(child: mockEnabled ? _mockBody(context) : _emptyBody(context)),
+      Expanded(child: RefreshIndicator(onRefresh: _load, child: _body(context))),
     ]);
   }
 
-  Widget _emptyBody(BuildContext context) => ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
-        const SectionLabel('Церква'),
-        const SizedBox(height: 8),
-        const Row(children: [
-          StatTile(value: '0', label: 'зустрічей'), SizedBox(width: 8),
-          StatTile(value: '0', label: 'тем'), SizedBox(width: 8),
-          StatTile(value: '0', label: 'доручень'),
-        ]),
-        const EmptyState(icon: Icons.mic_none_rounded, title: 'Поки порожньо', text: 'Запишіть або завантажте першу зустріч на вкладці «Запис». Стенограма, теми й протокол зʼявляться тут.'),
-      ]);
-
-  Widget _mockBody(BuildContext context) {
-    final draft = meetings.firstWhere((m) => m.status == ProtocolStatus.draft);
-    final review = meetings.firstWhere((m) => m.status == ProtocolStatus.review);
-    final overdue = tasks.where((t) => t.status == 'прострочено').length;
-    final inWork = tasks.where((t) => t.status == 'в роботі' || t.status == 'нова').length;
+  Widget _body(BuildContext context) {
+    final d = data;
+    if (d == null && error == null) return const Center(child: CircularProgressIndicator(color: C.accent));
+    final drafts = (d?.protocols['draft'] ?? 0) + (d?.protocols['review'] ?? 0);
     return ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
-          const SectionLabel('Церква'),
-          const SizedBox(height: 8),
-          const Row(children: [
-            StatTile(value: '20', label: 'зустрічей'),
-            SizedBox(width: 8),
-            StatTile(value: '597', label: 'тем'),
-            SizedBox(width: 8),
-            StatTile(value: '1', label: 'чернетки', color: C.amber),
+      if (error != null) ...[
+        Card6(color: C.warnBg, child: Text(error!, style: T.meta.copyWith(color: C.warnText))),
+        const SizedBox(height: 14),
+      ],
+      const SectionLabel('Церква'),
+      const SizedBox(height: 8),
+      Row(children: [
+        StatTile(value: '${d?.meetings ?? 0}', label: plural(d?.meetings ?? 0, 'зустріч', 'зустрічі', 'зустрічей')),
+        const SizedBox(width: 8),
+        StatTile(value: '${d?.topics ?? 0}', label: plural(d?.topics ?? 0, 'тема', 'теми', 'тем')),
+        const SizedBox(width: 8),
+        StatTile(value: '$drafts', label: drafts == 1 ? 'чернетка' : 'чернетки', color: drafts > 0 ? C.amber : C.text),
+      ]),
+      if (d != null && d.meetings == 0) ...[
+        const EmptyState(icon: Icons.mic_none_rounded, title: 'Поки порожньо', text: 'Запишіть або завантажте першу зустріч на вкладці «Запис». Стенограма, теми й протокол зʼявляться тут.'),
+      ] else ...[
+        const SizedBox(height: 18),
+        const SectionLabel('Стан справ'),
+        const SizedBox(height: 8),
+        Card6(
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const StatusBoardScreen())),
+          child: Row(children: [
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Доручення з протоколів', style: T.itemTitle),
+              const SizedBox(height: 3),
+              Text('зʼявляться після підпису протоколів (крок 4)', style: T.meta),
+            ])),
+            const Icon(Icons.chevron_right, color: C.label),
           ]),
-          const SizedBox(height: 18),
-          const SectionLabel('Стан справ'),
-          const SizedBox(height: 8),
-          Card6(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const StatusBoardScreen())),
-            child: Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('$inWork доручень у роботі', style: T.itemTitle),
-                  const SizedBox(height: 3),
-                  Text(overdue > 0 ? '$overdue прострочено · 2 виконано цього тижня' : 'усе в строк', style: T.meta.copyWith(color: overdue > 0 ? C.amber : C.muted)),
-                ]),
-              ),
-              const Icon(Icons.chevron_right, color: C.label),
-            ]),
-          ),
+        ),
+        if (d != null && d.processing.isNotEmpty) ...[
           const SizedBox(height: 18),
           const SectionLabel('Обробка'),
           const SizedBox(height: 8),
-          Card6(
-            padding: EdgeInsets.zero,
-            child: Column(children: [
-              _row('Обробник (сервер «ai»)', 'на звʼязку', ok: true),
-              const Divider1(),
-              _row('Розшифровка аудіо', 'черга порожня'),
-              const Divider1(),
-              _row('Пошуковий індекс', '20 зустрічей'),
-            ]),
-          ),
+          Card6(padding: EdgeInsets.zero, child: Column(children: [
+            for (var i = 0; i < d.processing.length; i++) ...[
+              if (i > 0) const Divider1(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
+                child: Row(children: [
+                  Expanded(child: Text(ukDate(d.processing[i].date ?? ''), style: T.bodyStrong.copyWith(fontSize: 14.5))),
+                  const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 1.5, color: C.accent)),
+                  const SizedBox(width: 8),
+                  Text(processingLabel(d.processing[i].status), style: T.meta),
+                ]),
+              ),
+            ],
+          ])),
+        ],
+        if (d != null && d.attention.isNotEmpty) ...[
           const SizedBox(height: 18),
           const SectionLabel('Потребує уваги'),
           const SizedBox(height: 8),
-          Card6(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(meeting: review))),
-            child: Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Протокол за ${review.date} — чекає підписів', style: T.itemTitle),
-                  const SizedBox(height: 3),
-                  Text('підписали ${review.signed} із ${review.present} присутніх', style: T.meta),
-                ]),
-              ),
-              const Pill('підписати', kind: PillKind.info),
-            ]),
-          ),
-          const SizedBox(height: 8),
-          Card6(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(meeting: draft))),
-            child: Row(children: [
-              Expanded(child: Text('Протокол за ${draft.date} — чернетка', style: T.itemTitle)),
-              const Pill('чернетка', kind: PillKind.warn),
-            ]),
-          ),
-        ]);
+          for (final a in d.attention) ...[
+            Card6(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MeetingDetailScreen(session: widget.session, date: a.date))),
+              child: Row(children: [
+                Expanded(child: Text('Протокол за ${ukDate(a.date)}', style: T.itemTitle)),
+                a.protocol?.status == 'review' ? const Pill('на підписі', kind: PillKind.info) : const Pill('чернетка', kind: PillKind.warn),
+              ]),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ],
+    ]);
   }
-
-  Widget _row(String k, String v, {bool ok = false}) => Padding(
-        padding: const EdgeInsets.fromLTRB(13, 11, 13, 11),
-        child: Row(children: [
-          Expanded(child: Text(k, style: T.bodyStrong.copyWith(fontSize: 14.5))),
-          if (ok) Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 8), decoration: const BoxDecoration(color: Color(0xFF22C55E), shape: BoxShape.circle)),
-          Text(v, style: T.meta),
-        ]),
-      );
 }
