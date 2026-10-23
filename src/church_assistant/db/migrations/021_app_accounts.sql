@@ -32,7 +32,7 @@
 -- person is signed in, and revoking a phone should be the same gesture as
 -- revoking a browser.
 --
--- Applied: 2026-10-__ (schema_version 22)
+-- Applied: 2026-10-23 (schema_version 22)
 -- ═══════════════════════════════════════════════════════════════════════
 
 -- ─── 1. A church may wait ────────────────────────────────────
