@@ -8,6 +8,9 @@ import '../theme.dart';
 class AudioBarController {
   AudioPlayer? _player;
   bool _ready = false;
+  /// Where the recording is, for the text that wants to follow it.
+  Stream<Duration>? get position => _player?.positionStream;
+  Stream<bool>? get playing => _player?.playingStream;
   /// A chip tapped before the source finished loading: remembered and applied
   /// the moment it is, instead of being dropped.
   Duration? _pending;

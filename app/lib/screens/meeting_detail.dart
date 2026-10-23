@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../api.dart';
 import '../models.dart';
 import '../session.dart';
@@ -33,7 +35,7 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   void initState() { super.initState(); _load(); }
 
   @override
-  void dispose() { _tabs.dispose(); player.dispose(); super.dispose(); }
+  void dispose() { _posSub?.cancel(); _tabs.dispose(); player.dispose(); super.dispose(); }
 
   Future<void> _load() async {
     try {
@@ -43,6 +45,10 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
       // No protocol yet → open on the topics, which is what there is.
       if (d.protocol == null && d.topics.isNotEmpty) _tabs.index = 1;
       if (widget.focusTopic != null || widget.seekTc != null) _focus(d);
+      if (d.hasAudio && d.transcript.isNotEmpty) {
+        // The player is created with the first frame that has audio; subscribe after it.
+        WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _startFollowing(d); });
+      }
     } on ApiException catch (e) {
       if (mounted) setState(() => error = e.message);
     }
@@ -50,17 +56,88 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
 
   void _seek(String? tc) { if (tc != null) player.seekTo(tc); }
 
-  /// Land where the search pointed: the topic in view, the recording wound.
+  /// Land where the search pointed: the стенограма open at the turn the
+  /// timecode names, that turn at the top and highlighted, the recording
+  /// wound to it. Without a transcript, the topic instead.
   void _focus(MeetingData d) {
-    final i = widget.focusTopic == null ? -1 : d.topics.indexWhere((t) => t.title.trim() == widget.focusTopic!.trim());
-    if (i >= 0) {
-      _tabs.index = 1;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        final ctx = _topicKeys[i]?.currentContext;
-        if (ctx != null) Scrollable.ensureVisible(ctx, alignment: 0.05, duration: const Duration(milliseconds: 300));
-      });
+    final tc = widget.seekTc;
+    if (tc != null && d.transcript.isNotEmpty) {
+      _turnSeconds = [for (final t in d.transcript) _secs(t.tc)];
+      final idx = _turnAt(_secs(tc));
+      _tabs.index = 2;
+      setState(() => _currentTurn = idx);
+      _jumpTranscript(idx, tries: 30);
+    } else {
+      final i = widget.focusTopic == null ? -1 : d.topics.indexWhere((t) => t.title.trim() == widget.focusTopic!.trim());
+      if (i >= 0) { _tabs.index = 1; _scrollToTopic(i, tries: 20); }
     }
-    _seek(widget.seekTc);
+    _seek(tc);
+  }
+
+  void _jumpTranscript(int idx, {required int tries}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_turnScroll.isAttached) {
+        _turnScroll.jumpTo(index: idx, alignment: 0.08);
+      } else if (tries > 0) {
+        Future.delayed(const Duration(milliseconds: 100), () => _jumpTranscript(idx, tries: tries - 1));
+      }
+    });
+  }
+
+  /// Last turn that starts at or before `s` seconds (turns are in order).
+  int _turnAt(int s) {
+    var lo = 0, hi = _turnSeconds.length - 1, idx = 0;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (_turnSeconds[mid] <= s) { idx = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return idx;
+  }
+
+  /// The tab may still be building when we first ask; keep asking for a
+  /// couple of seconds until the topic has a context to scroll to.
+  void _scrollToTopic(int i, {required int tries}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _topicKeys[i]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx, alignment: 0.0, duration: const Duration(milliseconds: 300));
+      } else if (tries > 0) {
+        Future.delayed(const Duration(milliseconds: 100), () => _scrollToTopic(i, tries: tries - 1));
+      }
+    });
+  }
+
+  // ─── following the recording in the стенограма ───────────
+  final _turnScroll = ItemScrollController();
+  final _turnListener = ItemPositionsListener.create();
+  StreamSubscription<Duration>? _posSub;
+  int _currentTurn = -1;
+  DateTime _userScrolledAt = DateTime.fromMillisecondsSinceEpoch(0);
+  List<int> _turnSeconds = const [];
+
+  static int _secs(String tc) {
+    final p = tc.split(':').map(int.tryParse).toList();
+    if (p.any((x) => x == null)) return -1;
+    return p.length == 3 ? p[0]! * 3600 + p[1]! * 60 + p[2]! : p[0]! * 60 + p[1]!;
+  }
+
+  void _startFollowing(MeetingData d) {
+    _turnSeconds = [for (final t in d.transcript) _secs(t.tc)];
+    _posSub?.cancel();
+    _posSub = player.position?.listen(_onPosition);
+  }
+
+  void _onPosition(Duration pos) {
+    if (_turnSeconds.isEmpty) return;
+    final idx = _turnAt(pos.inSeconds);
+    if (idx == _currentTurn) return;
+    setState(() => _currentTurn = idx);
+    final userBusy = DateTime.now().difference(_userScrolledAt) < const Duration(seconds: 8);
+    if (_tabs.index == 2 && !userBusy && _turnScroll.isAttached) {
+      _turnScroll.scrollTo(index: idx, alignment: 0.08, duration: const Duration(milliseconds: 350));
+    }
   }
 
   @override
@@ -232,24 +309,32 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   // ─── Стенограма ──────────────────────────────────────────
   Widget _transcript(MeetingData d) {
     if (d.transcript.isEmpty) return const EmptyState(icon: Icons.subject, title: 'Стенограми ще немає', text: 'Зʼявиться після розшифровки запису.');
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      itemCount: d.transcript.length,
-      itemBuilder: (_, i) {
-        final t = d.transcript[i];
-        final sameSpeaker = i > 0 && d.transcript[i - 1].speaker == t.speaker;
-        return Padding(
-          padding: EdgeInsets.only(top: sameSpeaker ? 4 : 14),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            if (!sameSpeaker)
-              Row(children: [
-                Expanded(child: Text(t.speaker.isEmpty ? '—' : t.speaker, style: T.value.copyWith(color: C.accent))),
-                Timecode(t.tc, onTap: () => _seek(t.tc)),
-              ]),
-            Text(t.text, style: T.body),
-          ]),
-        );
-      },
+    return NotificationListener<UserScrollNotification>(
+      onNotification: (_) { _userScrolledAt = DateTime.now(); return false; },
+      child: ScrollablePositionedList.builder(
+        itemScrollController: _turnScroll,
+        itemPositionsListener: _turnListener,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        itemCount: d.transcript.length,
+        itemBuilder: (_, i) {
+          final t = d.transcript[i];
+          final sameSpeaker = i > 0 && d.transcript[i - 1].speaker == t.speaker;
+          final current = i == _currentTurn;
+          return Container(
+            margin: EdgeInsets.only(top: sameSpeaker ? 4 : 14),
+            padding: current ? const EdgeInsets.fromLTRB(8, 6, 8, 6) : EdgeInsets.zero,
+            decoration: current ? BoxDecoration(color: C.accentBg, borderRadius: BorderRadius.circular(6)) : null,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (!sameSpeaker || current)
+                Row(children: [
+                  Expanded(child: Text(t.speaker.isEmpty ? '—' : t.speaker, style: T.value.copyWith(color: C.accent))),
+                  Timecode(t.tc, onTap: () => _seek(t.tc)),
+                ]),
+              Text(t.text, style: T.body),
+            ]),
+          );
+        },
+      ),
     );
   }
 }
