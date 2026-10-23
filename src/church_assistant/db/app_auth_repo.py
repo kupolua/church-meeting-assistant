@@ -112,7 +112,7 @@ async def issue(
 
 
 async def verify(
-    pool: AsyncConnectionPool, *, email: str, code: str,
+    pool: AsyncConnectionPool, *, email: str, code: str, consume: bool = True,
 ) -> Optional[dict[str, Any]]:
     """
     Spend the live code for this address if `code` matches. Returns the row
@@ -123,6 +123,12 @@ async def verify(
     guesses the row is dead even if the next guess would have been right —
     six digits are only safe because guessing is expensive in attempts, not in
     entropy.
+
+    `consume=False` checks without spending: a right code is reported and left
+    live, a wrong one is still charged. Needed when the server has to ask a
+    question back ("which church?") before it can finish — the person's
+    second answer must find the code still there. Found 23.10 the hard way:
+    the first answer spent the code and the second was refused.
     """
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -137,9 +143,10 @@ async def verify(
                 return None
             ok = hmac.compare_digest(row["code_hash"], hash_code(email, code))
             if ok and row["attempts"] < MAX_ATTEMPTS:
-                await cur.execute(
-                    "UPDATE email_codes SET consumed_at = NOW() WHERE id = %s", (row["id"],)
-                )
+                if consume:
+                    await cur.execute(
+                        "UPDATE email_codes SET consumed_at = NOW() WHERE id = %s", (row["id"],)
+                    )
                 return {"purpose": row["purpose"], "payload": row["payload"] or {}}
             # Wrong, or right but too late. Charge it; the last charge kills it.
             await cur.execute(

@@ -295,11 +295,26 @@ async def verify(request: Request, body: Verify):
         raise HTTPException(status_code=400, detail="Код — шість цифр.")
     pool = await get_pool()
 
-    spent = await app_auth_repo.verify(pool, email=email, code=code)
+    # A person on two councils has to be asked which door — and the code must
+    # survive the question. So: look, ask, and only then spend.
+    candidates = await app_auth_repo.accounts_by_email(pool, email)
+    must_ask = len(candidates) > 1 and body.tenant_id is None
+    spent = await app_auth_repo.verify(pool, email=email, code=code, consume=not must_ask)
     if spent is None:
         await _logger.warn("api.code_rejected", message=f"bad code for {email}",
                            metadata={"email": email})
         raise HTTPException(status_code=401, detail="Код не підійшов або прострочений.")
+    if must_ask and spent["purpose"] == "login":
+        raise HTTPException(status_code=409, detail={
+            "choose": [{"tenant_id": c["tenant_id"], "name": c["tenant_name"]}
+                       for c in candidates],
+        })
+    if must_ask:
+        # A founding code from someone who already sits on two councils: the
+        # question does not apply, spend it now.
+        spent = await app_auth_repo.verify(pool, email=email, code=code)
+        if spent is None:
+            raise HTTPException(status_code=401, detail="Код не підійшов або прострочений.")
 
     ip = request.client.host if request.client else None
     device = (body.device_name or request.headers.get("user-agent") or "").strip()[:120]
@@ -307,15 +322,8 @@ async def verify(request: Request, body: Verify):
     if spent["purpose"] == "signup":
         tenant_id, user_id = await _found_church(pool, email, spent["payload"], device)
     else:
-        candidates = await app_auth_repo.accounts_by_email(pool, email)
         if not candidates:
             raise HTTPException(status_code=404, detail="Акаунта з цією адресою немає.")
-        if len(candidates) > 1 and body.tenant_id is None:
-            # A person on two councils: the code was right, but which door?
-            raise HTTPException(status_code=409, detail={
-                "choose": [{"tenant_id": c["tenant_id"], "name": c["tenant_name"]}
-                           for c in candidates],
-            })
         chosen = (
             next((c for c in candidates if c["tenant_id"] == body.tenant_id), None)
             if body.tenant_id is not None else candidates[0]
