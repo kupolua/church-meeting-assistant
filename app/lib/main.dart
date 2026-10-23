@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'screens/home.dart';
 import 'screens/meetings.dart';
+import 'screens/onboarding.dart';
 import 'screens/record.dart';
 import 'screens/search.dart';
+import 'session.dart';
 import 'theme.dart';
 
 void main() => runApp(const CmaApp());
@@ -24,6 +26,10 @@ class CmaApp extends StatelessWidget {
 
 /// Four tabs in the order the mockups settled on — Головна · Запис · Зустрічі ·
 /// Пошук — so the most frequent ones sit under the right thumb.
+///
+/// Until the church is signed in AND approved, only the first tab works: the
+/// others are drawn grey and ignore taps (decided 23.10.2026). The same gate
+/// will hold a church whose subscription has lapsed.
 class Shell extends StatefulWidget {
   const Shell({super.key});
   @override
@@ -32,24 +38,52 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   int i = 0;
-  static const pages = [HomeScreen(), RecordScreen(), MeetingsScreen(), SearchScreen()];
+  late final Session session = Session();
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-        body: SafeArea(bottom: false, child: IndexedStack(index: i, children: pages)),
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: i,
-          onDestinationSelected: (v) => setState(() => i = v),
-          backgroundColor: C.surface,
-          indicatorColor: C.accentBg,
-          height: 64,
-          labelTextStyle: WidgetStateProperty.resolveWith((s) => T.nav.copyWith(color: s.contains(WidgetState.selected) ? C.accent : C.label)),
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.home_outlined, color: C.label), selectedIcon: Icon(Icons.home, color: C.accent), label: 'Головна'),
-            NavigationDestination(icon: Icon(Icons.mic_none_rounded, color: C.label), selectedIcon: Icon(Icons.mic_rounded, color: C.accent), label: 'Запис'),
-            NavigationDestination(icon: Icon(Icons.event_note_outlined, color: C.label), selectedIcon: Icon(Icons.event_note, color: C.accent), label: 'Зустрічі'),
-            NavigationDestination(icon: Icon(Icons.search, color: C.label), selectedIcon: Icon(Icons.search, color: C.accent), label: 'Пошук'),
-          ],
-        ),
-      );
+  void initState() {
+    super.initState();
+    session.addListener(_onSession);
+  }
+
+  @override
+  void dispose() { session.removeListener(_onSession); session.dispose(); super.dispose(); }
+
+  void _onSession() {
+    if (!session.tabsOpen && i != 0) i = 0;
+    setState(() {});
+  }
+
+  Widget _first() => switch (session.state) {
+        SessionState.loading => const Center(child: CircularProgressIndicator(color: C.accent)),
+        SessionState.signedOut => OnboardingScreen(session: session),
+        SessionState.active => HomeScreen(session: session),
+        _ => WaitingScreen(session: session),
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final open = session.tabsOpen;
+    final shut = C.border;
+    return Scaffold(
+      body: SafeArea(bottom: false, child: IndexedStack(index: i, children: [
+        _first(), const RecordScreen(), const MeetingsScreen(), const SearchScreen(),
+      ])),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: i,
+        onDestinationSelected: (v) { if (open || v == 0) setState(() => i = v); },
+        backgroundColor: C.surface,
+        indicatorColor: C.accentBg,
+        height: 64,
+        labelTextStyle: WidgetStateProperty.resolveWith((s) => T.nav.copyWith(
+            color: s.contains(WidgetState.disabled) ? shut : s.contains(WidgetState.selected) ? C.accent : C.label)),
+        destinations: [
+          const NavigationDestination(icon: Icon(Icons.home_outlined, color: C.label), selectedIcon: Icon(Icons.home, color: C.accent), label: 'Головна'),
+          NavigationDestination(enabled: open, icon: Icon(Icons.mic_none_rounded, color: open ? C.label : shut), selectedIcon: const Icon(Icons.mic_rounded, color: C.accent), label: 'Запис'),
+          NavigationDestination(enabled: open, icon: Icon(Icons.event_note_outlined, color: open ? C.label : shut), selectedIcon: const Icon(Icons.event_note, color: C.accent), label: 'Зустрічі'),
+          NavigationDestination(enabled: open, icon: Icon(Icons.search, color: open ? C.label : shut), selectedIcon: const Icon(Icons.search, color: C.accent), label: 'Пошук'),
+        ],
+      ),
+    );
+  }
 }

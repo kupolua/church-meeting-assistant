@@ -85,6 +85,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 from church_assistant.web.routes import (  # noqa: E402
     account,
     admin,
+    api,
     auth,
     home,
     invite,
@@ -97,6 +98,7 @@ from church_assistant.web.routes import (  # noqa: E402
     ingest,
 )
 
+app.include_router(api.router)
 app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(admin.router)

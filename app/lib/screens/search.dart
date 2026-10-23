@@ -48,7 +48,9 @@ class _SearchScreenState extends State<SearchScreen> {
     ]);
   }
 
-  Widget _idle() => ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
+  Widget _idle() => !mockEnabled
+      ? const EmptyState(icon: Icons.search, title: 'Нема в чому шукати', text: 'Пошук запрацює, щойно зʼявиться перша оброблена зустріч.')
+      : ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
         const SectionLabel('Нещодавні запити'),
         const SizedBox(height: 8),
         for (final q in recentQueries)

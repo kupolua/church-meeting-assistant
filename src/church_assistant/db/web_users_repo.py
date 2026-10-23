@@ -51,9 +51,11 @@ async def add_web_user(
     full_name: str,
     role: str = "member",
     notes: Optional[str] = None,
+    email: Optional[str] = None,
 ) -> int:
     """Add a web account to a tenant. Returns the new id."""
     username = username.strip().lower()
+    email = (email or "").strip().lower() or None
     if role not in ROLES:
         raise ValueError(f"Invalid role: {role!r} (expected one of {ROLES})")
     if not username:
@@ -65,22 +67,24 @@ async def add_web_user(
 
     sql = """
         INSERT INTO web_users (
-            tenant_id, username, password_hash, full_name, role, notes
-        ) VALUES (%s, %s, %s, %s, %s, %s)
+            tenant_id, username, password_hash, full_name, role, notes, email
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """
     try:
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(sql, (
-                tenant_id, username, password_hash, full_name.strip(), role, notes,
+                tenant_id, username, password_hash, full_name.strip(), role, notes, email,
             ))
             row = await cur.fetchone()
             if row is None:
                 raise RuntimeError("INSERT RETURNING did not return an id")
             return int(row[0])
     except UniqueViolation as e:
+        # Either the login or the email (021) is taken in this church; the
+        # caller sees one error because the person sees one form.
         raise WebUserAlreadyExists(
-            f"Web user {username!r} already exists"
+            f"Web user {username!r} (or its email) already exists"
         ) from e
 
 

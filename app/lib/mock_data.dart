@@ -3,6 +3,12 @@
 // schema (draft → review → approved) so wiring the API later is a swap of the
 // source, not of the screens.
 
+/// The invented data is shown only when the build asks for it:
+///   flutter run --dart-define=CMA_MOCK=true
+/// A signed-in church starts empty, as it will in life; the mock exists so the
+/// screens can still be reviewed before the read API lands (step 3).
+const mockEnabled = bool.fromEnvironment('CMA_MOCK', defaultValue: false);
+
 enum ProtocolStatus { draft, review, approved }
 
 class Attendee {

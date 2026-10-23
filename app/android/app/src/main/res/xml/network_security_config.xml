@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain HTTP only to the developer's machine as the emulator sees it.
+     Everything else, the church's server included, must be HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

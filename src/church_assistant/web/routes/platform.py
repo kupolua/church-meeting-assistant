@@ -10,6 +10,8 @@ The platform panel — running the fleet, not a congregation:
     POST /platform/churches/{id}/archive    retire it, keeping the data a year
     POST /platform/churches/{id}/restore    bring it back out of the archive
     POST /platform/recover-admin   a fresh link for a church's admin
+    POST /platform/churches/{id}/approve    let a church asked for from the app in
+    POST /platform/churches/{id}/reject     refuse it, keeping the record
 
 SEPARATE FROM /admin/users BY DESIGN. That page belongs to one church and shows
 its people; this one belongs to no church and shows churches. They used to be
@@ -58,7 +60,7 @@ from church_assistant.db import (
     audit_repo, tenants_repo, web_invites_repo, web_users_repo,
 )
 from church_assistant.db.connection import get_pool
-from church_assistant.shared import tenant_paths
+from church_assistant.shared import mailer, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web import security
 from church_assistant.web.main import templates
@@ -77,6 +79,7 @@ async def _panel_context(request: Request, pool: Any) -> dict[str, Any]:
     """Churches with their sizes — numbers only, never their contents."""
     return {
         "churches": await tenants_repo.list_with_counts(pool),
+        "pending": await tenants_repo.list_pending(pool),
         "archived": await tenants_repo.list_archived(pool),
         "retention_days": tenants_repo.ARCHIVE_RETENTION_DAYS,
         "me": current_user(request),
@@ -576,3 +579,67 @@ async def restore_church(request: Request, tenant_id: int):
         error=f"«{church['name']}» повернуто з архіву — і поки що призупинено. "
               f"Натисніть «відновити», щоб пустити людей.",
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Churches asked for from the app (migration 021)
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/churches/{tenant_id}/approve", response_class=HTMLResponse)
+async def approve_church(request: Request, tenant_id: int):
+    """
+    Say yes to a church founded from the phone.
+
+    The founder proved their address before this row existed, so what the
+    operator is judging is a church name, a person's name and a few words —
+    not whether the request is real. One UPDATE, the same one a payment will
+    make without a hand on it; `approved_by` records which it was.
+    """
+    return await _answer_request(request, tenant_id, approve=True)
+
+
+@router.post("/churches/{tenant_id}/reject", response_class=HTMLResponse)
+async def reject_church(request: Request, tenant_id: int):
+    """Say no. The row stays: its slug and the founder's address are the record."""
+    return await _answer_request(request, tenant_id, approve=False)
+
+
+async def _answer_request(request: Request, tenant_id: int, *, approve: bool) -> HTMLResponse:
+    require_platform(request)
+    pool = await get_pool()
+    church = await tenants_repo.get_by_id(pool, tenant_id)
+    if church is None or int(church["id"]) == 0:
+        return await _panel_with(request, error="Немає такої церкви.")
+
+    me = current_user(request)
+    changed = await tenants_repo.set_approval(
+        pool, tenant_id, approval="active" if approve else "rejected", by=me.actor,
+    )
+    if not changed:
+        return await _panel_with(request, error=f"«{church['name']}» уже не чекає відповіді.")
+
+    await audit_repo.record(
+        pool, tenant_id=tenant_id,
+        action="platform.church_approved" if approve else "platform.church_rejected",
+        actor=me.actor, resource=f"tenants/{tenant_id}",
+        detail={"slug": church["slug"], "requested_by": church.get("requested_by")},
+    )
+    await _logger.info(
+        "web.church_request_answered",
+        message=f"{me.username} {'approved' if approve else 'rejected'} church "
+                f"{church['slug']!r} asked by {church.get('requested_by')!r}",
+    )
+
+    founder = church.get("requested_by")
+    if founder:
+        if approve:
+            subject = f"CMA: церкву «{church['name']}» підключено"
+            text = (f"Вашу церкву «{church['name']}» підключено до CMA.\n\n"
+                    f"Відкрийте застосунок — усі розділи вже доступні.\n")
+        else:
+            subject = f"CMA: запит для «{church['name']}»"
+            text = (f"На жаль, запит на підключення церкви «{church['name']}» "
+                    f"не схвалено.\nЯкщо це помилка — відповідайте на цей лист.\n")
+        await mailer.send(founder, subject, text)
+
+    return await _panel_with(request)

@@ -155,3 +155,22 @@ class Divider1 extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(height: 1, color: C.border);
 }
+
+
+/// What a list shows before the church has anything in it.
+class EmptyState extends StatelessWidget {
+  const EmptyState({super.key, required this.icon, required this.title, required this.text});
+  final IconData icon;
+  final String title, text;
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
+        child: Column(children: [
+          Container(width: 64, height: 64, decoration: const BoxDecoration(color: C.chipBg, shape: BoxShape.circle), child: Icon(icon, size: 30, color: C.label)),
+          const SizedBox(height: 14),
+          Text(title, style: T.itemTitle, textAlign: TextAlign.center),
+          const SizedBox(height: 6),
+          Text(text, style: T.meta, textAlign: TextAlign.center),
+        ]),
+      );
+}

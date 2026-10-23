@@ -1,43 +1,63 @@
 import 'package:flutter/material.dart';
 import '../mock_data.dart';
+import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'meeting_detail.dart';
 import 'status_board.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.session});
+  final Session session;
 
   @override
   Widget build(BuildContext context) {
-    final draft = meetings.firstWhere((m) => m.status == ProtocolStatus.draft);
-    final review = meetings.firstWhere((m) => m.status == ProtocolStatus.review);
-    final overdue = tasks.where((t) => t.status == 'прострочено').length;
-    final inWork = tasks.where((t) => t.status == 'в роботі' || t.status == 'нова').length;
+    final me = session.me;
+    final initials = (me?.name ?? '').split(' ').where((w) => w.isNotEmpty).take(2).map((w) => w[0].toUpperCase()).join();
     return Column(children: [
       Container(
         color: C.surface,
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+        padding: const EdgeInsets.fromLTRB(16, 16, 8, 12),
         child: Row(children: [
           Container(
             width: 42, height: 42,
             decoration: const BoxDecoration(color: C.accentBg, shape: BoxShape.circle),
             alignment: Alignment.center,
-            child: Text('ІМ', style: T.itemTitle.copyWith(color: C.accent, fontSize: 15)),
+            child: Text(initials.isEmpty ? '·' : initials, style: T.itemTitle.copyWith(color: C.accent, fontSize: 15)),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Церква «Приклад»', style: T.h2),
+              Text(me?.churchName ?? 'Церква', style: T.h2, maxLines: 1, overflow: TextOverflow.ellipsis),
               const SizedBox(height: 1),
-              Text('Ігор Мельник · адміністратор', style: T.meta),
+              Text('${me?.name ?? ''} · ${me?.isAdmin == true ? 'адміністратор' : 'учасник'}', style: T.meta),
             ]),
           ),
+          IconButton(onPressed: session.signOut, tooltip: 'Вийти', icon: const Icon(Icons.logout, color: C.label, size: 20)),
         ]),
       ),
       const Divider1(),
-      Expanded(
-        child: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
+      Expanded(child: mockEnabled ? _mockBody(context) : _emptyBody(context)),
+    ]);
+  }
+
+  Widget _emptyBody(BuildContext context) => ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
+        const SectionLabel('Церква'),
+        const SizedBox(height: 8),
+        const Row(children: [
+          StatTile(value: '0', label: 'зустрічей'), SizedBox(width: 8),
+          StatTile(value: '0', label: 'тем'), SizedBox(width: 8),
+          StatTile(value: '0', label: 'доручень'),
+        ]),
+        const EmptyState(icon: Icons.mic_none_rounded, title: 'Поки порожньо', text: 'Запишіть або завантажте першу зустріч на вкладці «Запис». Стенограма, теми й протокол зʼявляться тут.'),
+      ]);
+
+  Widget _mockBody(BuildContext context) {
+    final draft = meetings.firstWhere((m) => m.status == ProtocolStatus.draft);
+    final review = meetings.firstWhere((m) => m.status == ProtocolStatus.review);
+    final overdue = tasks.where((t) => t.status == 'прострочено').length;
+    final inWork = tasks.where((t) => t.status == 'в роботі' || t.status == 'нова').length;
+    return ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 12), children: [
           const SectionLabel('Церква'),
           const SizedBox(height: 8),
           const Row(children: [
@@ -100,9 +120,7 @@ class HomeScreen extends StatelessWidget {
               const Pill('чернетка', kind: PillKind.warn),
             ]),
           ),
-        ]),
-      ),
-    ]);
+        ]);
   }
 
   Widget _row(String k, String v, {bool ok = false}) => Padding(

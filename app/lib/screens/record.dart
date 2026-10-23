@@ -10,7 +10,7 @@ class RecordScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Column(children: [
-      const ScreenHeader(title: 'Запис', subtitle: '6 файлів · 421 МБ'),
+      ScreenHeader(title: 'Запис', subtitle: mockEnabled ? '6 файлів · 421 МБ' : 'ще немає записів'),
       Container(
         color: C.surface,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -28,7 +28,9 @@ class RecordScreen extends StatelessWidget {
       ),
       const Divider1(),
       Expanded(
-        child: ListView(padding: const EdgeInsets.fromLTRB(16, 14, 16, 10), children: [
+        child: !mockEnabled
+            ? const EmptyState(icon: Icons.upload_file_outlined, title: 'Записів ще немає', text: 'Перший запис стане першою зустріччю церкви.')
+            : ListView(padding: const EdgeInsets.fromLTRB(16, 14, 16, 10), children: [
           const SectionLabel('Завантажені'),
           const SizedBox(height: 8),
           for (final m in meetings.take(6)) ...[

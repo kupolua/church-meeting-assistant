@@ -48,7 +48,11 @@ PUBLIC_PATHS = frozenset({LOGIN_PATH, "/logout", "/healthz", "/favicon.ico"})
 # as a hash, and the route can do exactly one thing — set the first password on
 # an account that has none. It cannot reach any other church's data, because the
 # tenant it may touch is the one the token names.
-PUBLIC_PREFIXES = ("/static/", "/invite/")
+# "/api/" is public TO THIS MIDDLEWARE only: it has no cookie to read there. The
+# app sends a bearer token instead, and web/api.py resolves it against the same
+# sessions table through its own dependency — every handler under /api/ that
+# touches a church goes through api_user(), which refuses without one.
+PUBLIC_PREFIXES = ("/static/", "/invite/", "/api/")
 
 # Two panels that do not intersect, decided in ONE place. A platform account
 # runs the fleet and belongs to no church; a church account runs its own

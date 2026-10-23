@@ -54,9 +54,14 @@ async def create(
     ttl_seconds: int,
     user_agent: Optional[str] = None,
     ip: Optional[str] = None,
+    client: str = "web",
 ) -> int:
     """
     Open a session for a signed-in user. Returns the new session id.
+
+    `client` is 'web' or 'app' (migration 021). An app token is the same row
+    with a longer cap; keeping both in one table is what lets the account page
+    list a phone next to a browser and revoke either.
 
     Takes the token's HASH, never the token: the plaintext exists only in the
     login handler and the browser, and this module has no reason to see it.
@@ -66,14 +71,16 @@ async def create(
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
     sql = """
         INSERT INTO web_sessions (
-            tenant_id, web_user_id, token_hash, expires_at, user_agent, ip
-        ) VALUES (%s, %s, %s, %s, %s, %s)
+            tenant_id, web_user_id, token_hash, expires_at, user_agent, ip, client
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """
+    if client not in ("web", "app"):
+        raise ValueError(f"Invalid client: {client!r}")
     async with tenant_cursor(pool, tenant_id) as cur:
         await cur.execute(sql, (
             tenant_id, web_user_id, token_hash, expires_at,
-            (user_agent or "")[:400] or None, ip,
+            (user_agent or "")[:400] or None, ip, client,
         ))
         row = await cur.fetchone()
         if row is None:

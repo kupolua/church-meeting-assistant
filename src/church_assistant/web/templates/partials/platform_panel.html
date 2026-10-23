@@ -6,6 +6,46 @@
 <p class="admin-msg is-error">⚠ {{ error }}</p>
 {% endif %}
 
+{% if pending %}
+<section class="dash-section">
+    <h5 class="dash-section-label">📱 Чекають схвалення ({{ pending | length }})</h5>
+    <p><small>
+        Запити із застосунку. Адресу заявник уже підтвердив кодом; церква
+        створена і чекає. До вашого «так» людина бачить лише
+        «Запит розглядається».
+    </small></p>
+    <table class="dash-table">
+        <thead>
+            <tr><th>Церква</th><th>Заявник</th><th>Про себе</th><th>Коли</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for p in pending %}
+            <tr>
+                <td><strong>{{ p.name }}</strong><br><small><code>{{ p.slug }}</code></small></td>
+                <td>{{ p.requested_by }}</td>
+                <td><small>{{ p.request_note or '—' }}</small></td>
+                <td><small>{{ p.created_at.strftime('%Y-%m-%d %H:%M') }}</small></td>
+                <td>
+                    <button class="dash-btn is-resolve"
+                            hx-post="/platform/churches/{{ p.id }}/approve"
+                            hx-target="#platform-panel" hx-swap="innerHTML"
+                            hx-confirm="Підключити «{{ p.name }}»? Заявник отримає лист і повний доступ.">
+                        ✓ схвалити
+                    </button>
+                    <button class="dash-btn dash-btn-danger"
+                            hx-post="/platform/churches/{{ p.id }}/reject"
+                            hx-target="#platform-panel" hx-swap="innerHTML"
+                            hx-confirm="Відхилити «{{ p.name }}»? Запис лишиться, доступу не буде.">
+                        ✗ відхилити
+                    </button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endif %}
+
 <section class="dash-section">
     <h5 class="dash-section-label">Церкви ({{ churches | length }})</h5>
     <table class="dash-table">
@@ -17,8 +57,9 @@
         </thead>
         <tbody>
         {% for c in churches %}
-            <tr {% if not c.is_active %}class="is-disabled"{% endif %}>
+            <tr {% if not c.is_active or c.approval == 'rejected' %}class="is-disabled"{% endif %}>
                 <td>
+                    {% if c.approval == 'rejected' %}<small title="запит із застосунку відхилено">✗ відхилено</small><br>{% endif %}
                     {# Editable in place. The name is a label; the identifier
                        below it is a path on disk and a Qdrant prefix, so that
                        one stays read-only. #}

@@ -10,10 +10,11 @@ class MeetingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final items = mockEnabled ? meetings : const <Meeting>[];
     return Column(children: [
       ScreenHeader(
         title: 'Зустрічі',
-        subtitle: '${meetings.length} · від новіших',
+        subtitle: items.isEmpty ? 'ще жодної' : '${items.length} · від новіших',
         trailing: IconButton(
           onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NewMeetingScreen())),
           icon: const Icon(Icons.add_circle_outline, color: C.accent, size: 28),
@@ -22,12 +23,14 @@ class MeetingsScreen extends StatelessWidget {
       ),
       const Divider1(),
       Expanded(
-        child: ListView.separated(
+        child: items.isEmpty
+            ? const EmptyState(icon: Icons.event_note_outlined, title: 'Зустрічей ще немає', text: 'Відкрийте нову зустріч кнопкою «+» або зробіть запис.')
+            : ListView.separated(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-          itemCount: meetings.length,
+          itemCount: items.length,
           separatorBuilder: (_, _) => const SizedBox(height: 8),
           itemBuilder: (context, i) {
-            final m = meetings[i];
+            final m = items[i];
             final (label, kind) = switch (m.status) {
               ProtocolStatus.approved => ('протокол затверджено', PillKind.ok),
               ProtocolStatus.review => ('підписи ${m.signed}/${m.present}', PillKind.info),

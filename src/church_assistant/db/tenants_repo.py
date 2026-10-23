@@ -41,12 +41,24 @@ async def create_tenant(
     name: str,
     telegram_bot_token: Optional[str] = None,
     settings: Optional[dict[str, Any]] = None,
+    approval: str = "active",
+    requested_by: Optional[str] = None,
+    request_note: Optional[str] = None,
 ) -> int:
-    """Create a church/council. Returns the new tenant id."""
+    """
+    Create a church/council. Returns the new tenant id.
+
+    From the platform panel a church is born active: the operator is the one
+    creating it. From the app it is born 'pending' (migration 021) with the
+    founder's address and note, and waits for approve().
+    """
     import json
+    if approval not in ("pending", "active"):
+        raise ValueError(f"Invalid approval: {approval!r}")
     sql = """
-        INSERT INTO tenants (slug, name, telegram_bot_token, settings)
-        VALUES (%s, %s, %s, %s::jsonb)
+        INSERT INTO tenants (slug, name, telegram_bot_token, settings,
+                             approval, requested_by, request_note)
+        VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
         RETURNING id
     """
     async with pool.connection() as conn:
@@ -54,6 +66,7 @@ async def create_tenant(
             await cur.execute(sql, (
                 slug, name, telegram_bot_token,
                 json.dumps(settings or {}, ensure_ascii=False),
+                approval, requested_by, request_note,
             ))
             row = await cur.fetchone()
             if row is None:
@@ -66,6 +79,49 @@ async def get_by_id(pool: AsyncConnectionPool, tenant_id: int) -> Optional[dict[
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,))
             return await cur.fetchone()
+
+
+async def slug_taken(pool: AsyncConnectionPool, slug: str) -> bool:
+    """Archived churches hold their slug too — a directory is still theirs."""
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT 1 FROM tenants WHERE slug = %s", (slug,))
+            return await cur.fetchone() is not None
+
+
+async def list_pending(pool: AsyncConnectionPool) -> list[dict[str, Any]]:
+    """Churches asked for from the app and not yet answered — oldest first."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, slug, name, requested_by, request_note, created_at "
+                "FROM tenants WHERE approval = 'pending' AND deleted_at IS NULL "
+                "ORDER BY created_at"
+            )
+            return list(await cur.fetchall())
+
+
+async def set_approval(
+    pool: AsyncConnectionPool, tenant_id: int, *, approval: str, by: str,
+) -> bool:
+    """
+    Answer a pending request. Returns True if the row was pending until now.
+
+    'active' is the approval — by the operator today, by a payment tomorrow,
+    and `by` records which. 'rejected' keeps the row: the slug stays taken and
+    the founder's address stays on record, which is what the operator wants
+    the second time the same request arrives.
+    """
+    if approval not in ("active", "rejected"):
+        raise ValueError(f"Invalid approval: {approval!r}")
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE tenants SET approval = %s, approved_at = NOW(), approved_by = %s "
+                "WHERE id = %s AND id <> 0 AND approval = 'pending' RETURNING 1",
+                (approval, by, tenant_id),
+            )
+            return await cur.fetchone() is not None
 
 
 async def get_by_slug(pool: AsyncConnectionPool, slug: str) -> Optional[dict[str, Any]]:
@@ -177,11 +233,11 @@ async def list_with_counts(pool: AsyncConnectionPool) -> list[dict[str, Any]]:
     listing it invites somebody to suspend the tenant they are standing in.
     """
     sql = """
-        SELECT t.id, t.slug, t.name, t.is_active, t.created_at,
+        SELECT t.id, t.slug, t.name, t.is_active, t.created_at, t.approval,
                c.accounts, c.active_accounts, c.pending_invites, c.jobs
         FROM tenants t
         JOIN platform_church_counts() c ON c.tenant_id = t.id
-        WHERE t.deleted_at IS NULL
+        WHERE t.deleted_at IS NULL AND t.approval <> 'pending'
         ORDER BY t.id
     """
     async with pool.connection() as conn:
