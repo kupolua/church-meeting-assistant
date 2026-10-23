@@ -31,7 +31,9 @@ KEEP="${CMA_BACKUP_KEEP:-14}"          # how many dated dumps to retain
 DOCKER="$(command -v docker 2>/dev/null || true)"
 [[ -x "$DOCKER" ]] || DOCKER=/Applications/Docker.app/Contents/Resources/bin/docker
 [[ -x "$DOCKER" ]] || { echo "✗ не знайдено docker" >&2; exit 1; }
-PG_CONTAINER="${CMA_PG_CONTAINER:-cma-postgres}"
+# Since 23.10.2026 the M1 runs no CMA services; the throwaway dev Postgres is
+# the only container here with a pg_dump of the right version.
+PG_CONTAINER="${CMA_PG_CONTAINER:-cma-dev-postgres}"
 
 STAMP="$(date +%F-%H%M)"
 mkdir -p "$DEST/artifacts"
