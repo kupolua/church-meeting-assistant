@@ -19,6 +19,7 @@ is a later step.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -210,6 +211,8 @@ async def meeting_audio(request: Request, date: str):
     audio = _find_audio(_meetings_dir(user), date)
     if audio is None or not audio.exists():
         raise HTTPException(status_code=404, detail="Запису немає.")
+    if os.getenv("CMA_DEBUG_AUDIO"):
+        print(f"[audio] {date} range={request.headers.get('range')!r} ua={request.headers.get('user-agent', '')[:40]!r}", flush=True)
     return FileResponse(audio, media_type=_audio_media_type(audio))
 
 
