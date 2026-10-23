@@ -40,7 +40,7 @@ class _MeetingsScreenState extends State<MeetingsScreen> {
         subtitle: list == null ? null : (list.isEmpty ? 'ще жодної' : '${list.length} · від новіших'),
         trailing: widget.session.me?.isAdmin == true
             ? IconButton(
-                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NewMeetingScreen())),
+                onPressed: () async { await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NewMeetingScreen(session: widget.session))); _load(); },
                 icon: const Icon(Icons.add_circle_outline, color: C.accent, size: 28),
                 tooltip: 'Нова зустріч',
               )

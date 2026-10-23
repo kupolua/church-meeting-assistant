@@ -154,6 +154,32 @@ async def meetings(request: Request):
     return {"meetings": out}
 
 
+async def protocol_payload(
+    pool: Any, user: ApiUser, protocol: dict[str, Any], items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The whole readable protocol: header, items with their rulings, signing.
+    Shared with api_minutes, whose every write answers with this."""
+    from church_assistant.web.routes.api_protocol import signing_block
+    out = _protocol_meta(protocol) or {}
+    out.update({
+        "chair": protocol.get("chair_name") or protocol.get("chair_username") or "",
+        "chair_id": protocol.get("chair_id"),
+        "secretary": protocol.get("secretary") or "",
+        "attendees": list(protocol.get("attendees") or []),
+        "quorum": protocol.get("quorum") or "",
+        "items": [{
+            "id": int(i["id"]), "position": i["position"], "question": i["question"],
+            "heard": i.get("heard") or "", "resolved": i.get("resolved") or "",
+            "status": i.get("status"),
+            "votes": {"for": i.get("votes_for"), "against": i.get("votes_against"), "abstain": i.get("votes_abstain")},
+            "rulings": [{"id": int(r["id"]), "text": r["text"], "responsible": r.get("responsible") or "", "due": r.get("due") or ""}
+                        for r in i.get("rulings", [])],
+        } for i in items],
+    })
+    out["signing"] = await signing_block(pool, user, protocol, items)
+    return out
+
+
 @router.get("/meetings/{date}")
 async def meeting(request: Request, date: str):
     user = await api_user(request)
@@ -184,23 +210,7 @@ async def meeting(request: Request, date: str):
     if protocol is not None:
         proto_out = _protocol_meta(protocol)
         if not sealed:
-            proto_out.update({
-                "chair": protocol.get("chair_name") or protocol.get("chair_username") or "",
-                "chair_id": protocol.get("chair_id"),
-                "secretary": protocol.get("secretary") or "",
-                "attendees": list(protocol.get("attendees") or []),
-                "quorum": protocol.get("quorum") or "",
-                "items": [{
-                    "id": int(i["id"]), "position": i["position"], "question": i["question"],
-                    "heard": i.get("heard") or "", "resolved": i.get("resolved") or "",
-                    "status": i.get("status"),
-                    "votes": {"for": i.get("votes_for"), "against": i.get("votes_against"), "abstain": i.get("votes_abstain")},
-                    "rulings": [{"id": int(r["id"]), "text": r["text"], "responsible": r.get("responsible") or "", "due": r.get("due") or ""}
-                                for r in i.get("rulings", [])],
-                } for i in items],
-            })
-            from church_assistant.web.routes.api_protocol import signing_block
-            proto_out["signing"] = await signing_block(pool, user, protocol, items)
+            proto_out = await protocol_payload(pool, user, protocol, items)
 
     return {
         "date": date,

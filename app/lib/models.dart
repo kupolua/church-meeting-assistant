@@ -78,16 +78,29 @@ class Ruling {
   factory Ruling.fromJson(Map<String, dynamic> j) => Ruling(id: j['id'] as int, text: j['text'] as String? ?? '', responsible: j['responsible'] as String? ?? '', due: j['due'] as String? ?? '');
 }
 
+class Votes {
+  const Votes(this.forVotes, this.against, this.abstain);
+  final int forVotes, against, abstain;
+}
+
 class ProtocolItem {
-  const ProtocolItem({required this.id, required this.position, required this.question, required this.heard, required this.resolved, required this.rulings});
+  const ProtocolItem({required this.id, required this.position, required this.question, required this.heard, required this.resolved, required this.rulings, this.status = 'considered', this.votes});
   final int id, position;
   final String question, heard, resolved;
+  final String status; // considered | not_considered
+  final Votes? votes; // null → not put to a vote
   final List<Ruling> rulings;
-  factory ProtocolItem.fromJson(Map<String, dynamic> j) => ProtocolItem(
-        id: j['id'] as int, position: (j['position'] as num?)?.toInt() ?? 0, question: j['question'] as String? ?? '',
-        heard: j['heard'] as String? ?? '', resolved: j['resolved'] as String? ?? '',
-        rulings: [for (final r in j['rulings'] as List? ?? []) Ruling.fromJson(Map<String, dynamic>.from(r as Map))],
-      );
+  bool get filled => heard.isNotEmpty || resolved.isNotEmpty || rulings.isNotEmpty;
+  factory ProtocolItem.fromJson(Map<String, dynamic> j) {
+    final v = j['votes'] as Map?;
+    final f = (v?['for'] as num?)?.toInt(), a = (v?['against'] as num?)?.toInt(), b = (v?['abstain'] as num?)?.toInt();
+    return ProtocolItem(
+      id: j['id'] as int, position: (j['position'] as num?)?.toInt() ?? 0, question: j['question'] as String? ?? '',
+      heard: j['heard'] as String? ?? '', resolved: j['resolved'] as String? ?? '', status: j['status'] as String? ?? 'considered',
+      votes: f == null || a == null || b == null ? null : Votes(f, a, b),
+      rulings: [for (final r in j['rulings'] as List? ?? []) Ruling.fromJson(Map<String, dynamic>.from(r as Map))],
+    );
+  }
 }
 
 class RequiredSigner {

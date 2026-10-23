@@ -9,6 +9,8 @@ import '../signing.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'audio_bar.dart';
+import 'draft.dart';
+import 'new_meeting.dart';
 import 'signing_key.dart';
 import 'speaker_review.dart';
 
@@ -201,10 +203,25 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           const SizedBox(height: 16),
         ],
         EmptyState(icon: Icons.description_outlined, title: 'Протоколу ще немає',
-            text: d.topics.isNotEmpty ? 'Теми та стенограма вже є. Протокол відкриває адміністратор на сайті, у наступних версіях — тут.' : 'Зустріч ще обробляється або не має запису.'),
+            text: d.topics.isNotEmpty ? 'Теми та стенограма вже є.${widget.session.me?.isAdmin == true ? ' Відкрийте протокол і призначте ведучого.' : ' Протокол відкриває адміністратор.'}' : 'Зустріч ще обробляється або не має запису.'),
+        if (widget.session.me?.isAdmin == true) ...[
+          const SizedBox(height: 8),
+          PrimaryButton('Відкрити протокол', icon: Icons.note_add_outlined, onPressed: () async {
+            await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NewMeetingScreen(session: widget.session, date: widget.date)));
+            _load();
+          }),
+        ],
       ]);
     }
+    final iAmChair = p.chairId != null && p.chairId == widget.session.me?.userId;
     return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 16), children: [
+      if (iAmChair && p.meta.status == 'draft') ...[
+        PrimaryButton('Вести протокол', icon: Icons.edit_note, onPressed: () async {
+          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => DraftScreen(session: widget.session, date: widget.date)));
+          _load();
+        }),
+        const SizedBox(height: 12),
+      ],
       Card6(
         color: C.bg,
         child: Column(children: [

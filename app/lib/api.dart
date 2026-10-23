@@ -193,6 +193,44 @@ class Api {
     return [for (final h in r['hits'] as List) SearchHitData.fromJson(Map<String, dynamic>.from(h as Map))];
   }
 
+  // ─── Minutes from the phone (step 5) ───
+  /// Names of the active council — what «Присутні» must match to make someone a required signer.
+  Future<List<({int id, String name})>> council() async {
+    final r = await _send('GET', '/council') as Map;
+    return [for (final c in r['council'] as List) (id: (c['id'] as num).toInt(), name: c['name'] as String)];
+  }
+
+  Future<void> openMeeting({required String date, required int chairId, String secretary = ''}) async {
+    await _send('POST', '/meetings', body: {'date': date, 'chair_id': chairId, 'secretary': secretary});
+  }
+
+  ProtocolData _protocol(dynamic r) => ProtocolData.fromJson(Map<String, dynamic>.from((r as Map)['protocol'] as Map));
+
+  Future<ProtocolData> saveHeader(String date, {required String secretary, required String quorum, required List<String> attendees}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/header', body: {'secretary': secretary, 'quorum': quorum, 'attendees': attendees}));
+
+  Future<ProtocolData> addItem(String date, String question) async => _protocol(await _send('POST', '/meetings/$date/protocol/items', body: {'question': question}));
+
+  /// Only what is passed is changed. [votes] sets the tally, [clearVotes] takes it back to «not put to a vote».
+  Future<ProtocolData> saveItem(String date, int id, {String? question, String? status, String? heard, String? resolved, Votes? votes, bool clearVotes = false}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/items/$id', body: {
+        'question': ?question, 'status': ?status, 'heard': ?heard, 'resolved': ?resolved,
+        if (votes != null) 'votes': {'for': votes.forVotes, 'against': votes.against, 'abstain': votes.abstain},
+        if (clearVotes) 'clear_votes': true,
+      }));
+
+  Future<ProtocolData> deleteItem(String date, int id) async => _protocol(await _send('DELETE', '/meetings/$date/protocol/items/$id'));
+
+  Future<ProtocolData> moveItem(String date, int id, int delta) async => _protocol(await _send('POST', '/meetings/$date/protocol/items/$id/move', body: {'delta': delta}));
+
+  Future<ProtocolData> addRuling(String date, int itemId, {required String text, String responsible = '', String due = ''}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/items/$itemId/rulings', body: {'text': text, 'responsible': responsible, 'due': due}));
+
+  Future<ProtocolData> editRuling(String date, int id, {required String text, String responsible = '', String due = ''}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/rulings/$id', body: {'text': text, 'responsible': responsible, 'due': due}));
+
+  Future<ProtocolData> deleteRuling(String date, int id) async => _protocol(await _send('DELETE', '/meetings/$date/protocol/rulings/$id'));
+
   // ─── Signing and tasks (step 4) ───
   Future<void> setProtocolStatus(String date, String status) async { await _send('POST', '/meetings/$date/protocol/status', body: {'status': status}); }
 
