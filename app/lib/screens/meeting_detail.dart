@@ -316,17 +316,11 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           const SizedBox(width: 10),
           Expanded(child: Text(it.question, style: T.h1)),
         ]),
-        if (it.heard.isNotEmpty) ...[
-          const SizedBox(height: 12), Text('Слухали', style: T.kicker), const SizedBox(height: 6),
-          ..._timecodedParagraphs(it.heard),
-        ],
+        // The decision first — it is what the protocol is read for; what was
+        // said («Слухали») comes last, as the ground under it.
         if (it.resolved.isNotEmpty) ...[
           const SizedBox(height: 10), Text('Вирішили', style: T.kicker), const SizedBox(height: 5),
           Text(it.resolved, style: T.bodyStrong),
-        ],
-        if (it.votes != null) ...[
-          const SizedBox(height: 8),
-          Text('Голосували: за ${it.votes!.forVotes} · проти ${it.votes!.against} · утрималось ${it.votes!.abstain}', style: T.meta),
         ],
         if (it.rulings.isNotEmpty) ...[
           const SizedBox(height: 12), Text('Постановили', style: T.kicker), const SizedBox(height: 6),
@@ -355,6 +349,14 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
             ),
             const SizedBox(height: 8),
           ],
+        ],
+        if (it.votes != null) ...[
+          const SizedBox(height: 6),
+          Text('Голосували: за ${it.votes!.forVotes} · проти ${it.votes!.against} · утрималось ${it.votes!.abstain}', style: T.meta),
+        ],
+        if (it.heard.isNotEmpty) ...[
+          const SizedBox(height: 12), Text('Слухали', style: T.kicker), const SizedBox(height: 6),
+          ..._timecodedParagraphs(it.heard),
         ],
       ];
 
