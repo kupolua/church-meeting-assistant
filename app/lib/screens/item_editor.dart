@@ -4,6 +4,7 @@ import '../models.dart';
 import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'decision_sheet.dart';
 
 /// One agenda point: the question, Слухали, Вирішили, the vote and the
 /// Постановили under it. Text is saved on «Зберегти» and also when you go
@@ -104,18 +105,28 @@ class _ItemEditorScreenState extends State<ItemEditorScreen> {
     }
   }
 
+  List<String>? _people;
+
+  /// Who can be made responsible: the council (accounts) first, then the other
+  /// attendees from the header. Fetched once per screen.
+  Future<List<String>> _whom() async {
+    if (_people != null) return _people!;
+    var council = <String>[];
+    try { council = [for (final c in await api.council()) c.name]; } on ApiException catch (_) {}
+    return _people = [...council, for (final a in p.attendees) if (!council.contains(a)) a];
+  }
+
   Future<void> _ruling([Ruling? r]) async {
-    final res = await showModalBottomSheet<_RulingResult>(
-      context: context, isScrollControlled: true, backgroundColor: C.surface, showDragHandle: true,
-      builder: (_) => _RulingSheet(ruling: r),
-    );
+    final people = await _whom();
+    if (!mounted) return;
+    final res = await showDecisionSheet(context, ruling: r, people: people);
     if (res == null) return;
     if (res.remove && r != null) {
       await _run(() => api.deleteRuling(widget.date, r.id));
     } else if (r == null) {
-      await _run(() => api.addRuling(widget.date, widget.itemId, text: res.text, responsible: res.responsible, due: res.due));
+      await _run(() => api.addRuling(widget.date, widget.itemId, text: res.text, responsible: res.responsible, due: res.due, tc: res.tc));
     } else {
-      await _run(() => api.editRuling(widget.date, r.id, text: res.text, responsible: res.responsible, due: res.due));
+      await _run(() => api.editRuling(widget.date, r.id, text: res.text, responsible: res.responsible, due: res.due, tc: res.tc));
     }
   }
 
@@ -199,15 +210,21 @@ class _ItemEditorScreenState extends State<ItemEditorScreen> {
                 const SizedBox(width: 11),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(r.text, style: T.body.copyWith(color: C.text)),
-                  if (r.responsible.isNotEmpty || r.due.isNotEmpty) ...[
+                  if (r.responsible.isNotEmpty || r.due.isNotEmpty || r.tc.isNotEmpty) ...[
                     const SizedBox(height: 6),
-                    Row(children: [if (r.responsible.isNotEmpty) Flexible(child: Text(r.responsible, style: T.meta, overflow: TextOverflow.ellipsis)), const SizedBox(width: 16), if (r.due.isNotEmpty) Text(r.due, style: T.meta)]),
+                    Row(children: [
+                      if (r.responsible.isNotEmpty) Flexible(child: Text(r.responsible, style: T.meta, overflow: TextOverflow.ellipsis)),
+                      const SizedBox(width: 16),
+                      if (r.due.isNotEmpty) Text(r.due, style: T.meta),
+                      if (r.tc.isNotEmpty) ...[const Spacer(), Timecode(r.tc)],
+                    ]),
                   ],
                 ])),
               ]),
             ),
             const SizedBox(height: 8),
           ],
+          if (editable && it.topicOrder != null) Text('Пункт зроблено з теми ${it.topicOrder! + 1} запису — рішення з таймкодами додаються на вкладці «Теми».', style: T.small),
           if (error != null) ...[const SizedBox(height: 8), Text(error!, style: T.meta.copyWith(color: C.recText))],
           if (editable) ...[
             const SizedBox(height: 16),
@@ -240,62 +257,4 @@ class _ItemEditorScreenState extends State<ItemEditorScreen> {
           ),
         ]),
       );
-}
-
-class _RulingResult {
-  const _RulingResult({this.text = '', this.responsible = '', this.due = '', this.remove = false});
-  final String text, responsible, due;
-  final bool remove;
-}
-
-class _RulingSheet extends StatefulWidget {
-  const _RulingSheet({this.ruling});
-  final Ruling? ruling;
-  @override
-  State<_RulingSheet> createState() => _RulingSheetState();
-}
-
-class _RulingSheetState extends State<_RulingSheet> {
-  late final text = TextEditingController(text: widget.ruling?.text ?? '');
-  late final who = TextEditingController(text: widget.ruling?.responsible ?? '');
-  late final due = TextEditingController(text: widget.ruling?.due ?? '');
-
-  @override
-  void dispose() { text.dispose(); who.dispose(); due.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
-      child: SingleChildScrollView(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-          Text(widget.ruling == null ? 'Нова постанова' : 'Постанова', style: T.h2),
-          const SizedBox(height: 12),
-          _f('Що доручено', text, lines: 3, hint: 'Купити лампи для зали'),
-          const SizedBox(height: 10),
-          _f('Хто відповідальний', who, hint: 'імʼя та прізвище'),
-          const SizedBox(height: 10),
-          _f('Термін', due, hint: 'до 1 грудня'),
-          const SizedBox(height: 16),
-          PrimaryButton('Зберегти', onPressed: () {
-            if (text.text.trim().isEmpty) return;
-            Navigator.of(context).pop(_RulingResult(text: text.text.trim(), responsible: who.text.trim(), due: due.text.trim()));
-          }),
-          if (widget.ruling != null) ...[
-            const SizedBox(height: 8),
-            SecondaryButton('Видалити постанову', onPressed: () => Navigator.of(context).pop(const _RulingResult(remove: true))),
-          ],
-        ]),
-      ),
-    );
-  }
-
-  Widget _f(String label, TextEditingController c, {String? hint, int lines = 1}) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: T.metaLabel),
-        const SizedBox(height: 4),
-        TextField(
-          controller: c, minLines: lines, maxLines: lines, style: T.value, textCapitalization: TextCapitalization.sentences,
-          decoration: InputDecoration(hintText: hint, hintStyle: T.meta, isDense: true, border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: C.border))),
-        ),
-      ]);
 }

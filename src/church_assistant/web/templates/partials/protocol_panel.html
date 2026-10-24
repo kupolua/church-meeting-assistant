@@ -235,7 +235,8 @@
                 <dd><ol>{% for r in item.rulings %}
                     <li>{{ r.text }}
                         {% if r.responsible %}<small>— {{ r.responsible }}</small>{% endif %}
-                        {% if r.due %}<small>({{ r.due }})</small>{% endif %}</li>
+                        {% if r.due %}<small>({{ r.due }})</small>{% endif %}
+                        {% if r.tc %}<small class="muted">· {{ r.tc }}</small>{% endif %}</li>
                 {% endfor %}</ol></dd>
                 {% endif %}
             </dl>

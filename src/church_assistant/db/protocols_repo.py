@@ -388,8 +388,13 @@ async def list_items(
         return items
 
 
+class TopicTaken(Exception):
+    """This topic is already an item of this protocol (024's partial unique index)."""
+
+
 async def add_item(
     pool: AsyncConnectionPool, tenant_id: int, protocol_id: int, question: str,
+    *, heard: str = "", topic_order: Optional[int] = None,
 ) -> int:
     """
     Append a question to the agenda. Returns its id.
@@ -401,20 +406,27 @@ async def add_item(
 
     Sealed in a second statement inside the same transaction, for the reason
     create() spells out: the AAD needs the id.
+
+    `topic_order` and `heard` are set when the item is made from a topic of the
+    recording (024): the topic's title is the question, its body is "Слухали",
+    and the index remembers which topic so the phone can show it as taken.
+    Two taps on the same topic raise TopicTaken instead of making a twin.
     """
     question = question.strip()
+    heard = heard.strip()
     if not question:
         raise ValueError("питання не може бути порожнім")
-    from psycopg.errors import RaiseException
+    from psycopg.errors import RaiseException, UniqueViolation
     dek = await _key_for(pool, tenant_id, _DATE_OF_PROTOCOL, protocol_id, writing=True)
     try:
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(
-                "INSERT INTO protocol_items (tenant_id, protocol_id, position, question) "
-                "SELECT %s, %s, COALESCE(MAX(position), 0) + 1, %s "
+                "INSERT INTO protocol_items "
+                "       (tenant_id, protocol_id, position, question, heard, topic_order) "
+                "SELECT %s, %s, COALESCE(MAX(position), 0) + 1, %s, %s, %s "
                 "  FROM protocol_items WHERE protocol_id = %s "
                 "RETURNING id",
-                (tenant_id, protocol_id, question, protocol_id),
+                (tenant_id, protocol_id, question, heard, topic_order, protocol_id),
             )
             row = await cur.fetchone()
             if row is None:
@@ -422,12 +434,18 @@ async def add_item(
             item_id = int(row[0])
             if dek is not None:
                 await cur.execute(
-                    "UPDATE protocol_items SET question = %s WHERE id = %s",
+                    "UPDATE protocol_items SET question = %s, heard = %s WHERE id = %s",
                     (field_crypto.seal(dek, question, tenant_id,
                                        "protocol_items", "question", item_id),
+                     field_crypto.seal(dek, heard, tenant_id,
+                                       "protocol_items", "heard", item_id),
                      item_id),
                 )
             return item_id
+    except UniqueViolation as e:
+        if "idx_protocol_items_topic" in str(e):
+            raise TopicTaken() from e
+        raise
     except RaiseException as e:
         raise ProtocolFrozen(str(e).strip()) from e
 
@@ -578,11 +596,14 @@ async def add_ruling(
     text: str,
     responsible: str = "",
     due: str = "",
+    tc: str = "",
 ) -> int:
     """Append a ruling to a question. Returns its id.
 
     Two statements in one transaction when the church is encrypted — see
-    create() for why the id has to exist before anything can be sealed.
+    create() for why the id has to exist before anything can be sealed. `tc`
+    (where in the recording this was said, 024) is a pointer, not content:
+    stored plain, never hashed.
     """
     text = text.strip()
     if not text:
@@ -593,11 +614,11 @@ async def add_ruling(
         async with tenant_cursor(pool, tenant_id) as cur:
             await cur.execute(
                 "INSERT INTO protocol_rulings "
-                "       (tenant_id, item_id, position, text, responsible, due) "
-                "SELECT %s, %s, COALESCE(MAX(position), 0) + 1, %s, %s, %s "
+                "       (tenant_id, item_id, position, text, responsible, due, tc) "
+                "SELECT %s, %s, COALESCE(MAX(position), 0) + 1, %s, %s, %s, %s "
                 "  FROM protocol_rulings WHERE item_id = %s "
                 "RETURNING id",
-                (tenant_id, item_id, text, responsible.strip(), due.strip(), item_id),
+                (tenant_id, item_id, text, responsible.strip(), due.strip(), tc.strip(), item_id),
             )
             row = await cur.fetchone()
             if row is None:
@@ -640,9 +661,10 @@ async def update_ruling(
     text: Optional[str] = None,
     responsible: Optional[str] = None,
     due: Optional[str] = None,
+    tc: Optional[str] = None,
 ) -> bool:
     """Edit one ruling. None means 'leave this field alone'."""
-    pairs = (("text", text), ("responsible", responsible), ("due", due))
+    pairs = (("text", text), ("responsible", responsible), ("due", due), ("tc", tc))
     if not any(v is not None for _, v in pairs):
         return False
     dek = await _key_for(pool, tenant_id, _DATE_OF_RULING, ruling_id, writing=True)
@@ -650,7 +672,8 @@ async def update_ruling(
     for col, val in pairs:
         if val is not None:
             sets.append(f"{col} = %s")
-            params.append(field_crypto.seal(
+            # tc is a pointer into the audio, not content — plain even when sealed.
+            params.append(val.strip() if col == "tc" else field_crypto.seal(
                 dek, val.strip(), tenant_id, "protocol_rulings", col, ruling_id))
     if not sets:
         return False

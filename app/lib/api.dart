@@ -223,13 +223,23 @@ class Api {
 
   Future<ProtocolData> moveItem(String date, int id, int delta) async => _protocol(await _send('POST', '/meetings/$date/protocol/items/$id/move', body: {'delta': delta}));
 
-  Future<ProtocolData> addRuling(String date, int itemId, {required String text, String responsible = '', String due = ''}) async =>
-      _protocol(await _send('POST', '/meetings/$date/protocol/items/$itemId/rulings', body: {'text': text, 'responsible': responsible, 'due': due}));
+  Future<ProtocolData> addRuling(String date, int itemId, {required String text, String responsible = '', String due = '', String tc = ''}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/items/$itemId/rulings', body: {'text': text, 'responsible': responsible, 'due': due, 'tc': tc}));
 
-  Future<ProtocolData> editRuling(String date, int id, {required String text, String responsible = '', String due = ''}) async =>
-      _protocol(await _send('POST', '/meetings/$date/protocol/rulings/$id', body: {'text': text, 'responsible': responsible, 'due': due}));
+  Future<ProtocolData> editRuling(String date, int id, {required String text, String responsible = '', String due = '', String tc = ''}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/rulings/$id', body: {'text': text, 'responsible': responsible, 'due': due, 'tc': tc}));
 
   Future<ProtocolData> deleteRuling(String date, int id) async => _protocol(await _send('DELETE', '/meetings/$date/protocol/rulings/$id'));
+
+  // ─── The protocol assembled from topics (step 6) ───
+  /// «+» on a topic: it becomes an agenda item (the same one on a second tap).
+  Future<ProtocolData> addFromTopic(String date, int topicOrder) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/from-topic', body: {'topic_order': topicOrder}));
+
+  /// «+» on a line, or ✓ on a hint: a ruling with its timecode; the topic's item is made on the way.
+  Future<ProtocolData> addDecision(String date, {required int topicOrder, required String text, String responsible = '', String due = '', String tc = ''}) async =>
+      _protocol(await _send('POST', '/meetings/$date/protocol/decisions',
+          body: {'topic_order': topicOrder, 'text': text, 'responsible': responsible, 'due': due, 'tc': tc}));
 
   // ─── Signing and tasks (step 4) ───
   Future<void> setProtocolStatus(String date, String status) async { await _send('POST', '/meetings/$date/protocol/status', body: {'status': status}); }

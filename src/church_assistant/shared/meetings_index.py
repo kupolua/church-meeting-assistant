@@ -157,6 +157,11 @@ def _parse_topics_from_polished(text: str) -> list[Topic]:
     current_title: Optional[str] = None
     current_body_lines: list[str] = []
     order = 0
+    # «Наступні кроки» groups actions under "### <person>" headings. Those are
+    # not topics, and until 24.10.2026 they were counted as such — a 23-topic
+    # meeting showed «Теми (32)» with nine people's names at the end. Skipped
+    # until the next ## heading; shared/next_steps.py reads that section.
+    in_actions = False
 
     def flush() -> None:
         nonlocal current_title, current_body_lines, order
@@ -170,15 +175,18 @@ def _parse_topics_from_polished(text: str) -> list[Topic]:
             order += 1
 
     for line in lines:
-        # Stop the current topic at next ### or ## (not #### etc — full stop)
-        if line.startswith("### "):
-            flush()
-            current_title = line[4:].strip()
-            current_body_lines = []
-        elif line.startswith("## ") and current_title is not None:
-            # Section boundary (e.g. '## Дії' after topics)
+        if line.startswith("## "):
+            # Section boundary (e.g. '## Наступні кроки' after topics)
             flush()
             current_title = None
+            current_body_lines = []
+            in_actions = line[3:].strip() in ("Наступні кроки", "Дії")
+        elif in_actions:
+            continue
+        # Stop the current topic at next ### or ## (not #### etc — full stop)
+        elif line.startswith("### "):
+            flush()
+            current_title = line[4:].strip()
             current_body_lines = []
         elif current_title is not None:
             # Skip HTML comments (topic-from-chunks markers)

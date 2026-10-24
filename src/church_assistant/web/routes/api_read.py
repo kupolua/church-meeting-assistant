@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse
 from church_assistant.db import ingestion_jobs_repo as jobs_repo
 from church_assistant.db import protocols_repo, tasks_repo
 from church_assistant.db.connection import get_pool
-from church_assistant.shared import meetings_index, tenant_paths
+from church_assistant.shared import meetings_index, next_steps, tenant_paths
 from church_assistant.shared.field_crypto import NotDecryptable
 from church_assistant.web import encrypted
 from church_assistant.web.routes.api import ApiUser, api_user
@@ -74,9 +74,21 @@ def _protocol_meta(p: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     }
 
 
-def _topic(t: meetings_index.Topic) -> dict[str, Any]:
-    """A topic as the app draws it: a title, a lead paragraph, and bullet lines
-    with their timecodes split out."""
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().rstrip(".;,")).casefold()
+
+
+def _topic(
+    t: meetings_index.Topic,
+    item: Optional[dict[str, Any]] = None,
+    hints: Optional[list[next_steps.Hint]] = None,
+) -> dict[str, Any]:
+    """A topic as the app draws it: a title, a lead paragraph, bullet lines
+    with their timecodes split out — and, since the protocol is assembled
+    from topics (024), the item this topic already became (`item_id`) and the
+    model's hints at decisions said in it. A hint is `accepted` when the item
+    already holds a ruling at the same timecode or with the same wording, so
+    the phone can show it as taken rather than offer it twice."""
     lead: list[str] = []
     lines: list[dict[str, Any]] = []
     for raw in t.body.splitlines():
@@ -88,7 +100,37 @@ def _topic(t: meetings_index.Topic) -> dict[str, Any]:
             lines.append({"text": text, "tc": m.group("tc"), "level": 1 if m.group("indent") else 0})
         elif not lines:
             lead.append(raw.strip())
-    return {"order": t.order, "title": t.title, "lead": " ".join(lead), "lines": lines}
+    rulings = item.get("rulings", []) if item else []
+    taken_tc = {r.get("tc") for r in rulings if r.get("tc")}
+    taken_text = {_norm_text(r.get("text") or "") for r in rulings}
+    return {
+        "order": t.order, "title": t.title, "lead": " ".join(lead), "lines": lines,
+        "item_id": int(item["id"]) if item else None,
+        "hints": [{**h.as_json(), "accepted": bool(h.tc in taken_tc or _norm_text(h.text) in taken_text)}
+                  for h in (hints or [])],
+    }
+
+
+def topic_heard(t: meetings_index.Topic) -> str:
+    """The topic body as «Слухали»: the lead and the bullet lines with their
+    timecodes, bold markers dropped. What the chair would have pasted."""
+    out = []
+    for raw in t.body.splitlines():
+        if raw.strip():
+            out.append(re.sub(r"\*\*(.+?)\*\*", r"\1", raw.rstrip()))
+    return "\n".join(out).strip()
+
+
+def item_section(i: dict[str, Any]) -> str:
+    """«Вирішили» / «Обговорювали» / «Не розглядали», derived, never stored:
+    an item with a resolution or a ruling was decided; one the meeting never
+    reached is skipped; the rest was discussed. Decision of 24.10.2026 — the
+    section cannot disagree with the text because it is the text."""
+    if i.get("status") == "not_considered":
+        return "skipped"
+    if (i.get("resolved") or "").strip() or i.get("rulings"):
+        return "decided"
+    return "discussed"
 
 
 def _turn(t: meetings_index.TranscriptTurn) -> dict[str, Any]:
@@ -170,9 +212,11 @@ async def protocol_payload(
         "items": [{
             "id": int(i["id"]), "position": i["position"], "question": i["question"],
             "heard": i.get("heard") or "", "resolved": i.get("resolved") or "",
-            "status": i.get("status"),
+            "status": i.get("status"), "section": item_section(i),
+            "topic_order": i.get("topic_order"),
             "votes": {"for": i.get("votes_for"), "against": i.get("votes_against"), "abstain": i.get("votes_abstain")},
-            "rulings": [{"id": int(r["id"]), "text": r["text"], "responsible": r.get("responsible") or "", "due": r.get("due") or ""}
+            "rulings": [{"id": int(r["id"]), "text": r["text"], "responsible": r.get("responsible") or "",
+                         "due": r.get("due") or "", "tc": r.get("tc") or ""}
                         for r in i.get("rulings", [])],
         } for i in items],
     })
@@ -212,12 +256,22 @@ async def meeting(request: Request, date: str):
         if not sealed:
             proto_out = await protocol_payload(pool, user, protocol, items)
 
+    # Which topics are already items, and what the analysis guessed was
+    # decided in each — read from polished.md on every call, never stored.
+    by_topic = {int(i["topic_order"]): i for i in items if i.get("topic_order") is not None}
+    hints: dict[int, list[next_steps.Hint]] = {}
+    if detail and detail.polished_md_path:
+        try:
+            hints = next_steps.hints_by_topic(detail.polished_md_path.read_text(encoding="utf-8"), detail.topics)
+        except OSError:
+            hints = {}
+
     return {
         "date": date,
         "sealed": sealed,
         "protocol": proto_out,
         "attendees": detail.attendees if detail else [],
-        "topics": [_topic(t) for t in detail.topics] if detail else [],
+        "topics": [_topic(t, by_topic.get(t.order), hints.get(t.order)) for t in detail.topics] if detail else [],
         "transcript": [_turn(t) for t in detail.transcript] if detail else [],
         "has_audio": audio is not None,
         "audio_bytes": audio.stat().st_size if audio is not None else None,

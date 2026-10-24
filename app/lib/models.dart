@@ -54,14 +54,34 @@ class TopicLine {
   final int level;
 }
 
+/// The analysis's own guess at a decision said in a topic («Наступні кроки»).
+/// `accepted` — the protocol already holds a ruling at this timecode or with
+/// this wording, so the phone shows it as taken instead of offering it again.
+class Hint {
+  const Hint({required this.text, required this.responsible, required this.due, this.tc, required this.accepted});
+  final String text, responsible, due;
+  final String? tc;
+  final bool accepted;
+  factory Hint.fromJson(Map<String, dynamic> j) => Hint(
+        text: j['text'] as String? ?? '', responsible: j['responsible'] as String? ?? '', due: j['due'] as String? ?? '',
+        tc: j['tc'] as String?, accepted: j['accepted'] == true,
+      );
+}
+
 class TopicData {
-  const TopicData({required this.order, required this.title, required this.lead, required this.lines});
+  const TopicData({required this.order, required this.title, required this.lead, required this.lines, this.itemId, this.hints = const []});
   final int order;
   final String title, lead;
   final List<TopicLine> lines;
+  /// The protocol item this topic already became, if any.
+  final int? itemId;
+  final List<Hint> hints;
+  bool get inProtocol => itemId != null;
   factory TopicData.fromJson(Map<String, dynamic> j) => TopicData(
         order: (j['order'] as num?)?.toInt() ?? 0, title: j['title'] as String? ?? '', lead: j['lead'] as String? ?? '',
         lines: [for (final l in j['lines'] as List? ?? []) TopicLine(text: l['text'] as String? ?? '', tc: l['tc'] as String?, level: (l['level'] as num?)?.toInt() ?? 0)],
+        itemId: (j['item_id'] as num?)?.toInt(),
+        hints: [for (final h in j['hints'] as List? ?? []) Hint.fromJson(Map<String, dynamic>.from(h as Map))],
       );
 }
 
@@ -72,10 +92,12 @@ class Turn {
 }
 
 class Ruling {
-  const Ruling({required this.id, required this.text, required this.responsible, required this.due});
+  const Ruling({required this.id, required this.text, required this.responsible, required this.due, this.tc = ''});
   final int id;
   final String text, responsible, due;
-  factory Ruling.fromJson(Map<String, dynamic> j) => Ruling(id: j['id'] as int, text: j['text'] as String? ?? '', responsible: j['responsible'] as String? ?? '', due: j['due'] as String? ?? '');
+  /// Where in the recording this was said; '' when nobody knows.
+  final String tc;
+  factory Ruling.fromJson(Map<String, dynamic> j) => Ruling(id: j['id'] as int, text: j['text'] as String? ?? '', responsible: j['responsible'] as String? ?? '', due: j['due'] as String? ?? '', tc: j['tc'] as String? ?? '');
 }
 
 class Votes {
@@ -84,13 +106,19 @@ class Votes {
 }
 
 class ProtocolItem {
-  const ProtocolItem({required this.id, required this.position, required this.question, required this.heard, required this.resolved, required this.rulings, this.status = 'considered', this.votes});
+  const ProtocolItem({required this.id, required this.position, required this.question, required this.heard, required this.resolved, required this.rulings, this.status = 'considered', this.votes, this.topicOrder});
   final int id, position;
   final String question, heard, resolved;
   final String status; // considered | not_considered
   final Votes? votes; // null → not put to a vote
   final List<Ruling> rulings;
+  /// The topic of the recording this item was made from; null = typed by hand.
+  final int? topicOrder;
   bool get filled => heard.isNotEmpty || resolved.isNotEmpty || rulings.isNotEmpty;
+  /// «Вирішили» / «Обговорювали» / «Не розглядали» — derived from the text, the
+  /// same rule as the server's (api_read.item_section): a decision or a ruling
+  /// makes it decided, nothing is stored.
+  String get section => status == 'not_considered' ? 'skipped' : (resolved.isNotEmpty || rulings.isNotEmpty ? 'decided' : 'discussed');
   factory ProtocolItem.fromJson(Map<String, dynamic> j) {
     final v = j['votes'] as Map?;
     final f = (v?['for'] as num?)?.toInt(), a = (v?['against'] as num?)?.toInt(), b = (v?['abstain'] as num?)?.toInt();
@@ -99,9 +127,12 @@ class ProtocolItem {
       heard: j['heard'] as String? ?? '', resolved: j['resolved'] as String? ?? '', status: j['status'] as String? ?? 'considered',
       votes: f == null || a == null || b == null ? null : Votes(f, a, b),
       rulings: [for (final r in j['rulings'] as List? ?? []) Ruling.fromJson(Map<String, dynamic>.from(r as Map))],
+      topicOrder: (j['topic_order'] as num?)?.toInt(),
     );
   }
 }
+
+String sectionLabel(String s) => switch (s) { 'decided' => 'Вирішили', 'discussed' => 'Обговорювали', 'skipped' => 'Не розглядали', _ => s };
 
 class RequiredSigner {
   const RequiredSigner({required this.name, this.userId, required this.signed, required this.stale});

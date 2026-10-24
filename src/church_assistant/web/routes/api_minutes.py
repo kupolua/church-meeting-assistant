@@ -12,12 +12,26 @@ The JSON API, step 5 — opening a meeting and keeping its minutes from the phon
     POST   /api/v1/meetings/{date}/protocol/rulings/{id}      chair: edit one
     DELETE /api/v1/meetings/{date}/protocol/rulings/{id}      chair: remove one
 
+    The protocol assembled from the recording's topics (24.10.2026, migration 024):
+    POST   /api/v1/meetings/{date}/protocol/from-topic        chair: a topic becomes an item
+    POST   /api/v1/meetings/{date}/protocol/decisions         chair: a line of a topic (or a
+                                                              hint) becomes a ruling, with its
+                                                              timecode; the item is made if needed
+
 THE SAME RULES AS THE WEB (routes/meetings.py), not new ones: only the chair of
 THIS meeting edits it, an approved protocol refuses every change (the trigger
 in 018 and the checks in protocols_repo — this module never enforces that
 itself), and the vote is all three numbers or none. Where the web redirects,
 these routes answer with the protocol's fresh editable part, so the phone
 redraws from what the server now holds instead of from what it hoped to send.
+
+WHY TOPICS, NOT AN AGENDA. Small churches have no agenda — it is in the
+pastor's head — and larger ones do not follow theirs. So the agenda is no
+longer the skeleton: a topic the analysis found is added with one tap, a line
+of it becomes a decision with a responsible and a term, and «Вирішили» vs
+«Обговорювали» falls out of whether an item has any decision (api_read.
+item_section). The model's hints (shared/next_steps.py) are offered, never
+applied: a signed document holds only what the chair tapped in.
 """
 
 from __future__ import annotations
@@ -77,10 +91,23 @@ class MoveIn(BaseModel):
     delta: int = Field(ge=-1, le=1)
 
 
+_TC = r"^(\d{1,2}:\d{2}(:\d{2})?)?$"
+
+
 class RulingIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     responsible: str = Field(default="", max_length=200)
     due: str = Field(default="", max_length=100)
+    tc: str = Field(default="", pattern=_TC)       # where in the recording; '' = unknown
+
+
+class FromTopicIn(BaseModel):
+    topic_order: int = Field(ge=0)
+
+
+class DecisionIn(RulingIn):
+    """A ruling born from a topic: the topic's item is found or made first."""
+    topic_order: int = Field(ge=0)
 
 
 def _frozen() -> HTTPException:
@@ -244,7 +271,7 @@ async def add_ruling(request: Request, date: str, item_id: int, body: RulingIn):
     await _item_of(pool, user, protocol, item_id)
     try:
         await protocols_repo.add_ruling(pool, user.tenant_id, item_id, text=body.text,
-                                        responsible=body.responsible, due=body.due)
+                                        responsible=body.responsible, due=body.due, tc=body.tc)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except protocols_repo.ProtocolFrozen:
@@ -267,12 +294,92 @@ async def edit_ruling(request: Request, date: str, ruling_id: int, body: RulingI
     await _ruling_of(pool, user, protocol, ruling_id)
     try:
         await protocols_repo.update_ruling(pool, user.tenant_id, ruling_id, text=body.text,
-                                           responsible=body.responsible, due=body.due)
+                                           responsible=body.responsible, due=body.due, tc=body.tc)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except protocols_repo.ProtocolFrozen:
         raise _frozen()
     return {"protocol": await _state(pool, user, date)}
+
+
+# ─────────────────────────────────────────────────────────────
+# From the topics of the recording (024)
+# ─────────────────────────────────────────────────────────────
+
+async def _topic_of(user: ApiUser, date: str, topic_order: int) -> Any:
+    from church_assistant.shared import meetings_index, tenant_paths
+    detail = meetings_index.load_detail(tenant_paths.paths_for(user.tenant_slug).meetings, date)
+    topics = detail.topics if detail else []
+    if not 0 <= topic_order < len(topics):
+        raise HTTPException(status_code=404, detail="Такої теми у записі немає.")
+    return topics[topic_order]
+
+
+async def _ensure_topic_item(
+    pool: Any, user: ApiUser, protocol: dict[str, Any], date: str, topic_order: int,
+) -> tuple[int, bool]:
+    """The item made from this topic — found, or made now. Returns (id, created).
+
+    The title is the question and the body is «Слухали», exactly as the chair
+    would have pasted them; the topic number is kept so the phone shows the
+    topic as taken. Two phones adding the same topic at once both end up with
+    the one item (024's partial unique index, surfaced as TopicTaken)."""
+    from church_assistant.web.routes.api_read import topic_heard
+    items = await protocols_repo.list_items(pool, user.tenant_id, int(protocol["id"]))
+    for i in items:
+        if i.get("topic_order") == topic_order:
+            return int(i["id"]), False
+    topic = await _topic_of(user, date, topic_order)
+    try:
+        item_id = await protocols_repo.add_item(
+            pool, user.tenant_id, int(protocol["id"]), topic.title,
+            heard=topic_heard(topic), topic_order=topic_order,
+        )
+    except protocols_repo.TopicTaken:
+        items = await protocols_repo.list_items(pool, user.tenant_id, int(protocol["id"]))
+        return next(int(i["id"]) for i in items if i.get("topic_order") == topic_order), False
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    await audit_repo.record(
+        pool, tenant_id=user.tenant_id, action="protocol.item_from_topic", actor=user.actor,
+        resource=f"protocol_items/{item_id}",
+        detail={"meeting_date": date, "topic_order": topic_order, "via": "app"},
+    )
+    return item_id, True
+
+
+@router.post("/meetings/{date}/protocol/from-topic", status_code=201)
+async def add_from_topic(request: Request, date: str, body: FromTopicIn):
+    """«+» on a topic: it becomes an agenda item, under «Обговорювали» until
+    it gets a decision. Adding it again returns the same item, `created: false`."""
+    pool, user, protocol = await _chair_protocol(request, date)
+    if protocol["status"] == "approved":
+        raise _frozen()
+    item_id, created = await _ensure_topic_item(pool, user, protocol, date, body.topic_order)
+    return {"protocol": await _state(pool, user, date), "item_id": item_id, "created": created}
+
+
+@router.post("/meetings/{date}/protocol/decisions", status_code=201)
+async def add_decision(request: Request, date: str, body: DecisionIn):
+    """«+» on a line of a topic, or ✓ on a hint: a ruling with its timecode.
+    The topic's item is made on the way if it does not exist yet — so a topic
+    that got a decision is in «Вирішили» without a second tap."""
+    pool, user, protocol = await _chair_protocol(request, date)
+    if protocol["status"] == "approved":
+        raise _frozen()
+    item_id, _ = await _ensure_topic_item(pool, user, protocol, date, body.topic_order)
+    try:
+        ruling_id = await protocols_repo.add_ruling(
+            pool, user.tenant_id, item_id, text=body.text,
+            responsible=body.responsible, due=body.due, tc=body.tc,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except protocols_repo.ProtocolFrozen:
+        raise _frozen()
+    return {"protocol": await _state(pool, user, date), "item_id": item_id, "ruling_id": ruling_id}
 
 
 @router.delete("/meetings/{date}/protocol/rulings/{ruling_id}")

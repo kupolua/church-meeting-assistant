@@ -677,7 +677,9 @@ VPS стояв на 29fcec2 (33 коміти позаду: шифрування,
 
 Того ж вечора — 022 (schema_version 23, `signing_keys`), тим самим порядком,
 бекап `cma-pre-022-*`. 24.10 — 023 (schema_version 24, `protocol_signatures`
-і `tasks`), бекап `cma-pre-023-*`.
+і `tasks`), бекап `cma-pre-023-*`; пізно ввечері 24.10 — 024 (schema_version 25,
+`protocol_items.topic_order`, `protocol_rulings.tc`), бекап через
+`deploy/backup_from_vps.sh` у `~/cma-backups/` на M1.
 
 Нове в `.env` після 021 (усе необовʼязкове): `SMTP_HOST/PORT/USER/PASSWORD/FROM`
 і `PLATFORM_NOTIFY_EMAIL`. Без SMTP код для входу з застосунку друкується в

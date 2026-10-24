@@ -9,7 +9,9 @@ import '../signing.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'audio_bar.dart';
+import 'decision_sheet.dart';
 import 'draft.dart';
+import 'item_editor.dart';
 import 'new_meeting.dart';
 import 'signing_key.dart';
 import 'speaker_review.dart';
@@ -63,6 +65,66 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   }
 
   void _seek(String? tc) { if (tc != null) player.seekTo(tc); }
+
+  // ─── assembling the protocol from the topics (step 6) ─────
+  /// The chair of this meeting, while the protocol is not approved: the only
+  /// person who may turn a topic into an item or a line into a decision.
+  bool get canEdit {
+    final p = m?.protocol;
+    return p != null && p.chairId == widget.session.me?.userId && p.meta.status != 'approved';
+  }
+
+  bool _writing = false;
+  String? _writeError;
+  List<String>? _council;
+
+  /// Who can be made responsible: the council (accounts) first, then the other
+  /// attendees from the protocol header.
+  Future<List<String>> _whom() async {
+    if (_council == null) {
+      try { _council = [for (final c in await widget.session.api.council()) c.name]; } on ApiException catch (_) { _council = []; }
+    }
+    final att = m?.protocol?.attendees ?? const <String>[];
+    return [..._council!, for (final a in att) if (!_council!.contains(a)) a];
+  }
+
+  /// One write, then the whole meeting again — item ids on topics and the
+  /// «accepted» marks on hints are the server's, not something to guess here.
+  Future<void> _write(Future<ProtocolData> Function() call) async {
+    setState(() { _writing = true; _writeError = null; });
+    try {
+      await call();
+      await _load();
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _writeError = e.message);
+    } finally {
+      if (mounted) setState(() => _writing = false);
+    }
+  }
+
+  /// «+» under the topic number: the topic becomes an item (under «Обговорювали»).
+  Future<void> _addTopic(TopicData t) => _write(() => widget.session.api.addFromTopic(widget.date, t.order));
+
+  /// «+» by a line, or ✎ on a hint: the decision sheet, prefilled, then a ruling with its timecode.
+  Future<void> _decide(TopicData t, {required String text, String responsible = '', String due = '', String? tc}) async {
+    final people = await _whom();
+    if (!mounted) return;
+    final res = await showDecisionSheet(context, text: text, responsible: responsible, due: due, tc: tc ?? '', people: people);
+    if (res == null || res.remove) return;
+    await _write(() => widget.session.api.addDecision(widget.date, topicOrder: t.order, text: res.text, responsible: res.responsible, due: res.due, tc: res.tc));
+  }
+
+  /// ✓ on a hint: taken as the model wrote it. Still a tap — nothing enters a
+  /// protocol that is going to be signed without a person choosing it.
+  Future<void> _acceptHint(TopicData t, Hint h) =>
+      _write(() => widget.session.api.addDecision(widget.date, topicOrder: t.order, text: h.text, responsible: h.responsible, due: h.due, tc: h.tc ?? ''));
+
+  Future<void> _openDraft() async {
+    final r = await Navigator.of(context).push(MaterialPageRoute(builder: (_) => DraftScreen(session: widget.session, date: widget.date)));
+    if (!mounted) return;
+    if (r == 'topics') _tabs.index = 1;
+    _load();
+  }
 
   /// Land where the search pointed: the стенограма open at the turn the
   /// timecode names, that turn at the top and highlighted, the recording
@@ -214,12 +276,10 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
       ]);
     }
     final iAmChair = p.chairId != null && p.chairId == widget.session.me?.userId;
+    final sections = [for (final s in const ['decided', 'discussed', 'skipped']) (s, [for (final it in p.items) if (it.section == s) it])];
     return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 16), children: [
       if (iAmChair && p.meta.status == 'draft') ...[
-        PrimaryButton('Вести протокол', icon: Icons.edit_note, onPressed: () async {
-          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => DraftScreen(session: widget.session, date: widget.date)));
-          _load();
-        }),
+        PrimaryButton('Вести протокол', icon: Icons.edit_note, onPressed: _openDraft),
         const SizedBox(height: 12),
       ],
       Card6(
@@ -231,9 +291,27 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
         ]),
       ),
       if (p.attendees.isNotEmpty) ...[const SizedBox(height: 8), Text(p.attendees.join(', '), style: T.small)],
-      if (p.items.isEmpty) const EmptyState(icon: Icons.list_alt_outlined, title: 'Порядок денний порожній', text: 'Ведучий ще не вніс питання.'),
-      for (final it in p.items) ...[
-        const SizedBox(height: 18),
+      if (p.items.isEmpty)
+        EmptyState(icon: Icons.list_alt_outlined, title: 'Протокол порожній',
+            text: iAmChair && d.topics.isNotEmpty ? 'Додайте теми запису плюсом на вкладці «Теми».' : 'Ведучий ще не вніс питання.'),
+      // «Вирішили» first, then what was only talked over, then what the meeting
+      // never reached. Derived from the text (ProtocolItem.section), not chosen.
+      for (final (s, items) in sections)
+        if (items.isNotEmpty) ...[
+          const SizedBox(height: 22),
+          Row(children: [
+            SectionLabel(sectionLabel(s)),
+            const SizedBox(width: 8),
+            Text('${items.length}', style: T.small),
+          ]),
+          for (final it in items) ..._itemBlock(it),
+        ],
+      if (p.signing != null) ...[const SizedBox(height: 18), _signatures(d, p)],
+    ]);
+  }
+
+  List<Widget> _itemBlock(ProtocolItem it) => [
+        const SizedBox(height: 16),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${it.position}.', style: T.itemTitle.copyWith(color: C.accent, fontSize: 13, height: 1.7)),
           const SizedBox(width: 10),
@@ -247,6 +325,10 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           const SizedBox(height: 10), Text('Вирішили', style: T.kicker), const SizedBox(height: 5),
           Text(it.resolved, style: T.bodyStrong),
         ],
+        if (it.votes != null) ...[
+          const SizedBox(height: 8),
+          Text('Голосували: за ${it.votes!.forVotes} · проти ${it.votes!.against} · утрималось ${it.votes!.abstain}', style: T.meta),
+        ],
         if (it.rulings.isNotEmpty) ...[
           const SizedBox(height: 12), Text('Постановили', style: T.kicker), const SizedBox(height: 6),
           for (final r in it.rulings) ...[
@@ -258,9 +340,16 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
                 const SizedBox(width: 11),
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(r.text, style: T.body.copyWith(color: C.text)),
-                  if (r.responsible.isNotEmpty || r.due.isNotEmpty) ...[
+                  if (r.responsible.isNotEmpty || r.due.isNotEmpty || r.tc.isNotEmpty) ...[
                     const SizedBox(height: 6),
-                    Row(children: [if (r.responsible.isNotEmpty) Text(r.responsible, style: T.meta), const SizedBox(width: 16), if (r.due.isNotEmpty) Text(r.due, style: T.meta)]),
+                    Row(children: [
+                      if (r.responsible.isNotEmpty) Flexible(child: Text(r.responsible, style: T.meta, overflow: TextOverflow.ellipsis)),
+                      const SizedBox(width: 16),
+                      if (r.due.isNotEmpty) Text(r.due, style: T.meta),
+                      // The minute of the recording where this was decided — the
+                      // evidence behind the signature. Tap to hear it.
+                      if (r.tc.isNotEmpty) ...[const Spacer(), Timecode(r.tc, onTap: () => _seek(r.tc))],
+                    ]),
                   ],
                 ])),
               ]),
@@ -268,10 +357,7 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
             const SizedBox(height: 8),
           ],
         ],
-      ],
-      if (p.signing != null) ...[const SizedBox(height: 18), _signatures(d, p)],
-    ]);
-  }
+      ];
 
   // ─── Підписи ─────────────────────────────────────────────
   bool _signing = false;
@@ -429,11 +515,41 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   // ─── Теми ────────────────────────────────────────────────
   Widget _topics(MeetingData d) {
     if (d.topics.isEmpty) return const EmptyState(icon: Icons.topic_outlined, title: 'Тем ще немає', text: 'Зʼявляться після обробки запису.');
+    final p = d.protocol;
+    final isAdmin = widget.session.me?.isAdmin == true;
+    final inProtocol = d.topics.where((t) => t.inProtocol).length;
     // Built eagerly (a few dozen topics), so a topic the search points at
     // has a context to scroll to.
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       children: [
+        // The protocol is assembled from here: what the chair can do, or why not.
+        if (p == null && !d.sealed)
+          Card6(color: C.accentBg, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Протокол збирається з цих тем', style: T.itemTitle),
+            const SizedBox(height: 4),
+            Text(isAdmin ? 'Відкрийте протокол і призначте ведучого — тоді теми додаються плюсом, а рядки стають рішеннями.' : 'Протокол відкриває адміністратор; потім ведучий додає теми плюсом.', style: T.small.copyWith(color: C.text)),
+            if (isAdmin) ...[
+              const SizedBox(height: 10),
+              SecondaryButton('Відкрити протокол', onPressed: () async {
+                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NewMeetingScreen(session: widget.session, date: widget.date)));
+                _load();
+              }),
+            ],
+          ]))
+        else if (p != null && canEdit)
+          Card6(color: C.accentBg, child: Row(children: [
+            const Icon(Icons.add_circle_outline, color: C.accent, size: 20),
+            const SizedBox(width: 10),
+            Expanded(child: Text(
+              inProtocol == 0
+                  ? 'Плюс під номером — тема йде в протокол («Обговорювали»). Плюс біля рядка — рішення з відповідальним і терміном («Вирішили»).'
+                  : 'У протоколі $inProtocol із ${d.topics.length} тем. Галочка — тема вже там, тапніть, щоб відкрити.',
+              style: T.small.copyWith(color: C.text))),
+          ]))
+        else if (p != null && p.meta.status != 'approved')
+          Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('Протокол веде ${p.chair.isEmpty ? 'інша людина' : p.chair}; у протоколі $inProtocol із ${d.topics.length} тем.', style: T.small)),
+        if (_writeError != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_writeError!, style: T.meta.copyWith(color: C.recText))),
         for (var i = 0; i < d.topics.length; i++) ...[
           if (i > 0) const Divider1(),
           _topicTile(d.topics[i], i),
@@ -445,6 +561,9 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   Widget _topicTile(TopicData t, int i) {
     final key = _topicKeys.putIfAbsent(i, GlobalKey.new);
     final focused = widget.focusTopic != null && t.title.trim() == widget.focusTopic!.trim();
+    final edit = canEdit && !_writing;
+    final pending = t.hints.where((h) => !h.accepted).toList();
+    final accepted = t.hints.length - pending.length;
     return Container(
       key: key,
       decoration: focused ? BoxDecoration(color: C.accentBg, borderRadius: BorderRadius.circular(6)) : null,
@@ -454,21 +573,84 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              SizedBox(width: 28, child: Text('${i + 1}', style: T.meta.copyWith(color: C.accent, fontWeight: FontWeight.w600))),
+              // The number, and under it the «+» that puts this topic into the
+              // protocol — a ✓ once it is there (tap: open the item).
+              SizedBox(width: 28, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${i + 1}', style: T.meta.copyWith(color: C.accent, fontWeight: FontWeight.w600)),
+                if (canEdit || t.inProtocol) Padding(padding: const EdgeInsets.only(top: 2), child: _topicMark(t, edit)),
+              ])),
               Expanded(child: Text(t.title, style: T.itemTitle)),
             ]),
             if (t.lead.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(28, 4, 0, 0), child: Text(t.lead, style: T.meta)),
             for (final l in t.lines)
               Padding(
-                padding: EdgeInsets.fromLTRB(28 + l.level * 14.0, 6, 0, 0),
+                padding: EdgeInsets.fromLTRB(canEdit ? 2 + l.level * 14.0 : 28 + l.level * 14.0, 6, 0, 0),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  // «+» to the left of a line: this is what was decided.
+                  if (canEdit)
+                    SizedBox(width: 26, height: 22, child: IconButton(
+                      padding: EdgeInsets.zero, iconSize: 18, tooltip: 'Зробити рішенням',
+                      onPressed: edit ? () => _decide(t, text: l.text, tc: l.tc) : null,
+                      icon: const Icon(Icons.add_circle_outline, color: C.accent),
+                    )),
                   Expanded(child: Text(l.text, style: l.level == 0 ? T.body.copyWith(color: C.text) : T.body.copyWith(fontSize: 14))),
                   if (l.tc != null) ...[const SizedBox(width: 8), Timecode(l.tc!, onTap: () => _seek(l.tc))],
                 ]),
               ),
+            // The model's hints — only to the chair, who confirms (✓) or edits (✎).
+            if (canEdit && pending.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Padding(padding: const EdgeInsets.only(left: 28), child: Text('СХОЖЕ, ВИРІШИЛИ', style: T.kicker.copyWith(color: C.amber, letterSpacing: 0.8))),
+              for (final h in pending) Padding(padding: const EdgeInsets.fromLTRB(28, 6, 0, 0), child: _hintCard(t, h, edit)),
+            ],
+            if (canEdit && accepted > 0 && pending.isEmpty)
+              Padding(padding: const EdgeInsets.fromLTRB(28, 8, 0, 0), child: Text('✓ підказки прийнято: $accepted', style: T.small.copyWith(color: C.okText))),
           ]),
         );
       }),
+    );
+  }
+
+  Widget _topicMark(TopicData t, bool edit) {
+    if (t.inProtocol) {
+      return InkWell(
+        onTap: m?.protocol == null ? null : () async {
+          await Navigator.of(context).push<ProtocolData>(MaterialPageRoute(
+            builder: (_) => ItemEditorScreen(session: widget.session, date: widget.date, protocol: m!.protocol!, itemId: t.itemId!),
+          ));
+          _load();
+        },
+        child: const Padding(padding: EdgeInsets.all(2), child: Icon(Icons.check_circle, color: C.okText, size: 20)),
+      );
+    }
+    return InkWell(
+      onTap: edit ? () => _addTopic(t) : null,
+      child: Padding(padding: const EdgeInsets.all(2), child: Icon(Icons.add_circle_outline, color: edit ? C.accent : C.faint, size: 20)),
+    );
+  }
+
+  Widget _hintCard(TopicData t, Hint h, bool edit) {
+    final meta = [if (h.responsible.isNotEmpty) h.responsible, if (h.due.isNotEmpty) h.due].join(' · ');
+    return Container(
+      decoration: BoxDecoration(color: C.warnBg.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(6)),
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(h.text, style: T.body.copyWith(fontSize: 14, color: C.text)),
+          const SizedBox(height: 3),
+          Row(children: [
+            if (meta.isNotEmpty) Flexible(child: Text(meta, style: T.small, overflow: TextOverflow.ellipsis)),
+            if (h.responsible.isEmpty) Text('відповідального не названо', style: T.small.copyWith(color: C.amber)),
+            if (h.tc != null) ...[const SizedBox(width: 8), Timecode(h.tc!, onTap: () => _seek(h.tc))],
+          ]),
+        ])),
+        IconButton(tooltip: 'Виправити й прийняти', iconSize: 20, padding: const EdgeInsets.all(6), constraints: const BoxConstraints(),
+            onPressed: edit ? () => _decide(t, text: h.text, responsible: h.responsible, due: h.due, tc: h.tc) : null,
+            icon: const Icon(Icons.edit_outlined, color: C.muted)),
+        IconButton(tooltip: 'Так, прийняти', iconSize: 22, padding: const EdgeInsets.all(6), constraints: const BoxConstraints(),
+            onPressed: edit ? () => _acceptHint(t, h) : null,
+            icon: const Icon(Icons.check_circle, color: C.okText)),
+      ]),
     );
   }
 

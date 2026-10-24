@@ -128,12 +128,12 @@ class _DraftScreenState extends State<DraftScreen> {
               ),
               const SizedBox(height: 18),
               Row(children: [
-                const SectionLabel('Порядок денний'),
+                const SectionLabel('Питання'),
                 const Spacer(),
-                Text('${pr.items.where((i) => i.filled).length} із ${pr.items.length} заповнено', style: T.meta),
+                Text('${pr.items.where((i) => i.section == 'decided').length} вирішили · ${pr.items.where((i) => i.section == 'discussed').length} обговорювали', style: T.meta),
               ]),
               const SizedBox(height: 8),
-              if (pr.items.isEmpty) Padding(padding: const EdgeInsets.symmetric(vertical: 12), child: Text('Питань ще немає.${editable ? ' Додайте перше нижче.' : ''}', style: T.meta)),
+              if (pr.items.isEmpty) Padding(padding: const EdgeInsets.symmetric(vertical: 12), child: Text('Питань ще немає.${editable ? ' Додайте з тем запису або впишіть нижче.' : ''}', style: T.meta)),
               for (final it in pr.items) ...[
                 Card6(
                   onTap: () => _openItem(it),
@@ -142,8 +142,8 @@ class _DraftScreenState extends State<DraftScreen> {
                     const SizedBox(width: 12),
                     Expanded(child: Text(it.question, style: T.bodyStrong)),
                     const SizedBox(width: 8),
-                    Text(it.status == 'not_considered' ? 'не розглядали' : (it.filled ? 'заповнено' : 'порожнє'),
-                        style: T.small.copyWith(color: it.status == 'not_considered' ? C.faint : (it.filled ? C.okText : C.label))),
+                    Text(sectionLabel(it.section).toLowerCase(),
+                        style: T.small.copyWith(color: switch (it.section) { 'decided' => C.okText, 'skipped' => C.faint, _ => C.label })),
                     const Icon(Icons.chevron_right, color: C.label, size: 20),
                   ]),
                 ),
@@ -151,6 +151,17 @@ class _DraftScreenState extends State<DraftScreen> {
               ],
               if (editable) ...[
                 const SizedBox(height: 6),
+                Card6(
+                  color: C.accentBg,
+                  onTap: busy ? null : () => Navigator.of(context).pop('topics'),
+                  child: Row(children: [
+                    const Icon(Icons.topic_outlined, color: C.accent, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text('Додати з тем запису: плюс біля теми — у «Обговорювали», плюс біля рядка — рішення з таймкодом.', style: T.small.copyWith(color: C.text))),
+                    const Icon(Icons.chevron_right, color: C.accent, size: 20),
+                  ]),
+                ),
+                const SizedBox(height: 8),
                 Card6(child: Row(children: [
                   Expanded(child: TextField(
                     controller: newQuestion, enabled: !busy, style: T.body, textCapitalization: TextCapitalization.sentences, maxLength: 500,
