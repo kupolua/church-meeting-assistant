@@ -107,13 +107,15 @@ class _ItemEditorScreenState extends State<ItemEditorScreen> {
 
   List<String>? _people;
 
-  /// Who can be made responsible: the council (accounts) first, then the other
-  /// attendees from the header. Fetched once per screen.
+  /// Who can be made responsible: the council (accounts) first, then everyone
+  /// present — the header and the people the recording recognised. Fetched
+  /// once per screen.
   Future<List<String>> _whom() async {
     if (_people != null) return _people!;
-    var council = <String>[];
+    var council = <String>[], recorded = <String>[];
     try { council = [for (final c in await api.council()) c.name]; } on ApiException catch (_) {}
-    return _people = [...council, for (final a in p.attendees) if (!council.contains(a)) a];
+    try { recorded = (await api.meeting(widget.date)).attendees; } on ApiException catch (_) {}
+    return _people = peopleOf(council: council, attendees: [...p.attendees, ...recorded]);
   }
 
   Future<void> _ruling([Ruling? r]) async {

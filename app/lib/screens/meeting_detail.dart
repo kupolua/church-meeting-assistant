@@ -78,14 +78,13 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   String? _writeError;
   List<String>? _council;
 
-  /// Who can be made responsible: the council (accounts) first, then the other
-  /// attendees from the protocol header.
+  /// Who can be made responsible: the council (accounts) first, then everyone
+  /// present — the protocol header and the people the recording recognised.
   Future<List<String>> _whom() async {
     if (_council == null) {
       try { _council = [for (final c in await widget.session.api.council()) c.name]; } on ApiException catch (_) { _council = []; }
     }
-    final att = m?.protocol?.attendees ?? const <String>[];
-    return [..._council!, for (final a in att) if (!_council!.contains(a)) a];
+    return peopleOf(council: _council!, attendees: [...?m?.protocol?.attendees, ...?m?.attendees]);
   }
 
   /// One write, then the whole meeting again — item ids on topics and the

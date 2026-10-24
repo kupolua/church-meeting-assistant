@@ -3,6 +3,13 @@ import '../models.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
+/// The chips of «Хто відповідальний»: the council first (they have accounts),
+/// then everyone else present, each name once, in the order given.
+List<String> peopleOf({required List<String> council, required List<String> attendees}) {
+  final seen = <String>{};
+  return [for (final n in [...council, ...attendees]) if (n.trim().isNotEmpty && seen.add(n.trim().toLowerCase())) n.trim()];
+}
+
 /// What the sheet hands back. `remove` is the delete button on an existing ruling.
 class DecisionResult {
   const DecisionResult({this.text = '', this.responsible = '', this.due = '', this.tc = '', this.remove = false});
@@ -83,7 +90,7 @@ class _DecisionSheetState extends State<_DecisionSheet> {
           const SizedBox(height: 12),
           _field('Що вирішили / доручили', text, lines: 3, hint: 'Замовити машину дров'),
           const SizedBox(height: 14),
-          Text('Хто відповідальний', style: T.metaLabel),
+          Text(widget.people.isEmpty ? 'Хто відповідальний' : 'Хто відповідальний — оберіть із присутніх', style: T.metaLabel),
           const SizedBox(height: 6),
           if (widget.people.isNotEmpty) ...[
             Wrap(spacing: 6, runSpacing: 6, children: [
