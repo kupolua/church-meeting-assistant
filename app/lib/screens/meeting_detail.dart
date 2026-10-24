@@ -586,12 +586,13 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
               Padding(
                 padding: EdgeInsets.fromLTRB(canEdit ? 2 + l.level * 14.0 : 28 + l.level * 14.0, 6, 0, 0),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  // «+» to the left of a line: this is what was decided.
+                  // «+» to the left of a line: this is what was decided. Once it
+                  // is a ruling — a white tick in a green circle; tap opens the item.
                   if (canEdit)
                     SizedBox(width: 26, height: 22, child: IconButton(
-                      padding: EdgeInsets.zero, iconSize: 18, tooltip: 'Зробити рішенням',
-                      onPressed: edit ? () => _decide(t, text: l.text, tc: l.tc) : null,
-                      icon: const Icon(Icons.add_circle_outline, color: C.accent),
+                      padding: EdgeInsets.zero, iconSize: 18, tooltip: l.taken ? 'Уже в «Вирішили»' : 'Зробити рішенням',
+                      onPressed: !edit ? null : (l.taken ? () => _openItem(t) : () => _decide(t, text: l.text, tc: l.tc)),
+                      icon: Icon(l.taken ? Icons.check_circle : Icons.add_circle_outline, color: l.taken ? C.okText : C.accent),
                     )),
                   Expanded(child: Text(l.text, style: l.level == 0 ? T.body.copyWith(color: C.text) : T.body.copyWith(fontSize: 14))),
                   if (l.tc != null) ...[const SizedBox(width: 8), Timecode(l.tc!, onTap: () => _seek(l.tc))],
@@ -611,15 +612,18 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
     );
   }
 
+  Future<void> _openItem(TopicData t) async {
+    if (m?.protocol == null || t.itemId == null) return;
+    await Navigator.of(context).push<ProtocolData>(MaterialPageRoute(
+      builder: (_) => ItemEditorScreen(session: widget.session, date: widget.date, protocol: m!.protocol!, itemId: t.itemId!),
+    ));
+    _load();
+  }
+
   Widget _topicMark(TopicData t, bool edit) {
     if (t.inProtocol) {
       return InkWell(
-        onTap: m?.protocol == null ? null : () async {
-          await Navigator.of(context).push<ProtocolData>(MaterialPageRoute(
-            builder: (_) => ItemEditorScreen(session: widget.session, date: widget.date, protocol: m!.protocol!, itemId: t.itemId!),
-          ));
-          _load();
-        },
+        onTap: () => _openItem(t),
         child: const Padding(padding: EdgeInsets.all(2), child: Icon(Icons.check_circle, color: C.okText, size: 20)),
       );
     }

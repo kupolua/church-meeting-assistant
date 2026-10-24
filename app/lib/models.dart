@@ -48,10 +48,12 @@ class HomeData {
 }
 
 class TopicLine {
-  const TopicLine({required this.text, this.tc, required this.level});
+  const TopicLine({required this.text, this.tc, required this.level, this.taken = false});
   final String text;
   final String? tc;
   final int level;
+  /// Already a ruling of this topic's item (same wording or timecode).
+  final bool taken;
 }
 
 /// The analysis's own guess at a decision said in a topic («Наступні кроки»).
@@ -79,7 +81,7 @@ class TopicData {
   bool get inProtocol => itemId != null;
   factory TopicData.fromJson(Map<String, dynamic> j) => TopicData(
         order: (j['order'] as num?)?.toInt() ?? 0, title: j['title'] as String? ?? '', lead: j['lead'] as String? ?? '',
-        lines: [for (final l in j['lines'] as List? ?? []) TopicLine(text: l['text'] as String? ?? '', tc: l['tc'] as String?, level: (l['level'] as num?)?.toInt() ?? 0)],
+        lines: [for (final l in j['lines'] as List? ?? []) TopicLine(text: l['text'] as String? ?? '', tc: l['tc'] as String?, level: (l['level'] as num?)?.toInt() ?? 0, taken: l['taken'] == true)],
         itemId: (j['item_id'] as num?)?.toInt(),
         hints: [for (final h in j['hints'] as List? ?? []) Hint.fromJson(Map<String, dynamic>.from(h as Map))],
       );

@@ -103,6 +103,18 @@ def _topic(
     rulings = item.get("rulings", []) if item else []
     taken_tc = {r.get("tc") for r in rulings if r.get("tc")}
     taken_text = {_norm_text(r.get("text") or "") for r in rulings}
+    # A line is `taken` when it already is a ruling: same wording, or the same
+    # timecode when no other line of this topic shares it (two bullets can be
+    # stamped with one minute, and only one of them was tapped).
+    tc_count: dict[str, int] = {}
+    for l in lines:
+        if l["tc"]:
+            tc_count[l["tc"]] = tc_count.get(l["tc"], 0) + 1
+    for l in lines:
+        l["taken"] = bool(
+            _norm_text(l["text"]) in taken_text
+            or (l["tc"] and l["tc"] in taken_tc and tc_count.get(l["tc"]) == 1)
+        )
     return {
         "order": t.order, "title": t.title, "lead": " ".join(lead), "lines": lines,
         "item_id": int(item["id"]) if item else None,
