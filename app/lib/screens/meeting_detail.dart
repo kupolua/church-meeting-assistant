@@ -67,11 +67,13 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
   void _seek(String? tc) { if (tc != null) player.seekTo(tc); }
 
   // ─── assembling the protocol from the topics (step 6) ─────
-  /// The chair of this meeting, while the protocol is not approved: the only
-  /// person who may turn a topic into an item or a line into a decision.
+  /// The chair of this meeting or an admin, while the protocol is not approved:
+  /// who may turn a topic into an item or a line into a decision (the server
+  /// holds the same rule, api_minutes._chair_protocol).
   bool get canEdit {
     final p = m?.protocol;
-    return p != null && p.chairId == widget.session.me?.userId && p.meta.status != 'approved';
+    final me = widget.session.me;
+    return p != null && (p.chairId == me?.userId || me?.isAdmin == true) && p.meta.status != 'approved';
   }
 
   bool _writing = false;
@@ -274,7 +276,7 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
         ],
       ]);
     }
-    final iAmChair = p.chairId != null && p.chairId == widget.session.me?.userId;
+    final iAmChair = canEdit;
     final sections = [for (final s in const ['decided', 'discussed', 'skipped']) (s, [for (final it in p.items) if (it.section == s) it])];
     return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 16), children: [
       if (iAmChair && p.meta.status == 'draft') ...[

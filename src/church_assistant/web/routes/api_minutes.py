@@ -18,8 +18,9 @@ The JSON API, step 5 — opening a meeting and keeping its minutes from the phon
                                                               hint) becomes a ruling, with its
                                                               timecode; the item is made if needed
 
-THE SAME RULES AS THE WEB (routes/meetings.py), not new ones: only the chair of
-THIS meeting edits it, an approved protocol refuses every change (the trigger
+THE SAME RULES AS THE WEB (routes/meetings.py), not new ones: the chair of
+THIS meeting or an admin edits it ("chair:" below reads "chair or admin:"),
+an approved protocol refuses every change (the trigger
 in 018 and the checks in protocols_repo — this module never enforces that
 itself), and the vote is all three numbers or none. Where the web redirects,
 these routes answer with the protocol's fresh editable part, so the phone
@@ -125,8 +126,12 @@ async def _chair_protocol(request: Request, date: str) -> tuple[Any, ApiUser, di
         raise HTTPException(status_code=409, detail="Протокол зашифровано; сервер не може його прочитати.")
     if protocol is None:
         raise HTTPException(status_code=404, detail="Протоколу немає.")
-    if protocol["chair_id"] != user.user_id:
-        raise HTTPException(status_code=403, detail="Протокол веде інша людина.")
+    # The chair of THIS meeting, or any admin of the church: the admin who set
+    # the meeting up must be able to help write it up (26.10.2026 — a newly
+    # made admin could not add a decision from the topics). Same pair as
+    # api_protocol.set_status.
+    if protocol["chair_id"] != user.user_id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Протокол веде інша людина; редагує ведучий або адміністратор.")
     return pool, user, protocol
 
 

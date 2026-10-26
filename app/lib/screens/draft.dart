@@ -31,8 +31,8 @@ class _DraftScreenState extends State<DraftScreen> {
   @override
   void dispose() { newQuestion.dispose(); super.dispose(); }
 
-  /// The chair of this meeting, while it is not approved.
-  bool get editable => p != null && p!.chairId == widget.session.me?.userId && p!.meta.status != 'approved';
+  /// The chair of this meeting or an admin, while it is not approved.
+  bool get editable => p != null && (p!.chairId == widget.session.me?.userId || widget.session.me?.isAdmin == true) && p!.meta.status != 'approved';
 
   Future<void> _load() async {
     try {

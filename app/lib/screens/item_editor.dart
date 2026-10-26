@@ -35,7 +35,8 @@ class _ItemEditorScreenState extends State<ItemEditorScreen> {
 
   Api get api => widget.session.api;
   ProtocolItem? get item => p.items.where((i) => i.id == widget.itemId).firstOrNull;
-  bool get editable => p.chairId == widget.session.me?.userId && p.meta.status != 'approved';
+  /// The chair of this meeting or an admin, while it is not approved.
+  bool get editable => (p.chairId == widget.session.me?.userId || widget.session.me?.isAdmin == true) && p.meta.status != 'approved';
 
   @override
   void initState() {

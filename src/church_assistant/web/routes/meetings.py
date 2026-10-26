@@ -200,12 +200,11 @@ async def meeting_detail(request: Request, date: str):
                 if (protocol or sealed_protocol) else None
             ),
             "sealed_protocol": sealed_protocol,
-            # Only the chair of THIS meeting writes it up. Not a church-wide
-            # role: two meetings can be written up by two people at once, which
-            # a role could not express.
-            "is_chair": bool(
-                protocol and protocol["chair_id"] == current_user(request).user_id
-            ),
+            # The chair of THIS meeting writes it up — per meeting, not a
+            # church-wide role, so two meetings can be written up by two people
+            # at once — and any admin may help (26.10.2026; same rule in the
+            # app, api_minutes._chair_protocol).
+            "is_chair": _may_edit(protocol, current_user(request)),
             "chair_choices": await web_users_repo.list_active(pool, tenant_id),
             "sealed": sealed,
             "sealed_message": encrypted.READ_MESSAGE,
@@ -305,11 +304,11 @@ async def save_protocol_header(
     protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
     if protocol is None:
         raise HTTPException(status_code=404, detail="Протокол не відкрито")
-    if protocol["chair_id"] != current_user(request).user_id:
+    if not _may_edit(protocol, current_user(request)):
         # 403 and not 404: the protocol is openly there on the page they are
         # looking at, and pretending otherwise would only be confusing.
         raise HTTPException(
-            status_code=403, detail="Протокол веде інша людина")
+            status_code=403, detail="Протокол веде інша людина; редагує ведучий або адміністратор")
 
     names = [n.strip() for n in attendees.splitlines() if n.strip()]
     try:
@@ -347,10 +346,16 @@ async def _chair_protocol(request: Request, date: str) -> tuple[Any, int, dict]:
     protocol = await protocols_repo.get_by_date(pool, tenant_id, date)
     if protocol is None:
         raise HTTPException(status_code=404, detail="Протокол не відкрито")
-    if protocol["chair_id"] != current_user(request).user_id:
+    if not _may_edit(protocol, current_user(request)):
         # 403, not 404: the protocol is plainly on the page they are reading.
-        raise HTTPException(status_code=403, detail="Протокол веде інша людина")
+        raise HTTPException(status_code=403, detail="Протокол веде інша людина; редагує ведучий або адміністратор")
     return pool, tenant_id, protocol
+
+
+def _may_edit(protocol, user) -> bool:
+    """The chair of this meeting or an admin of the church (an approved
+    protocol is refused further down, by the repo and the database)."""
+    return bool(protocol) and (protocol["chair_id"] == user.user_id or user.is_admin)
 
 
 def _frozen() -> HTTPException:
