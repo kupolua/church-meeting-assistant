@@ -23,6 +23,8 @@ class AppUpdate {
   /// A generous timeout: on a cold start the isolate is busy for a while and
   /// a tight one fired before the reply was read.
   static Future<AppUpdate?> check() async {
+    // The strip installs an APK; iPhones update through TestFlight instead.
+    if (!Platform.isAndroid) return null;
     try {
       final r = await http.get(Uri.parse('$apiBase/api/v1/app/latest'), headers: const {'accept': 'application/json'})
           .timeout(const Duration(seconds: 40));

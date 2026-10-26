@@ -46,3 +46,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# iOS signing: the Team ID stays out of git
+/ios/ExportOptions.plist

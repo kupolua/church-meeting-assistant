@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Cma App</string>
+	<string>CMA</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- iOS refuses to launch the recorder / Face ID without these texts;
+	     they are what the permission dialog shows the person. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Запис зустрічі ради, щоб скласти протокол.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Підтвердження підпису протоколу.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

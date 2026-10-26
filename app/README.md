@@ -48,6 +48,23 @@ FileProvider, дозвіл `REQUEST_INSTALL_PACKAGES`). Перший раз Andr
 увімкнути «Встановлення невідомих застосунків» для CMA — смужка відкриває той
 екран і просить тапнути ще раз. «×» ховає смужку до наступного запуску.
 
+### iOS (підготовлено 26.10.2026, збірки ще не було)
+
+На iPhone немає аналога APK: поза App Store застосунок ставиться лише через
+TestFlight (потрібен Apple Developer Program, 99 $/рік) або кабелем з Xcode
+із безкоштовним Apple ID (працює 7 днів, до 3 застосунків — лише спробувати).
+Смужка оновлення в додатку на iOS не показується (`update.dart`).
+
+Один раз на Mac: Xcode з App Store, `sudo xcode-select --switch
+/Applications/Xcode.app/Contents/Developer`, `sudo xcodebuild -runFirstLaunch`,
+`brew install cocoapods`, Apple ID у Xcode → Settings → Accounts. Потім
+`cp ios/ExportOptions.example.plist ios/ExportOptions.plist` і вписати Team ID.
+Збірка: `./build_ios.sh` → `CMA_app/cma-app-<version>.ipa`; завантажити в App
+Store Connect (Transporter або `xcrun altool`), у TestFlight додати братів за
+email або дати публічне посилання. Нові збірки TestFlight ставить сам.
+Bundle id `ua.rechurch.cmaApp`; в `Info.plist` є тексти дозволів на мікрофон
+і Face ID, без них iOS не відкриє запис і підпис.
+
 Опублікувати збірку: `./deploy/publish_apk.sh` (копіює найновіший
 `CMA_app/cma-app-*.apk` у `<DATA_ROOT>/app/` на VPS; сервер не перезапускається,
 він читає теку при кожному запиті; лишаються дві останні збірки).
