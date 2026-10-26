@@ -7,6 +7,7 @@ import 'screens/record.dart';
 import 'screens/search.dart';
 import 'session.dart';
 import 'theme.dart';
+import 'update.dart';
 
 void main() => runApp(const CmaApp());
 
@@ -36,18 +37,41 @@ class Shell extends StatefulWidget {
   State<Shell> createState() => _ShellState();
 }
 
-class _ShellState extends State<Shell> {
+class _ShellState extends State<Shell> with WidgetsBindingObserver {
   int i = 0;
   late final Session session = Session();
+  /// A newer build on the server; shown as a strip until installed or dismissed.
+  AppUpdate? update;
+  /// «×» on the strip: no more prompting until the next launch.
+  bool updateDismissed = false;
+  DateTime? lastUpdateCheck;
 
   @override
   void initState() {
     super.initState();
     session.addListener(_onSession);
+    WidgetsBinding.instance.addObserver(this);
+    _checkUpdate();
   }
 
   @override
-  void dispose() { session.removeListener(_onSession); session.dispose(); super.dispose(); }
+  void dispose() { WidgetsBinding.instance.removeObserver(this); session.removeListener(_onSession); session.dispose(); super.dispose(); }
+
+  /// On launch and when the app comes back to the foreground — a phone can
+  /// keep the app alive for days, and the launch check may have been offline.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkUpdate();
+  }
+
+  Future<void> _checkUpdate() async {
+    if (update != null || updateDismissed) return;
+    final now = DateTime.now();
+    if (lastUpdateCheck != null && now.difference(lastUpdateCheck!) < const Duration(minutes: 30)) return;
+    lastUpdateCheck = now;
+    final u = await AppUpdate.check();
+    if (mounted && u != null) setState(() => update = u);
+  }
 
   void _onSession() {
     if (!session.tabsOpen && i != 0) i = 0;
@@ -66,11 +90,14 @@ class _ShellState extends State<Shell> {
     final open = session.tabsOpen;
     final shut = C.border;
     return Scaffold(
-      body: SafeArea(bottom: false, child: IndexedStack(index: i, children: [
-        _first(),
-        if (open) RecordScreen(session: session) else const SizedBox(),
-        if (open) MeetingsScreen(session: session) else const SizedBox(),
-        if (open) SearchScreen(session: session) else const SizedBox(),
+      body: SafeArea(bottom: false, child: Column(children: [
+        if (update != null) UpdateBanner(update: update!, onDismiss: () => setState(() { update = null; updateDismissed = true; })),
+        Expanded(child: IndexedStack(index: i, children: [
+          _first(),
+          if (open) RecordScreen(session: session) else const SizedBox(),
+          if (open) MeetingsScreen(session: session) else const SizedBox(),
+          if (open) SearchScreen(session: session) else const SizedBox(),
+        ])),
       ])),
       bottomNavigationBar: NavigationBar(
         selectedIndex: i,

@@ -681,6 +681,12 @@ VPS стояв на 29fcec2 (33 коміти позаду: шифрування,
 `protocol_items.topic_order`, `protocol_rulings.tc`), бекап через
 `deploy/backup_from_vps.sh` у `~/cma-backups/` на M1.
 
+**Нова збірка застосунку (з 26.10.2026)** схеми не торкається і сервера не
+перезапускає: `./deploy/publish_apk.sh` кладе `CMA_app/cma-app-<v>+<n>.apk` у
+`/srv/cma-data/artifacts/app/` як `cma`, а `/api/v1/app/latest` віддає найбільший
+`<n>`; телефони пропонують оновлення при наступному запуску. Перший раз потрібен
+код із `routes/api_app.py` на VPS (звичайний pull + restart).
+
 Нове в `.env` після 021 (усе необовʼязкове): `SMTP_HOST/PORT/USER/PASSWORD/FROM`
 і `PLATFORM_NOTIFY_EMAIL`. Без SMTP код для входу з застосунку друкується в
 `journalctl -u cma-web` рядком `[api] code for …` — тимчасовий режим, поки

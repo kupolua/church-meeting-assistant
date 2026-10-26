@@ -9,6 +9,10 @@ cd "$(dirname "$0")"
 export PATH="$PATH:/opt/homebrew/bin"
 API="${1:-}"
 VERSION="$(sed -n 's/^version: *//p' pubspec.yaml | tr -d '[:space:]')"
+# Never ship a debug-signed build: phones only update over the same signature.
+# The key is ~/.cma/cma-release.jks, described by android/key.properties
+# (a copy sits in ~/.cma; both are git-ignored — back that folder up).
+[[ -f android/key.properties ]] || { echo "android/key.properties missing — copy it from ~/.cma/ (see README)" >&2; exit 1; }
 DEST="${CMA_APK_DIR:-$(cd .. && pwd)/CMA_app}"
 mkdir -p "$DEST"
 if [[ -n "$API" ]]; then
