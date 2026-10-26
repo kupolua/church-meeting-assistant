@@ -82,6 +82,9 @@ MAX_NAME_LEN = 80
 _requests: dict[str, list[float]] = {}
 REQ_WINDOW = 15 * 60
 REQ_MAX_PER_IP = 20
+# Guesses at /auth/verify from one address per window. A council signs in a
+# few times a year; a guesser needs ~100 000 tries per live six-digit code.
+VERIFY_MAX_PER_IP = 10
 
 
 def _throttled(key: str, limit: int) -> bool:
@@ -105,7 +108,9 @@ class RequestCode(BaseModel):
 
 
 class Verify(BaseModel):
-    email: str = Field(max_length=254)
+    # Absent since 26.10.2026: the phone asks for the code only, and the
+    # address is found by it. Founding still sends it (the form has it).
+    email: Optional[str] = Field(default=None, max_length=254)
     code: str = Field(min_length=6, max_length=6)
     device_name: Optional[str] = Field(default=None, max_length=120)
     # When one address sits on two councils the app asks, then sends this.
@@ -292,12 +297,28 @@ async def verify(request: Request, body: Verify):
     """
     Trade a code for a token. For a founding code this is also where the
     church and its first administrator come into being — pending.
+
+    Usually without an address (26.10.2026): the person types the six digits
+    from the invitation and nothing else, so the code alone has to open the
+    door. That makes every live code a key by itself, hence the per-IP cap on
+    guesses here — the per-row attempt counter cannot charge a guess that
+    matches no row.
     """
-    email = app_auth_repo.normalize_email(body.email)
     code = body.code.strip()
     if not code.isdigit():
         raise HTTPException(status_code=400, detail="Код — шість цифр.")
+    ip = request.client.host if request.client else None
+    if _throttled(f"verify|{ip or '?'}", VERIFY_MAX_PER_IP):
+        raise HTTPException(status_code=429, detail="Забагато спроб. Зачекайте 15 хвилин.")
     pool = await get_pool()
+
+    email = app_auth_repo.normalize_email(body.email or "")
+    if not email:
+        found = await app_auth_repo.email_for_code(pool, code)
+        if found is None:
+            await _logger.warn("api.code_rejected", message=f"bad code-only guess from {ip}")
+            raise HTTPException(status_code=401, detail="Код не підійшов або прострочений.")
+        email = found
 
     # A person on two councils has to be asked which door — and the code must
     # survive the question. So: look, ask, and only then spend.
@@ -320,7 +341,6 @@ async def verify(request: Request, body: Verify):
         if spent is None:
             raise HTTPException(status_code=401, detail="Код не підійшов або прострочений.")
 
-    ip = request.client.host if request.client else None
     device = (body.device_name or request.headers.get("user-agent") or "").strip()[:120]
 
     if spent["purpose"] == "signup":

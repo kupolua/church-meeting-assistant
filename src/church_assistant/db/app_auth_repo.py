@@ -50,6 +50,15 @@ def hash_code(email: str, code: str) -> str:
     return hashlib.sha256(f"{email.lower().strip()}|{code}".encode()).hexdigest()
 
 
+def lookup_hash(code: str) -> str:
+    """
+    Of the code alone (025): the phone sends no address since 26.10.2026, so
+    this is how the row — and with it the address — is found. The check
+    itself still runs against code_hash, which folds the address in.
+    """
+    return hashlib.sha256(f"code|{code}".encode()).hexdigest()
+
+
 def normalize_email(raw: str) -> str:
     return (raw or "").strip().lower()
 
@@ -108,12 +117,29 @@ async def issue(
                 (email, purpose),
             )
             await cur.execute(
-                "INSERT INTO email_codes (email, purpose, code_hash, payload, expires_at, ip) "
-                "VALUES (%s, %s, %s, %s::jsonb, %s, %s)",
-                (email, purpose, hash_code(email, code),
+                "INSERT INTO email_codes (email, purpose, code_hash, code_lookup, payload, expires_at, ip) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)",
+                (email, purpose, hash_code(email, code), lookup_hash(code),
                  json.dumps(payload or {}, ensure_ascii=False), expires_at, ip),
             )
     return code
+
+
+async def email_for_code(pool: AsyncConnectionPool, code: str) -> Optional[str]:
+    """
+    Whose live code is this? None when no live row carries it — or when two
+    do (one in a million; the person then asks for a fresh code). Nothing is
+    spent or charged here: the caller goes on to verify() with the address.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT email FROM email_codes "
+                "WHERE code_lookup = %s AND consumed_at IS NULL AND expires_at > NOW()",
+                (lookup_hash(code),),
+            )
+            rows = await cur.fetchall()
+    return str(rows[0][0]) if len(rows) == 1 else None
 
 
 async def verify(

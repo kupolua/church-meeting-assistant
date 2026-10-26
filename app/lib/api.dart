@@ -133,9 +133,11 @@ class Api {
   }
 
   /// Returns (token, me).
-  Future<(String, Me)> verify({required String email, required String code, String? deviceName, int? tenantId}) async {
+  /// `email` is null when the person typed only the code (the usual sign-in
+  /// since 26.10.2026); the server finds the address by the code.
+  Future<(String, Me)> verify({String? email, required String code, String? deviceName, int? tenantId}) async {
     final r = await _send('POST', '/auth/verify', body: {
-      'email': email, 'code': code,
+      'email': ?email, 'code': code,
       'device_name': ?deviceName,
       'tenant_id': ?tenantId,
     }) as Map;

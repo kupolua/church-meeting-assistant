@@ -126,8 +126,11 @@ class _UpdateBannerState extends State<UpdateBanner> with WidgetsBindingObserver
       _Phase.installing => ('Встановлюється версія $v. Якщо інсталятор не відкрився — натисніть ще раз', true),
       _Phase.error => ('$error. Натисніть, щоб спробувати ще раз', true),
     };
-    final bg = phase == _Phase.error ? C.warnBg : C.accentBg;
-    final fg = phase == _Phase.error ? C.warnText : C.accent;
+    // Medium green with white text (asked 26.10.2026): an update is good
+    // news, and the strip should read as such among the blue of the app.
+    const green = Color(0xFF3DA35D), greenDark = Color(0xFF2E7D46);
+    final bg = phase == _Phase.error ? C.warnBg : green;
+    final fg = phase == _Phase.error ? C.warnText : Colors.white;
     return Material(
       color: bg,
       child: InkWell(
@@ -144,7 +147,7 @@ class _UpdateBannerState extends State<UpdateBanner> with WidgetsBindingObserver
             ]),
           ),
           if (phase == _Phase.downloading)
-            LinearProgressIndicator(value: progress > 0 ? progress : null, minHeight: 3, color: C.accent, backgroundColor: C.border),
+            LinearProgressIndicator(value: progress > 0 ? progress : null, minHeight: 3, color: Colors.white, backgroundColor: greenDark),
         ]),
       ),
     );

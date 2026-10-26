@@ -7,7 +7,7 @@ import '../session.dart';
 import '../theme.dart';
 import '../widgets.dart';
 
-enum _Mode { choose, found, signIn }
+enum _Mode { choose, found }
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key, required this.session});
@@ -24,6 +24,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   void dispose() { for (final c in [church, name, email, note]) { c.dispose(); } super.dispose(); }
+
+  /// «Увійти»: the code screen at once, no address — the six digits from the
+  /// invitation are the whole key (decided 26.10.2026). Whoever has no code
+  /// asks for one on that same screen.
+  Future<void> _signIn() async {
+    final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => CodeScreen(session: widget.session, email: null, founding: false, mailSent: true),
+    ));
+    if (ok == true && mounted) setState(() => mode = _Mode.choose);
+  }
 
   Future<void> _submit() async {
     final mail = email.text.trim().toLowerCase();
@@ -76,7 +86,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 18),
         _choice(Icons.add_home_work_outlined, 'Створити церкву', 'Ви адміністратор. Назва, ваше імʼя, пошта — і запит піде на розгляд.', () => setState(() => mode = _Mode.found)),
         const SizedBox(height: 10),
-        _choice(Icons.login, 'Увійти', 'У вас є акаунт або адміністратор додав вас до церкви. Код — із листа запрошення або новий на пошту.', () => setState(() => mode = _Mode.signIn)),
+        _choice(Icons.login, 'Увійти', 'Шість цифр із листа запрошення. Немає коду — попросите новий на пошту там само.', _signIn),
       ];
 
   Widget _choice(IconData icon, String title, String sub, VoidCallback? onTap) => Card6(
@@ -109,27 +119,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (error != null) ...[const SizedBox(height: 4), Text(error!, style: T.meta.copyWith(color: C.recText))],
       const SizedBox(height: 14),
       PrimaryButton(busy ? 'Надсилаю…' : 'Надіслати код на пошту', icon: Icons.mail_outline, onPressed: busy ? null : _submit),
-      if (!founding) ...[
-        const SizedBox(height: 8),
-        // The invitation mail already carries a code (a week long): no need
-        // to ask for another and wait for a second mail.
-        SecondaryButton('У мене вже є код — із листа запрошення', onPressed: busy ? null : _haveCode),
-      ],
       const SizedBox(height: 12),
       Text(founding
           ? 'Код підтвердить вашу адресу. Потім запит розгляне власник сервісу; до його відповіді застосунок покаже «Запит розглядається».'
           : 'Пароля немає: кожен вхід підтверджується кодом із пошти, а далі телефон памʼятає вас сам.', style: T.small),
     ];
-  }
-
-  Future<void> _haveCode() async {
-    final mail = email.text.trim().toLowerCase();
-    if (!mail.contains('@')) { setState(() => error = 'Вкажіть електронну пошту, на яку прийшло запрошення.'); return; }
-    setState(() => error = null);
-    final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
-      builder: (_) => CodeScreen(session: widget.session, email: mail, founding: false, mailSent: true, fromInvite: true),
-    ));
-    if (ok == true && mounted) setState(() => mode = _Mode.choose);
   }
 
   Widget _field(TextEditingController c, String label, String hint, {TextInputType? keyboard, int lines = 1, TextCapitalization cap = TextCapitalization.none, bool last = false}) => Padding(
@@ -154,28 +148,56 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 
 class CodeScreen extends StatefulWidget {
-  const CodeScreen({super.key, required this.session, required this.email, required this.founding, required this.mailSent, this.fromInvite = false});
+  const CodeScreen({super.key, required this.session, required this.email, required this.founding, required this.mailSent});
   final Session session;
-  final String email;
+  /// Null for the plain sign-in: the code alone is typed and the server
+  /// finds the address by it. Set when a code was just sent to an address.
+  final String? email;
   final bool founding, mailSent;
-  /// The code is the one in the invitation mail — nothing was just sent.
-  final bool fromInvite;
   @override
   State<CodeScreen> createState() => _CodeScreenState();
 }
 
 class _CodeScreenState extends State<CodeScreen> {
-  final code = TextEditingController();
-  bool busy = false;
+  final code = TextEditingController(), newMail = TextEditingController();
+  bool busy = false, askingNew = false, sending = false;
   String? error;
   List<ChurchChoice>? choose;
+  /// The address a fresh code went to from this screen, if any.
+  String? sentTo;
+  bool sentOk = true;
+
+  @override
+  void dispose() { code.dispose(); newMail.dispose(); super.dispose(); }
+
+  String? get email => widget.email ?? sentTo;
+
+  /// «Немає коду?» — the only place the address is typed on sign-in.
+  Future<void> _sendNew() async {
+    final mail = newMail.text.trim().toLowerCase();
+    if (!mail.contains('@')) { setState(() => error = 'Вкажіть електронну пошту.'); return; }
+    setState(() { sending = true; error = null; });
+    try {
+      final r = await widget.session.api.requestCode(email: mail);
+      if (!mounted) return;
+      if (r['known'] == false) {
+        setState(() => error = 'Акаунта з цією адресою ще немає. Попросіть запрошення в адміністратора.');
+        return;
+      }
+      setState(() { sentTo = mail; sentOk = r['sent'] == true; askingNew = false; code.clear(); });
+    } on ApiException catch (e) {
+      if (mounted) setState(() => error = e.message);
+    } finally {
+      if (mounted) setState(() => sending = false);
+    }
+  }
 
   Future<void> _verify({int? tenantId}) async {
     final c = code.text.trim();
     if (c.length != 6) { setState(() => error = 'Код — шість цифр.'); return; }
     setState(() { busy = true; error = null; });
     try {
-      final (token, me) = await widget.session.api.verify(email: widget.email, code: c, deviceName: await Session.deviceName(), tenantId: tenantId);
+      final (token, me) = await widget.session.api.verify(email: email, code: c, deviceName: await Session.deviceName(), tenantId: tenantId);
       await widget.session.signedIn(token, me);
       if (mounted) Navigator.of(context).pop(true);
     } on ApiException catch (e) {
@@ -189,11 +211,15 @@ class _CodeScreenState extends State<CodeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.fromInvite ? 'Код із запрошення' : 'Код із пошти', style: T.h2)),
+      appBar: AppBar(title: Text(widget.founding ? 'Код із пошти' : 'Вхід', style: T.h2)),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        Text(widget.fromInvite ? 'Шість цифр із листа «Вас додано до церкви», що прийшов на' : 'Ми надіслали шість цифр на', style: T.meta),
-        Text(widget.email, style: T.itemTitle),
-        if (!widget.mailSent) ...[
+        if (email == null)
+          Text('Шість цифр із листа, що прийшов на вашу електронну пошту.', style: T.meta)
+        else ...[
+          Text(sentTo != null ? 'Новий код надіслано на' : 'Ми надіслали шість цифр на', style: T.meta),
+          Text(email!, style: T.itemTitle),
+        ],
+        if (!widget.mailSent || !sentOk) ...[
           const SizedBox(height: 8),
           Text('Сервер не має поштового провайдера: код видно в його журналі. Це тестовий режим.', style: T.small.copyWith(color: C.amber)),
         ],
@@ -225,9 +251,31 @@ class _CodeScreenState extends State<CodeScreen> {
           PrimaryButton(busy ? 'Перевіряю…' : 'Підтвердити', onPressed: busy ? null : _verify),
         ],
         const SizedBox(height: 12),
-        Text(widget.fromInvite
-            ? 'Код із запрошення діє 7 днів. Якщо не підходить — поверніться і натисніть «Надіслати код на пошту».'
+        Text(email == null
+            ? 'Код із запрошення діє 7 днів, надісланий звідси — 10 хвилин. Після пʼяти помилок доведеться просити новий.'
             : 'Код діє 10 хвилин. Після пʼяти помилок доведеться просити новий.', style: T.small),
+        if (!widget.founding) ...[
+          const SizedBox(height: 18),
+          if (!askingNew)
+            SecondaryButton('Немає коду? Надіслати на пошту', onPressed: busy ? null : () => setState(() { askingNew = true; error = null; }))
+          else ...[
+            Text('Електронна пошта, на яку вас запросили', style: T.kicker),
+            const SizedBox(height: 5),
+            TextField(
+              controller: newMail, keyboardType: TextInputType.emailAddress, enabled: !sending, autofocus: true,
+              textInputAction: TextInputAction.send, onSubmitted: (_) => _sendNew(),
+              style: T.body.copyWith(color: C.text),
+              decoration: InputDecoration(
+                hintText: 'name@example.org', hintStyle: T.meta.copyWith(color: C.faint), filled: true, fillColor: C.surface, isDense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: C.border)),
+                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: const BorderSide(color: C.accent)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            PrimaryButton(sending ? 'Надсилаю…' : 'Надіслати код', icon: Icons.mail_outline, onPressed: sending ? null : _sendNew),
+          ],
+        ],
       ]),
     );
   }
