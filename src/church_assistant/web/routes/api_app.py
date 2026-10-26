@@ -19,6 +19,7 @@ nothing else under DATA_ROOT can be read through here.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -35,6 +36,11 @@ APK_MEDIA_TYPE = "application/vnd.android.package-archive"
 
 def apk_dir() -> Path:
     return tenant_paths.data_root() / "app"
+
+
+def public_url() -> str:
+    """Where the phones reach this server, for links in mail (PUBLIC_URL in .env)."""
+    return os.getenv("PUBLIC_URL", "https://cma.rechurch.org.ua").rstrip("/")
 
 
 def latest_apk(directory: Path) -> Path | None:

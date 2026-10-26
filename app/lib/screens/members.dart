@@ -31,14 +31,19 @@ class _MembersScreenState extends State<MembersScreen> {
   }
 
   Future<void> _invite() async {
-    final r = await showModalBottomSheet<(Member, bool)>(
+    final r = await showModalBottomSheet<(Member, bool, String?)>(
       context: context, isScrollControlled: true, backgroundColor: C.surface,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
       builder: (_) => _InviteSheet(api: widget.session.api),
     );
     if (r == null || !mounted) return;
-    final (m, sent) = r;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(sent ? 'Лист надіслано на ${m.email}' : 'Додано, але лист не пішов: пошта на сервері не налаштована')));
+    final (m, sent, code) = r;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      duration: Duration(seconds: sent ? 4 : 20),
+      content: Text(sent
+          ? 'Лист із кодом для входу надіслано на ${m.email}'
+          : 'Додано, але лист не пішов: пошта на сервері не налаштована.${code == null ? '' : ' Код для входу: $code — передайте особисто, діє 7 днів.'}'),
+    ));
     _load();
   }
 
@@ -121,7 +126,7 @@ class _MembersScreenState extends State<MembersScreen> {
                     const SizedBox(height: 8),
                     PrimaryButton('Запросити учасника', icon: Icons.person_add_alt_1_outlined, onPressed: _invite),
                     const SizedBox(height: 10),
-                    Text('Людина отримає лист і увійде за кодом на свою пошту. Пароля немає. Підписувати протоколи зможе після того, як створить ключ на своєму телефоні.', style: T.small),
+                    Text('Людина отримає лист із кодом для входу (діє 7 днів) і посиланням на застосунок. Пароля немає. Підписувати протоколи зможе після того, як створить ключ на своєму телефоні.', style: T.small),
                   ]),
                 ),
     );

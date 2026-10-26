@@ -58,6 +58,7 @@ from church_assistant.db.connection import get_pool
 from church_assistant.shared import mailer, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web import security
+from church_assistant.web.routes import api_app
 
 
 router = APIRouter(prefix="/api/v1")
@@ -68,6 +69,9 @@ _logger = Logger(process="web")
 # on a shared desk, and a phone is neither shared nor a desk. The idle check is
 # off for the same reason. Revocation remains one click on the account page.
 APP_SESSION_TTL_SECONDS = 365 * 24 * 3600
+# The code inside an invitation mail: a week, because the mail is read when
+# it is read. Every other code keeps app_auth_repo.CODE_TTL_SECONDS.
+INVITE_CODE_TTL_SECONDS = 7 * 24 * 3600
 
 MAX_CHURCH_NAME_LEN = 120
 MAX_NOTE_LEN = 1000
@@ -491,7 +495,16 @@ async def members(request: Request):
 async def invite_member(request: Request, body: Invite):
     """
     Add a member and tell them. Active at once, no password: their door is
-    the code sent to this address, same as everyone's.
+    a code to this address, same as everyone's — and it rides IN the
+    invitation, with a link to the app, so the person installs, taps
+    «Увійти» → «У мене вже є код» and is in. Before 26.10.2026 the mail only
+    said "type your address in the app", and the code came in a second mail
+    after that: a step nobody needed. This code lives a week, not ten
+    minutes, because an invitation is read whenever it is read; a later
+    «Надіслати код» simply retires it (app_auth_repo.issue).
+
+    When the server has no mail, the code comes back to the admin instead,
+    to hand over in person.
     """
     admin = await api_admin(request)
     email = app_auth_repo.normalize_email(body.email)
@@ -509,14 +522,25 @@ async def invite_member(request: Request, body: Invite):
     except web_users_repo.WebUserAlreadyExists:
         raise HTTPException(status_code=409, detail="Людина з цією адресою вже є в церкві.")
 
+    ip = request.client.host if request.client else None
+    code = await app_auth_repo.issue(pool, email=email, purpose="login", ip=ip,
+                                     ttl_seconds=INVITE_CODE_TTL_SECONDS)
+    apk = api_app.latest_apk(api_app.apk_dir())
+    download = (f"1. Встановіть застосунок (Android): {api_app.public_url()}/api/v1/app/{apk.name}\n"
+                if apk else "1. Встановіть застосунок CMA.\n")
     sent = await mailer.send(
         email,
         f"Вас додано до церкви «{tenant['name']}» у CMA",
         f"{body.full_name.strip()}, вітаємо!\n\n"
         f"{admin.full_name or admin.username} додав(ла) вас до церкви «{tenant['name']}» "
         f"у застосунку CMA — протоколи зустрічей ради.\n\n"
-        f"Встановіть застосунок, натисніть «Увійти» і вкажіть цю адресу: {email}. "
-        f"Пароля немає — на пошту прийде код із шести цифр.\n",
+        f"Ваш код для входу: {code}\n"
+        f"Діє {INVITE_CODE_TTL_SECONDS // 86400} днів.\n\n"
+        f"{download}"
+        f"2. Відкрийте його, натисніть «Увійти» → «У мене вже є код», "
+        f"вкажіть адресу {email} і цей код.\n\n"
+        f"Пароля немає. Якщо код прострочиться, натисніть у застосунку "
+        f"«Надіслати код на пошту» — прийде новий.\n",
     )
     await audit_repo.record(
         pool, tenant_id=admin.tenant_id, action="app.member_invited", actor=admin.actor,
@@ -526,7 +550,10 @@ async def invite_member(request: Request, body: Invite):
                        message=f"{admin.username} invited {email} as {body.role} (mail {'sent' if sent else 'NOT sent'})",
                        tenant_id=admin.tenant_id)
     row = await web_users_repo.get_by_id(pool, admin.tenant_id, user_id)
-    return {"member": _member(row, {}), "mail_sent": sent}
+    out: dict[str, Any] = {"member": _member(row, {}), "mail_sent": sent}
+    if not sent:
+        out["code"] = code
+    return out
 
 
 @router.post("/members/{member_id}")

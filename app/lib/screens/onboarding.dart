@@ -76,7 +76,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 18),
         _choice(Icons.add_home_work_outlined, 'Створити церкву', 'Ви адміністратор. Назва, ваше імʼя, пошта — і запит піде на розгляд.', () => setState(() => mode = _Mode.found)),
         const SizedBox(height: 10),
-        _choice(Icons.login, 'Увійти', 'У вас є акаунт або адміністратор додав вас до церкви. Код прийде на пошту.', () => setState(() => mode = _Mode.signIn)),
+        _choice(Icons.login, 'Увійти', 'У вас є акаунт або адміністратор додав вас до церкви. Код — із листа запрошення або новий на пошту.', () => setState(() => mode = _Mode.signIn)),
       ];
 
   Widget _choice(IconData icon, String title, String sub, VoidCallback? onTap) => Card6(
@@ -109,11 +109,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (error != null) ...[const SizedBox(height: 4), Text(error!, style: T.meta.copyWith(color: C.recText))],
       const SizedBox(height: 14),
       PrimaryButton(busy ? 'Надсилаю…' : 'Надіслати код на пошту', icon: Icons.mail_outline, onPressed: busy ? null : _submit),
+      if (!founding) ...[
+        const SizedBox(height: 8),
+        // The invitation mail already carries a code (a week long): no need
+        // to ask for another and wait for a second mail.
+        SecondaryButton('У мене вже є код — із листа запрошення', onPressed: busy ? null : _haveCode),
+      ],
       const SizedBox(height: 12),
       Text(founding
           ? 'Код підтвердить вашу адресу. Потім запит розгляне власник сервісу; до його відповіді застосунок покаже «Запит розглядається».'
           : 'Пароля немає: кожен вхід підтверджується кодом із пошти, а далі телефон памʼятає вас сам.', style: T.small),
     ];
+  }
+
+  Future<void> _haveCode() async {
+    final mail = email.text.trim().toLowerCase();
+    if (!mail.contains('@')) { setState(() => error = 'Вкажіть електронну пошту, на яку прийшло запрошення.'); return; }
+    setState(() => error = null);
+    final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => CodeScreen(session: widget.session, email: mail, founding: false, mailSent: true, fromInvite: true),
+    ));
+    if (ok == true && mounted) setState(() => mode = _Mode.choose);
   }
 
   Widget _field(TextEditingController c, String label, String hint, {TextInputType? keyboard, int lines = 1, TextCapitalization cap = TextCapitalization.none, bool last = false}) => Padding(
@@ -138,10 +154,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 
 class CodeScreen extends StatefulWidget {
-  const CodeScreen({super.key, required this.session, required this.email, required this.founding, required this.mailSent});
+  const CodeScreen({super.key, required this.session, required this.email, required this.founding, required this.mailSent, this.fromInvite = false});
   final Session session;
   final String email;
   final bool founding, mailSent;
+  /// The code is the one in the invitation mail — nothing was just sent.
+  final bool fromInvite;
   @override
   State<CodeScreen> createState() => _CodeScreenState();
 }
@@ -171,9 +189,9 @@ class _CodeScreenState extends State<CodeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Код із пошти', style: T.h2)),
+      appBar: AppBar(title: Text(widget.fromInvite ? 'Код із запрошення' : 'Код із пошти', style: T.h2)),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        Text('Ми надіслали шість цифр на', style: T.meta),
+        Text(widget.fromInvite ? 'Шість цифр із листа «Вас додано до церкви», що прийшов на' : 'Ми надіслали шість цифр на', style: T.meta),
         Text(widget.email, style: T.itemTitle),
         if (!widget.mailSent) ...[
           const SizedBox(height: 8),
@@ -207,7 +225,9 @@ class _CodeScreenState extends State<CodeScreen> {
           PrimaryButton(busy ? 'Перевіряю…' : 'Підтвердити', onPressed: busy ? null : _verify),
         ],
         const SizedBox(height: 12),
-        Text('Код діє 10 хвилин. Після пʼяти помилок доведеться просити новий.', style: T.small),
+        Text(widget.fromInvite
+            ? 'Код із запрошення діє 7 днів. Якщо не підходить — поверніться і натисніть «Надіслати код на пошту».'
+            : 'Код діє 10 хвилин. Після пʼяти помилок доведеться просити новий.', style: T.small),
       ]),
     );
   }

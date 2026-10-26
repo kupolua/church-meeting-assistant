@@ -85,16 +85,21 @@ async def issue(
     purpose: str,
     payload: Optional[dict[str, Any]] = None,
     ip: Optional[str] = None,
+    ttl_seconds: int = CODE_TTL_SECONDS,
 ) -> str:
     """
     Mint a code for an address. Returns the PLAINTEXT code — to be mailed, and
     then forgotten. Older live codes for the same address and purpose are
     retired first, so the person's mailbox holds exactly one that works.
+
+    `ttl_seconds` is longer only for the code that rides in an invitation
+    (api.invite_member): the person reads that mail whenever they get to it,
+    not within ten minutes.
     """
     if purpose not in PURPOSES:
         raise ValueError(f"Invalid purpose: {purpose!r}")
     code = new_code()
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=CODE_TTL_SECONDS)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(

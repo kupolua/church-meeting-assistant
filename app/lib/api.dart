@@ -154,10 +154,11 @@ class Api {
     return [for (final m in r['members'] as List) Member.fromJson(Map<String, dynamic>.from(m as Map))];
   }
 
-  /// Returns (member, mailSent).
-  Future<(Member, bool)> invite({required String email, required String fullName, String role = 'member'}) async {
+  /// Returns (member, mailSent, code). The code comes back only when the
+  /// server could not mail it — for the admin to hand over in person.
+  Future<(Member, bool, String?)> invite({required String email, required String fullName, String role = 'member'}) async {
     final r = await _send('POST', '/members', body: {'email': email, 'full_name': fullName, 'role': role}) as Map;
-    return (Member.fromJson(Map<String, dynamic>.from(r['member'] as Map)), r['mail_sent'] == true);
+    return (Member.fromJson(Map<String, dynamic>.from(r['member'] as Map)), r['mail_sent'] == true, r['code'] as String?);
   }
 
   Future<Member> patchMember(int id, {String? role, bool? active}) async {
