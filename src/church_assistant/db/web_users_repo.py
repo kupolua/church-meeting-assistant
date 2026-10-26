@@ -257,3 +257,41 @@ async def reactivate(
             (user_id,),
         )
         return await cur.fetchone() is not None
+
+
+async def traces(
+    pool: AsyncConnectionPool, tenant_id: int, user_id: int,
+) -> dict[str, int]:
+    """
+    What would be lost or orphaned if this account were deleted: protocols
+    they signed (the signature row cascades away with the account — a signed
+    document must not lose a signer) and protocols they chaired (chair_id
+    would fall to NULL). Zero on both = a test account, or someone who never
+    got going; anything else = deactivate instead.
+    """
+    sql = """
+        SELECT
+            (SELECT count(*) FROM protocol_signatures WHERE web_user_id = %s),
+            (SELECT count(*) FROM meeting_protocols WHERE chair_id = %s)
+    """
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(sql, (user_id, user_id))
+        row = await cur.fetchone()
+    return {"signatures": int(row[0]), "chaired": int(row[1])} if row else {"signatures": 0, "chaired": 0}
+
+
+async def delete(
+    pool: AsyncConnectionPool, tenant_id: int, user_id: int,
+) -> bool:
+    """
+    Hard delete (26.10.2026, for the test accounts an admin made while trying
+    the app). Sessions, keys and invites go with the row (ON DELETE CASCADE);
+    the caller has checked traces() first. A platform admin is never deleted
+    this way. Returns whether a row went.
+    """
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(
+            "DELETE FROM web_users WHERE id = %s AND tenant_id = %s AND NOT is_platform_admin",
+            (user_id, tenant_id),
+        )
+        return cur.rowcount > 0

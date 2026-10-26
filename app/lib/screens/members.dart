@@ -71,13 +71,39 @@ class _MembersScreenState extends State<MembersScreen> {
             title: Text(m.active ? 'Вимкнути доступ' : 'Увімкнути доступ', style: T.body.copyWith(color: m.active ? C.recText : C.okText)),
             subtitle: m.active ? Text('Сесії та ключі підпису буде відкликано', style: T.small) : null,
             onTap: () => Navigator.pop(ctx, 'active')),
+        // Gone for good — only for someone who never signed anything; the
+        // server refuses otherwise, and the history keeps its people.
+        ListTile(leading: const Icon(Icons.delete_outline, color: C.recText),
+            title: Text('Видалити учасника', style: T.body.copyWith(color: C.recText)),
+            subtitle: Text('Лише якщо не підписував протоколів', style: T.small),
+            onTap: () => Navigator.pop(ctx, 'delete')),
         const SizedBox(height: 8),
       ])),
     );
-    if (choice == null) return;
+    if (choice == null || !mounted) return;
+    if (choice == 'delete') {
+      final sure = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: C.surface,
+          title: Text('Видалити ${m.name}?', style: T.h2),
+          content: Text('Акаунт, сесії та ключі підпису буде видалено назавжди. Якщо людина підписувала протоколи, сервер відмовить — тоді вимкніть доступ.', style: T.body),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Скасувати')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('Видалити', style: TextStyle(color: C.recText))),
+          ],
+        ),
+      );
+      if (sure != true || !mounted) return;
+    }
     try {
       if (choice == 'role') await widget.session.api.patchMember(m.id, role: m.isAdmin ? 'member' : 'admin');
       if (choice == 'active') await widget.session.api.patchMember(m.id, active: !m.active);
+      if (choice == 'delete') {
+        await widget.session.api.deleteMember(m.id);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${m.name} — видалено')));
+      }
       if (choice == 'code') {
         final (sent, code) = await widget.session.api.resendCode(m.id);
         if (!mounted) return;

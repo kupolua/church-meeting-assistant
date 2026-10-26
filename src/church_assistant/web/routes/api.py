@@ -673,6 +673,44 @@ async def patch_member(request: Request, member_id: int, body: MemberPatch):
     return {"member": _member(row, keys)}
 
 
+@router.delete("/members/{member_id}")
+async def delete_member(request: Request, member_id: int):
+    """
+    Remove an account for good (26.10.2026: the test accounts an admin made
+    while trying the app). Only one that left no trace — a signature row
+    cascades away with its signer, and a signed protocol must keep its
+    people, so anyone who signed or chaired is refused with the way out:
+    «Вимкнути доступ». Not on yourself, same as patch_member.
+    """
+    admin = await api_admin(request)
+    if member_id == admin.user_id:
+        raise HTTPException(status_code=400, detail="Себе видалити не можна — попросіть іншого адміністратора.")
+    pool = await get_pool()
+    row = await web_users_repo.get_by_id(pool, admin.tenant_id, member_id)
+    if row is None or row.get("is_platform_admin"):
+        raise HTTPException(status_code=404, detail="Немає такого учасника.")
+    left = await web_users_repo.traces(pool, admin.tenant_id, member_id)
+    if left["signatures"] or left["chaired"]:
+        raise HTTPException(status_code=409, detail=(
+            f"{row['full_name'] or row['username']} підписував(ла) протоколи або вів(ла) зустрічі "
+            f"({left['signatures']} підписів, {left['chaired']} протоколів) — історія має лишитися. "
+            f"Вимкніть доступ замість видалення."))
+    await web_sessions_repo.revoke_all_for_user(pool, admin.tenant_id, member_id)
+    await signing_keys_repo.revoke_all_for_user(pool, admin.tenant_id, member_id)
+    gone = await web_users_repo.delete(pool, admin.tenant_id, member_id)
+    if not gone:
+        raise HTTPException(status_code=404, detail="Немає такого учасника.")
+    await audit_repo.record(
+        pool, tenant_id=admin.tenant_id, action="app.member_deleted", actor=admin.actor,
+        resource=f"web_users/{member_id}",
+        detail={"email": row.get("email"), "full_name": row.get("full_name"), "role": row.get("role")},
+    )
+    await _logger.info("api.member_deleted",
+                       message=f"{admin.username} deleted {row.get('email') or row['username']}",
+                       tenant_id=admin.tenant_id)
+    return {"deleted": True}
+
+
 # ─────────────────────────────────────────────────────────────
 # Signing keys (mine)
 # ─────────────────────────────────────────────────────────────

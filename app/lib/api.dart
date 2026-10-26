@@ -170,6 +170,12 @@ class Api {
     return (r['mail_sent'] == true, r['code'] as String?);
   }
 
+  /// Removes a member who left no trace (no signatures, no chaired
+  /// protocols); the server answers 409 otherwise — then «Вимкнути доступ».
+  Future<void> deleteMember(int id) async {
+    await _send('DELETE', '/members/$id');
+  }
+
   Future<Member> patchMember(int id, {String? role, bool? active}) async {
     final r = await _send('POST', '/members/$id', body: {'role': ?role, 'active': ?active}) as Map;
     return Member.fromJson(Map<String, dynamic>.from(r['member'] as Map));
