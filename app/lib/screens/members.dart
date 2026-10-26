@@ -61,6 +61,12 @@ class _MembersScreenState extends State<MembersScreen> {
         Text(m.name, style: T.itemTitle), Text(m.email ?? '', style: T.meta),
         const SizedBox(height: 8),
         ListTile(leading: const Icon(Icons.admin_panel_settings_outlined), title: Text(m.isAdmin ? 'Зробити учасником' : 'Зробити адміністратором', style: T.body), onTap: () => Navigator.pop(ctx, 'role')),
+        // The only way to a code after the invitation: a member cannot ask
+        // for one themselves (decided 26.10.2026).
+        if (m.active)
+          ListTile(leading: const Icon(Icons.mail_outline), title: Text('Надіслати код повторно', style: T.body),
+              subtitle: Text('Новий код для входу на ${m.email ?? 'пошту'}, діє 7 днів', style: T.small),
+              onTap: () => Navigator.pop(ctx, 'code')),
         ListTile(leading: Icon(m.active ? Icons.person_off_outlined : Icons.person_outline, color: m.active ? C.recText : C.okText),
             title: Text(m.active ? 'Вимкнути доступ' : 'Увімкнути доступ', style: T.body.copyWith(color: m.active ? C.recText : C.okText)),
             subtitle: m.active ? Text('Сесії та ключі підпису буде відкликано', style: T.small) : null,
@@ -72,6 +78,16 @@ class _MembersScreenState extends State<MembersScreen> {
     try {
       if (choice == 'role') await widget.session.api.patchMember(m.id, role: m.isAdmin ? 'member' : 'admin');
       if (choice == 'active') await widget.session.api.patchMember(m.id, active: !m.active);
+      if (choice == 'code') {
+        final (sent, code) = await widget.session.api.resendCode(m.id);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          duration: Duration(seconds: sent ? 4 : 20),
+          content: Text(sent
+              ? 'Лист із новим кодом надіслано на ${m.email}'
+              : 'Лист не пішов: пошта на сервері не налаштована.${code == null ? '' : ' Код: $code — передайте особисто, діє 7 днів.'}'),
+        ));
+      }
       _load();
     } on ApiException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));

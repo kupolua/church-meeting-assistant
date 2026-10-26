@@ -163,6 +163,13 @@ class Api {
     return (Member.fromJson(Map<String, dynamic>.from(r['member'] as Map)), r['mail_sent'] == true, r['code'] as String?);
   }
 
+  /// A fresh sign-in code mailed to a member. Returns (mailSent, code) — the
+  /// code only when the server had no mail to carry it.
+  Future<(bool, String?)> resendCode(int id) async {
+    final r = await _send('POST', '/members/$id/resend-code') as Map;
+    return (r['mail_sent'] == true, r['code'] as String?);
+  }
+
   Future<Member> patchMember(int id, {String? role, bool? active}) async {
     final r = await _send('POST', '/members/$id', body: {'role': ?role, 'active': ?active}) as Map;
     return Member.fromJson(Map<String, dynamic>.from(r['member'] as Map));

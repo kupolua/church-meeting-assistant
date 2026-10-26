@@ -270,12 +270,11 @@ async def request_code(request: Request, body: RequestCode):
         }
         purpose = "signup"
     else:
-        purpose = "login"
-        if not await app_auth_repo.accounts_by_email(pool, email):
-            # No account: say so, and only so. The app then offers the founding
-            # form. The alternative — pretending to send — leaves a real person
-            # staring at an empty inbox for ten minutes.
-            return {"sent": False, "known": False}
+        # Sign-in codes are no longer self-served (26.10.2026): only an admin of
+        # the church sends them — in the invitation, or again from the members
+        # list (resend_code). The app has no form for this any more; an old
+        # build that still calls it gets told where the code comes from.
+        raise HTTPException(status_code=403, detail="Код для входу надсилає адміністратор церкви.")
 
     code = await app_auth_repo.issue(pool, email=email, purpose=purpose, payload=payload, ip=ip)
     subject, text = _code_mail(code, founding)
@@ -543,25 +542,8 @@ async def invite_member(request: Request, body: Invite):
         raise HTTPException(status_code=409, detail="Людина з цією адресою вже є в церкві.")
 
     ip = request.client.host if request.client else None
-    code = await app_auth_repo.issue(pool, email=email, purpose="login", ip=ip,
-                                     ttl_seconds=INVITE_CODE_TTL_SECONDS)
-    apk = api_app.latest_apk(api_app.apk_dir())
-    download = (f"1. Встановіть застосунок (Android): {api_app.public_url()}/api/v1/app/{apk.name}\n"
-                if apk else "1. Встановіть застосунок CMA.\n")
-    sent = await mailer.send(
-        email,
-        f"Вас додано до церкви «{tenant['name']}» у CMA",
-        f"{body.full_name.strip()}, вітаємо!\n\n"
-        f"{admin.full_name or admin.username} додав(ла) вас до церкви «{tenant['name']}» "
-        f"у застосунку CMA — протоколи зустрічей ради.\n\n"
-        f"Ваш код для входу: {code}\n"
-        f"Діє {INVITE_CODE_TTL_SECONDS // 86400} днів.\n\n"
-        f"{download}"
-        f"2. Відкрийте його, натисніть «Увійти» → «У мене вже є код», "
-        f"вкажіть адресу {email} і цей код.\n\n"
-        f"Пароля немає. Якщо код прострочиться, натисніть у застосунку "
-        f"«Надіслати код на пошту» — прийде новий.\n",
-    )
+    sent, code = await _send_sign_in_code(pool, admin, tenant, email=email,
+                                          full_name=body.full_name.strip(), ip=ip, welcome=True)
     await audit_repo.record(
         pool, tenant_id=admin.tenant_id, action="app.member_invited", actor=admin.actor,
         resource=f"web_users/{user_id}", detail={"email": email, "role": body.role, "mail_sent": sent},
@@ -574,6 +556,82 @@ async def invite_member(request: Request, body: Invite):
     if not sent:
         out["code"] = code
     return out
+
+
+@router.post("/members/{member_id}/resend-code")
+async def resend_code(request: Request, member_id: int):
+    """
+    A fresh sign-in code to a member, from the admin's phone (26.10.2026):
+    the code in the invitation ran out, or the person got a new phone. This
+    is the ONLY way to get a code after the invitation — a member cannot ask
+    for one themselves (request_code refuses), so the church's admin always
+    knows who is signing in.
+    """
+    admin = await api_admin(request)
+    pool = await get_pool()
+    row = await web_users_repo.get_by_id(pool, admin.tenant_id, member_id)
+    if row is None or row.get("is_platform_admin"):
+        raise HTTPException(status_code=404, detail="Учасника не знайдено.")
+    if not row["is_active"]:
+        raise HTTPException(status_code=409, detail="Доступ вимкнено — спершу увімкніть.")
+    email = app_auth_repo.normalize_email(row.get("email") or "")
+    if not app_auth_repo.looks_like_email(email):
+        raise HTTPException(status_code=409, detail="В учасника немає адреси електронної пошти.")
+    tenant = await tenants_repo.get_by_id(pool, admin.tenant_id)
+    ip = request.client.host if request.client else None
+    sent, code = await _send_sign_in_code(pool, admin, tenant, email=email,
+                                          full_name=str(row.get("full_name") or ""), ip=ip, welcome=False)
+    await audit_repo.record(
+        pool, tenant_id=admin.tenant_id, action="app.code_resent", actor=admin.actor,
+        resource=f"web_users/{member_id}", detail={"email": email, "mail_sent": sent},
+    )
+    await _logger.info("api.code_resent",
+                       message=f"{admin.username} resent a code to {email} (mail {'sent' if sent else 'NOT sent'})",
+                       tenant_id=admin.tenant_id)
+    out: dict[str, Any] = {"mail_sent": sent, "email": email}
+    if not sent:
+        out["code"] = code
+    return out
+
+
+async def _send_sign_in_code(
+    pool: Any, admin: ApiUser, tenant: dict[str, Any], *, email: str, full_name: str,
+    ip: Optional[str], welcome: bool,
+) -> tuple[bool, str]:
+    """
+    Mint a week-long code and mail it with the app's download link. The same
+    letter for an invitation (welcome=True) and a resend; only the opening
+    differs. Returns (mail_sent, code) — the code goes back to the admin only
+    when there was no mail to carry it.
+    """
+    code = await app_auth_repo.issue(pool, email=email, purpose="login", ip=ip,
+                                     ttl_seconds=INVITE_CODE_TTL_SECONDS)
+    apk = api_app.latest_apk(api_app.apk_dir())
+    download = (f"1. Встановіть застосунок (Android), якщо ще не стоїть: "
+                f"{api_app.public_url()}/api/v1/app/{apk.name}\n"
+                if apk else "1. Встановіть застосунок CMA, якщо ще не стоїть.\n")
+    who = admin.full_name or admin.username
+    opening = (
+        f"{full_name}, вітаємо!\n\n{who} додав(ла) вас до церкви «{tenant['name']}» "
+        f"у застосунку CMA — протоколи зустрічей ради.\n\n"
+        if welcome else
+        f"{full_name}, добрий день!\n\n{who} надіслав(ла) вам новий код для входу "
+        f"в застосунок CMA церкви «{tenant['name']}».\n\n"
+    )
+    sent = await mailer.send(
+        email,
+        f"Вас додано до церкви «{tenant['name']}» у CMA" if welcome else "Ваш код для входу в CMA",
+        f"{opening}"
+        f"Ваш код для входу: {code}\n"
+        f"Діє {INVITE_CODE_TTL_SECONDS // 86400} днів.\n\n"
+        f"{download}"
+        f"2. Відкрийте його, натисніть «Увійти» і введіть цей код.\n\n"
+        f"Пароля немає. Якщо код прострочиться, попросіть адміністратора церкви "
+        f"надіслати новий.\n",
+    )
+    if not sent:
+        print(f"[api] sign-in code for {email}: {code}  [mail not sent]", flush=True)
+    return sent, code
 
 
 @router.post("/members/{member_id}")
