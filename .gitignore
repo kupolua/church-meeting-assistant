@@ -55,4 +55,4 @@ backups/
 migrate-out/
 
 # Built APKs for sideloading (50 MB each) — kept beside the repo, never in it
-CMA_app/
+/CMA_app/

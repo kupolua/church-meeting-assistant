@@ -865,3 +865,19 @@ fonts-dejavu-core`. Обхід без root: `DejaVuSans.ttf` і `DejaVuSans-Bold
 лежать у `/srv/cma/fonts/`, а в `/srv/cma/.env` стоять `PDF_FONT_PATH` і
 `PDF_FONT_BOLD_PATH` на них. Після перевстановлення VPS або під час
 наступного візиту під root — просто поставити пакет, і змінні можна прибрати.
+
+## 14. ffmpeg на VPS — для запису з телефона (11.11.2026)
+
+Застосунок надсилає зустріч шматками по 10 хвилин, а
+`web/routes/api_record.py` склеює їх в `audio.m4a` на VPS командою
+`ffmpeg -f concat -c copy` (re-mux без перекодування, секунди на годину
+звуку). Тому на VPS, попри «control plane only», потрібен пакет `ffmpeg`:
+
+```bash
+ssh root@10.10.0.1 'apt-get install -y --no-install-recommends ffmpeg && ffmpeg -version | head -1'
+```
+
+Без нього сервер склеює лише записи з одного шматка (до 10 хв), а для довших
+відповідає 503 «На сервері немає ffmpeg», зберігаючи шматки в
+`<meetings>/<дата>/parts/` — після встановлення застосунок повторює
+«Завершити» і все проходить. Процесорного часу `-c copy` майже не бере.

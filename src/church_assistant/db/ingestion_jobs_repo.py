@@ -317,6 +317,27 @@ async def requeue(
         await cur.execute(sql, (to_status, job_id))
 
 
+async def revive(
+    pool: AsyncConnectionPool, tenant_id: int, job_id: int, *,
+    meeting_dir: str, original_filename: Optional[str], audio_filename: Optional[str],
+) -> None:
+    """A cancelled job's row reused for a NEW recording of the same date.
+
+    The unique index (tenant_id, meeting_date) means a date keeps its row for
+    good; a recording made after a cancel has to start that row over — fresh
+    file names, no review, no error — rather than insert a second one.
+    """
+    sql = """
+        UPDATE ingestion_jobs
+        SET status = 'pending', meeting_dir = %s, original_filename = %s, audio_filename = %s,
+            created_at = NOW(), completed_at = NULL, reviewed_at = NULL, stage = NULL,
+            progress_note = NULL, error_message = NULL, error_traceback = NULL
+        WHERE id = %s AND status = 'cancelled'
+    """
+    async with tenant_cursor(pool, tenant_id) as cur:
+        await cur.execute(sql, (meeting_dir, original_filename, audio_filename, job_id))
+
+
 async def cancel(pool: AsyncConnectionPool, tenant_id: int, job_id: int) -> None:
     async with tenant_cursor(pool, tenant_id) as cur:
         await cur.execute(

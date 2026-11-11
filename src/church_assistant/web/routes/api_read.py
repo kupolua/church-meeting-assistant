@@ -205,6 +205,22 @@ async def meetings(request: Request):
             "protocol": _protocol_meta(protocols.get(s.date)),
             "sealed": encrypted.folder_is_sealed(mdir / s.date),
         })
+    # A recording that just left the phone has a job and an audio file but no
+    # polished.md yet, so no summary: list it anyway, or the person who pressed
+    # «Завершити» a minute ago sees nothing and presses again.
+    seen = {m["date"] for m in out}
+    for date, status in active.items():
+        if date is None or date in seen or not _DATE_RE.match(date):
+            continue
+        audio = _find_audio(mdir, date)
+        out.append({
+            "date": date, "topics": 0, "attendees": 0, "action_items": 0,
+            "has_recording": audio is not None, "has_audio": audio is not None,
+            "audio_bytes": audio.stat().st_size if audio is not None else None,
+            "processing": status, "protocol": _protocol_meta(protocols.get(date)),
+            "sealed": encrypted.folder_is_sealed(mdir / date),
+        })
+    out.sort(key=lambda m: m["date"], reverse=True)
     return {"meetings": out}
 
 

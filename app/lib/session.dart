@@ -7,6 +7,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
+import 'recorder.dart';
 
 enum SessionState { loading, signedOut, pending, active, blocked, offline }
 
@@ -17,6 +18,12 @@ class Session extends ChangeNotifier {
   static const _kToken = 'cma.token';
 
   final api = Api();
+  /// The one recorder of this app: it outlives the screens, so a recording
+  /// keeps running while the person reads a protocol on another tab.
+  late final recorder = Recorder(api);
+
+  @override
+  void dispose() { recorder.dispose(); super.dispose(); }
   SessionState state = SessionState.loading;
   Me? me;
   String? lastError;

@@ -1,9 +1,13 @@
 package ua.rechurch.cma_app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -24,6 +28,39 @@ class MainActivity : FlutterFragmentActivity() {
                     else -> result.notImplemented()
                 }
             }
+        // Recording (lib/recorder.dart): where the pieces are kept on the phone,
+        // and the foreground service that keeps the microphone alive with the
+        // screen off (RecordingService.kt).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ua.rechurch.cma_app/recording")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "filesDir" -> result.success(filesDir.absolutePath)
+                    "start" -> { startRecordingService(call.argument<String>("text")); result.success(null) }
+                    "update" -> { updateRecordingService(call.argument<String>("text")); result.success(null) }
+                    "stop" -> { stopService(Intent(this, RecordingService::class.java)); result.success(null) }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun startRecordingService(text: String?) {
+        // Android 13+: the notification only shows with this permission; the
+        // service runs either way, so a refusal is not an error.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 41)
+        }
+        val intent = Intent(this, RecordingService::class.java).putExtra(RecordingService.EXTRA_TEXT, text)
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun updateRecordingService(text: String?) {
+        // Re-delivers the intent to the running service, which re-posts its
+        // notification. Throws when the app is in the background and the service
+        // is not running — then there is nothing to update anyway.
+        try {
+            startService(Intent(this, RecordingService::class.java).putExtra(RecordingService.EXTRA_TEXT, text))
+        } catch (_: IllegalStateException) {}
     }
 
     // "ok" — the installer is open. "permission" — this app may not yet install

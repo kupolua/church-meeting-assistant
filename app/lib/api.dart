@@ -296,4 +296,54 @@ class Api {
   /// For the audio player: the URL plus the header it must send.
   Uri audioUri(String date) => Uri.parse('$apiBase/api/v1/meetings/$date/audio');
   Map<String, String> get authHeaders => {if (token != null) 'authorization': 'Bearer $token'};
+
+  // ─── Recording from the phone, in pieces (routes/api_record.py) ───
+  /// Reserves the date. 409 (with the server's sentence) when the date already
+  /// has a recording or a job — the person picks another day.
+  Future<RecordingStatus> startRecording(String date, {String? device}) async =>
+      RecordingStatus.fromJson(Map<String, dynamic>.from(await _send('POST', '/recordings', body: {'date': date, 'device': ?device}) as Map));
+
+  Future<RecordingStatus> recordingStatus(String date) async =>
+      RecordingStatus.fromJson(Map<String, dynamic>.from(await _send('GET', '/recordings/$date') as Map));
+
+  /// One closed piece. Idempotent: the same number again just replaces it.
+  Future<RecordingStatus> uploadPart(String date, int n, List<int> bytes) async {
+    final uri = Uri.parse('$apiBase/api/v1/recordings/$date/parts/$n');
+    http.Response r;
+    try {
+      r = await http.put(uri, headers: {...authHeaders, 'content-type': 'audio/mp4', 'accept': 'application/json'}, body: bytes)
+          .timeout(const Duration(minutes: 3));
+    } on SocketException {
+      throw ApiException(0, 'Немає звʼязку із сервером.');
+    } on HttpException {
+      throw ApiException(0, 'Сервер не відповів.');
+    } catch (e) {
+      throw ApiException(0, 'Не вдалося зʼєднатися: $e');
+    }
+    if (r.statusCode >= 200 && r.statusCode < 300) return RecordingStatus.fromJson(Map<String, dynamic>.from(jsonDecode(r.body) as Map));
+    String msg = 'Помилка ${r.statusCode}';
+    try { final d = (jsonDecode(r.body) as Map)['detail']; if (d is String) msg = d; } catch (_) {}
+    throw ApiException(r.statusCode, msg);
+  }
+
+  /// Joins the pieces on the server and queues the processing. Returns the job id.
+  Future<int> finishRecording(String date, {required int parts, required int seconds}) async {
+    final r = await _send('POST', '/recordings/$date/finish', body: {'parts': parts, 'seconds': seconds}) as Map;
+    return (r['job_id'] as num).toInt();
+  }
+
+  Future<void> discardRecording(String date) async { await _send('DELETE', '/recordings/$date'); }
+}
+
+class RecordingStatus {
+  const RecordingStatus({required this.date, required this.parts, required this.finished});
+  final String date;
+  /// Part numbers the server already holds.
+  final Set<int> parts;
+  final bool finished;
+  factory RecordingStatus.fromJson(Map<String, dynamic> j) => RecordingStatus(
+        date: j['date'] as String,
+        parts: {for (final p in j['parts'] as List? ?? []) ((p as Map)['n'] as num).toInt()},
+        finished: j['finished'] == true,
+      );
 }
