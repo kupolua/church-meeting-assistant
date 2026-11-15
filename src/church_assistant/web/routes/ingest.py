@@ -33,6 +33,7 @@ from church_assistant.ingestion.paths import resolve_for
 from church_assistant.shared import meetings_index, tenant_paths
 from church_assistant.shared.logger import Logger
 from church_assistant.web.main import templates
+from church_assistant.web.routes.api_record import UPLOAD_SUFFIXES
 from church_assistant.web.tenant import current_tenant, current_tenant_slug
 
 
@@ -41,9 +42,8 @@ router = APIRouter()
 _logger = Logger(process="web")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(-\d+)?$")
-ALLOWED_AUDIO_SUFFIXES = {
-    ".m4a", ".mp3", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4", ".webm",
-}
+# One list for the browser form and the phone (api_record.upload_file).
+ALLOWED_AUDIO_SUFFIXES = UPLOAD_SUFFIXES
 
 
 # ─────────────────────────────────────────────────────────────

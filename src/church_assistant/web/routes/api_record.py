@@ -6,6 +6,7 @@ The JSON API — a meeting recorded on the phone, sent in pieces.
     GET    /api/v1/recordings/{date}             which parts the server holds
     POST   /api/v1/recordings/{date}/finish      {parts, seconds} → audio.m4a + a job
     DELETE /api/v1/recordings/{date}             throw the pieces away (nothing assembled yet)
+    PUT    /api/v1/uploads/{date}?name=<file>    a whole file recorded elsewhere → audio.<ext> + a job
 
 WHY PIECES. A council meeting runs two hours; a phone in a church basement
 drops off the network and the app may be killed by Android at any moment. One
@@ -25,6 +26,12 @@ server without ffmpeg loses nothing: it keeps the pieces and says so.
 The date is the whole identity, as everywhere else in this codebase (one
 meeting per church per day). Reserving a date that already has a job or an
 audio file answers 409, and the app lets the person pick another day.
+
+A FILE MADE ELSEWHERE (Zoom, a dictaphone, a file on Google Drive) takes the
+short road: one PUT with the whole file, streamed to <meetings>/<date>/audio.<ext>
+exactly as routes/ingest.py stores a browser upload, then the same job. The
+suffix is kept because the pipeline resolves `audio.*` by name
+(ingestion/paths.py); the original file name goes into the job for the list.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
@@ -63,6 +70,11 @@ MAX_PARTS = 1000
 # bug or an attack, not a recording.
 MAX_PART_BYTES = 64 * 1024 * 1024
 FFMPEG_TIMEOUT_S = 600
+# What routes/ingest.py takes from the browser — the same list, so a file the
+# site accepts the phone accepts too.
+UPLOAD_SUFFIXES = {".m4a", ".mp3", ".wav", ".aac", ".ogg", ".flac", ".opus", ".mp4", ".webm"}
+# A three-hour Zoom recording as video is ~1 GB; a WAV of the same is ~2 GB.
+MAX_UPLOAD_BYTES = 3 * 1024 * 1024 * 1024
 
 
 class StartRecording(BaseModel):
@@ -207,6 +219,52 @@ async def assemble(meeting_dir: Path, n_parts: int, *, ffmpeg: Optional[str]) ->
 
 # ─────────────────────────────────────────────────────────────
 
+async def _open_job(pool: Any, user: ApiUser, date: str, meeting_dir: Path, *, original: str, audio_filename: str) -> int:
+    """Insert the pending job for a date — or start over the cancelled one.
+    A date keeps its row forever (unique per tenant), so a date that was
+    recorded, cancelled and recorded again revives the old row."""
+    existing = await jobs_repo.get_by_date(pool, user.tenant_id, date)
+    if existing is None:
+        try:
+            return int(await jobs_repo.insert_job(
+                pool, user.tenant_id, meeting_date=date, meeting_dir=str(meeting_dir),
+                original_filename=original, audio_filename=audio_filename,
+            ))
+        except UniqueViolation:
+            raise HTTPException(status_code=409, detail="За цю дату вже є запис в обробці.")
+    if existing["status"] == "cancelled":
+        job_id = int(existing["id"])
+        await jobs_repo.revive(
+            pool, user.tenant_id, job_id, meeting_dir=str(meeting_dir),
+            original_filename=original, audio_filename=audio_filename,
+        )
+        return job_id
+    raise HTTPException(status_code=409, detail="За цю дату вже є запис в обробці.")
+
+
+async def _receive(request: Request, tmp: Path, *, limit: int, too_big: str, empty: str) -> int:
+    """Stream the request body into `tmp`; on any failure the file is gone.
+    Returns the byte count."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=413, detail=too_big)
+    size = 0
+    try:
+        with tmp.open("wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status_code=413, detail=too_big)
+                out.write(chunk)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=empty)
+    return size
+
+
 @router.post("/recordings", status_code=201)
 async def start_recording(request: Request, body: StartRecording):
     user = await api_user(request)
@@ -258,28 +316,8 @@ async def upload_part(request: Request, date: str, n: int):
     parts_dir = meeting_dir / PARTS_DIR
     if not parts_dir.is_dir():
         raise HTTPException(status_code=409, detail="Запис не починали або вже завершено.")
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > MAX_PART_BYTES:
-        raise HTTPException(status_code=413, detail="Шматок надто великий.")
-
     tmp = parts_dir / (part_name(n) + ".part")
-    size = 0
-    try:
-        with tmp.open("wb") as out:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > MAX_PART_BYTES:
-                    raise HTTPException(status_code=413, detail="Шматок надто великий.")
-                out.write(chunk)
-    except HTTPException:
-        tmp.unlink(missing_ok=True)
-        raise
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
-    if size == 0:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Порожній шматок.")
+    await _receive(request, tmp, limit=MAX_PART_BYTES, too_big="Шматок надто великий.", empty="Порожній шматок.")
     os.replace(tmp, parts_dir / part_name(n))
     return _status(meeting_dir)
 
@@ -313,25 +351,8 @@ async def finish_recording(request: Request, date: str, body: FinishRecording):
             )
             raise HTTPException(status_code=503, detail=str(e))
 
-    # The job. A date keeps its row forever (unique per tenant), so a date that
-    # was recorded, cancelled and recorded again starts the old row over.
     original = f"phone-recording-{date}.m4a"
-    if existing is None:
-        try:
-            job_id = await jobs_repo.insert_job(
-                pool, user.tenant_id, meeting_date=date, meeting_dir=str(meeting_dir),
-                original_filename=original, audio_filename=AUDIO_NAME,
-            )
-        except UniqueViolation:
-            raise HTTPException(status_code=409, detail="За цю дату вже є запис в обробці.")
-    elif existing["status"] == "cancelled":
-        job_id = int(existing["id"])
-        await jobs_repo.revive(
-            pool, user.tenant_id, job_id, meeting_dir=str(meeting_dir),
-            original_filename=original, audio_filename=AUDIO_NAME,
-        )
-    else:
-        raise HTTPException(status_code=409, detail="За цю дату вже є запис в обробці.")
+    job_id = await _open_job(pool, user, date, meeting_dir, original=original, audio_filename=AUDIO_NAME)
 
     (meeting_dir / META_FILE).unlink(missing_ok=True)
     size_mb = audio.stat().st_size / 1024 / 1024
@@ -347,6 +368,60 @@ async def finish_recording(request: Request, date: str, body: FinishRecording):
         detail={"job_id": job_id, "parts": body.parts, "seconds": body.seconds, "size_mb": round(size_mb, 1), "via": "app"},
     )
     return {"job_id": job_id, "bytes": audio.stat().st_size}
+
+
+@router.put("/uploads/{date}")
+async def upload_file(request: Request, date: str, name: str = Query(min_length=1, max_length=200)):
+    """A whole recording made elsewhere, in one request. `name` is the file's
+    own name — its suffix decides audio.<ext>, and it is kept on the job the
+    way the browser upload keeps it. Streams to a `.part` file and renames at
+    the end, so a dropped connection leaves nothing behind."""
+    user = await api_user(request)
+    _check_date(date)
+    suffix = Path(name).suffix.lower()
+    if suffix not in UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Непідтримуваний формат ({suffix or 'без розширення'}). "
+                   "Підійдуть: " + ", ".join(sorted(x.lstrip(".") for x in UPLOAD_SUFFIXES)) + ".",
+        )
+    pool = await get_pool()
+    mdir = _meetings_dir(user)
+    meeting_dir = mdir / date
+    reason = await _busy_reason(pool, user, mdir, date)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    if (meeting_dir / PARTS_DIR).is_dir():
+        raise HTTPException(status_code=409, detail="За цю дату йде запис із телефона. Оберіть іншу дату.")
+
+    meeting_dir.mkdir(parents=True, exist_ok=True)
+    audio_filename = f"audio{suffix}"
+    tmp = meeting_dir / (audio_filename + ".part")
+    size = await _receive(request, tmp, limit=MAX_UPLOAD_BYTES, too_big="Файл надто великий (понад 3 ГБ).", empty="Порожній файл.")
+    audio = meeting_dir / audio_filename
+    os.replace(tmp, audio)
+
+    try:
+        job_id = await _open_job(pool, user, date, meeting_dir, original=name, audio_filename=audio_filename)
+    except HTTPException:
+        # Lost the race for the date: the file must not sit there as a ghost
+        # that makes the date «busy» for everyone.
+        audio.unlink(missing_ok=True)
+        raise
+
+    size_mb = size / 1024 / 1024
+    await _logger.info(
+        "ingestion.uploaded",
+        message=f"job #{job_id} ({date}) file sent from the phone ({size_mb:.1f} MB): {name}",
+        metadata={"job_id": job_id, "size_mb": round(size_mb, 1), "via": "app-file", "name": name},
+        tenant_id=user.tenant_id, user_id=user.user_id,
+    )
+    await audit_repo.record(
+        pool, tenant_id=user.tenant_id, action="recording.uploaded", actor=user.actor,
+        resource=f"meeting/{date}",
+        detail={"job_id": job_id, "size_mb": round(size_mb, 1), "name": name, "via": "app-file"},
+    )
+    return {"job_id": job_id, "bytes": size}
 
 
 @router.delete("/recordings/{date}")

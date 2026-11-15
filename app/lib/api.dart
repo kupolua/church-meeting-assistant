@@ -333,6 +333,44 @@ class Api {
   }
 
   Future<void> discardRecording(String date) async { await _send('DELETE', '/recordings/$date'); }
+
+  /// A whole file recorded elsewhere (Zoom, a dictaphone), streamed in one
+  /// PUT: the request body is fed from [bytes] as the network takes it, so a
+  /// gigabyte never sits in memory. [onProgress] gets the bytes handed to the
+  /// socket so far. Returns the job id.
+  Future<int> uploadFile(String date, {required String name, required int length, required Stream<List<int>> bytes, void Function(int sent)? onProgress}) async {
+    final uri = Uri.parse('$apiBase/api/v1/uploads/$date').replace(queryParameters: {'name': name});
+    final req = http.StreamedRequest('PUT', uri)
+      ..headers.addAll({...authHeaders, 'content-type': 'application/octet-stream', 'accept': 'application/json'})
+      ..contentLength = length;
+    final client = http.Client();
+    http.Response r;
+    try {
+      final reply = client.send(req);
+      var sent = 0;
+      // addStream (not add) so the sink's back-pressure pauses the file read
+      // while the socket is busy.
+      final feed = req.sink.addStream(bytes.map((c) { sent += c.length; onProgress?.call(sent); return c; }))
+          .then((_) => req.sink.close(), onError: (Object e) { req.sink.addError(e); req.sink.close(); });
+      final streamed = await reply.timeout(const Duration(hours: 3));
+      r = await http.Response.fromStream(streamed);
+      await feed.catchError((_) {});
+    } on SocketException {
+      throw ApiException(0, 'Немає звʼязку із сервером.');
+    } on HttpException {
+      throw ApiException(0, 'Сервер не відповів.');
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException(0, 'Не вдалося надіслати: $e');
+    } finally {
+      client.close();
+    }
+    if (r.statusCode >= 200 && r.statusCode < 300) return ((jsonDecode(r.body) as Map)['job_id'] as num).toInt();
+    String msg = 'Помилка ${r.statusCode}';
+    try { final d = (jsonDecode(r.body) as Map)['detail']; if (d is String) msg = d; } catch (_) {}
+    throw ApiException(r.statusCode, msg);
+  }
 }
 
 class RecordingStatus {

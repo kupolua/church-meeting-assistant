@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../api.dart';
 import '../models.dart';
@@ -70,6 +71,19 @@ class _RecordScreenState extends State<RecordScreen> {
     }
   }
 
+  /// «Завантажити» → pick a file, pick a date, send it whole.
+  Future<void> _upload() async {
+    final job = await showModalBottomSheet<int>(
+      context: context, isScrollControlled: true, backgroundColor: C.surface, isDismissible: false, enableDrag: false,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
+      builder: (_) => _UploadSheet(session: widget.session),
+    );
+    if (job != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Файл надіслано; обробка піде на сервері')));
+      _load();
+    }
+  }
+
   Future<void> _complete(RecMeta m) async {
     try {
       await rec.completeUnfinished(m);
@@ -117,7 +131,7 @@ class _RecordScreenState extends State<RecordScreen> {
           const SizedBox(width: 10),
           Expanded(child: _BigAction(
             icon: Icons.file_download_outlined, color: C.accent, bg: C.accentBg, title: 'Завантажити', subtitle: 'файл із памʼяті\nабо з Google Drive',
-            onTap: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Вибір файлу — наступний крок'))),
+            onTap: _upload,
           )),
         ]),
       ),
@@ -294,6 +308,115 @@ class _StartSheetState extends State<_StartSheet> {
           ]),
         ]),
       );
+}
+
+/// «Завантажити» → a file from the phone (or anything the system picker
+/// offers: Drive, Downloads, a dictaphone's folder) and the date it belongs
+/// to. Sent whole, with a progress bar; a date the server already holds comes
+/// back as its sentence and the sheet stays open to pick another.
+class _UploadSheet extends StatefulWidget {
+  const _UploadSheet({required this.session});
+  final Session session;
+  @override
+  State<_UploadSheet> createState() => _UploadSheetState();
+}
+
+class _UploadSheetState extends State<_UploadSheet> {
+  static const _kinds = ['m4a', 'mp3', 'wav', 'aac', 'ogg', 'flac', 'opus', 'mp4', 'webm'];
+  DateTime date = DateTime.now();
+  PlatformFile? file;
+  int? length;
+  String? error;
+  bool busy = false;
+  int sent = 0;
+  DateTime _shown = DateTime.fromMillisecondsSinceEpoch(0);
+
+  String get iso => '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  static String _mb(int b) => b < 1048576 ? '<1 МБ' : '${(b / 1048576).toStringAsFixed(b < 10485760 ? 1 : 0)} МБ';
+
+  Future<void> _pickFile() async {
+    try {
+      final f = await FilePicker.pickFile(dialogTitle: 'Запис зустрічі', type: FileType.custom, allowedExtensions: _kinds);
+      if (f == null) return;
+      final n = await f.length();
+      setState(() { file = f; length = n; error = null; });
+    } catch (e) {
+      setState(() => error = 'Не вдалося відкрити файл: $e');
+    }
+  }
+
+  Future<void> _pickDate() async {
+    final d = await showDatePicker(context: context, initialDate: date, firstDate: DateTime(2020), lastDate: DateTime.now().add(const Duration(days: 1)));
+    if (d != null) setState(() { date = d; error = null; });
+  }
+
+  Future<void> _send() async {
+    final f = file, n = length;
+    if (f == null || n == null) { setState(() => error = 'Спершу оберіть файл.'); return; }
+    if (n == 0) { setState(() => error = 'Файл порожній.'); return; }
+    setState(() { busy = true; error = null; sent = 0; });
+    try {
+      final job = await widget.session.api.uploadFile(iso, name: f.name, length: n, bytes: f.readAsByteStream(), onProgress: (b) {
+        // Chunks come every few milliseconds; the bar needs a few frames a second.
+        final now = DateTime.now();
+        if (now.difference(_shown).inMilliseconds < 200 && b < n) return;
+        _shown = now;
+        if (mounted) setState(() => sent = b);
+      });
+      if (mounted) Navigator.of(context).pop(job);
+    } catch (e) {
+      if (mounted) setState(() { error = e is ApiException ? e.message : '$e'; busy = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final f = file, n = length;
+    return PopScope(
+      canPop: !busy,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Завантажити запис', style: T.h2),
+          const SizedBox(height: 12),
+          Card6(padding: EdgeInsets.zero, child: InkWell(
+            onTap: busy ? null : _pickFile,
+            child: Padding(padding: const EdgeInsets.fromLTRB(14, 13, 14, 13), child: Row(children: [
+              SizedBox(width: 92, child: Text('Файл', style: T.metaLabel)),
+              Expanded(child: f == null
+                  ? Text('Обрати…', style: T.value.copyWith(color: C.accent))
+                  : Text('${f.name}${n == null ? '' : ' · ${_mb(n)}'}', style: T.value, maxLines: 2, overflow: TextOverflow.ellipsis)),
+              const Icon(Icons.chevron_right, color: C.label, size: 20),
+            ])),
+          )),
+          const SizedBox(height: 8),
+          Card6(padding: EdgeInsets.zero, child: InkWell(
+            onTap: busy ? null : _pickDate,
+            child: Padding(padding: const EdgeInsets.fromLTRB(14, 13, 14, 13), child: Row(children: [
+              SizedBox(width: 92, child: Text('Дата', style: T.metaLabel)),
+              Expanded(child: Text(ukDate(iso), style: T.value)),
+              const Icon(Icons.chevron_right, color: C.label, size: 20),
+            ])),
+          )),
+          const SizedBox(height: 10),
+          Text('Запис із Zoom, диктофона або з Google Drive: ${_kinds.join(', ')}. Файл іде на сервер цілком — не закривайте застосунок, поки смужка не дійде до кінця.', style: T.meta),
+          if (busy && n != null) ...[
+            const SizedBox(height: 12),
+            ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: n == 0 ? null : (sent / n).clamp(0.0, 1.0), minHeight: 6, backgroundColor: C.chipBg, color: C.accent)),
+            const SizedBox(height: 6),
+            Text(sent >= n ? 'Надіслано, сервер ставить у чергу…' : 'надіслано ${_mb(sent)} із ${_mb(n)}', style: T.meta),
+          ],
+          if (error != null) ...[const SizedBox(height: 10), Text(error!, style: T.meta.copyWith(color: C.recText))],
+          const SizedBox(height: 18),
+          Row(children: [
+            Expanded(child: SecondaryButton('Назад', onPressed: busy ? null : () => Navigator.of(context).pop())),
+            const SizedBox(width: 10),
+            Expanded(child: PrimaryButton(busy ? 'Надсилаю…' : 'Надіслати', icon: Icons.cloud_upload_outlined, onPressed: busy || file == null ? null : _send)),
+          ]),
+        ]),
+      ),
+    );
+  }
 }
 
 /// The live recording: the clock, the level, what reached the server, and the

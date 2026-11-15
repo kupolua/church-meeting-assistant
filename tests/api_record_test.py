@@ -84,3 +84,53 @@ def test_real_ffmpeg_joins_two_aac_parts(tmp_path: Path):
     )
     assert 0.9 < float(probe.stdout.strip()) < 1.3
     assert not d.exists()
+
+
+# ─── the streaming receiver behind parts and whole-file uploads ──────────────
+
+class _FakeRequest:
+    """Just what _receive reads: the headers and the body stream."""
+
+    def __init__(self, chunks: list[bytes], declared: str | None = None):
+        self.headers = {"content-length": declared} if declared is not None else {}
+        self._chunks = chunks
+
+    async def stream(self):
+        for c in self._chunks:
+            yield c
+
+
+def _recv(req: _FakeRequest, tmp: Path, limit: int = 100) -> int:
+    from church_assistant.web.routes.api_record import _receive
+    return asyncio.run(_receive(req, tmp, limit=limit, too_big="big", empty="empty"))
+
+
+def test_receive_writes_the_body_and_returns_its_size(tmp_path: Path):
+    tmp = tmp_path / "audio.mp3.part"
+    assert _recv(_FakeRequest([b"ab", b"cde"]), tmp) == 5
+    assert tmp.read_bytes() == b"abcde"
+
+
+def test_receive_refuses_a_declared_oversize_before_reading(tmp_path: Path):
+    from fastapi import HTTPException
+    tmp = tmp_path / "x.part"
+    with pytest.raises(HTTPException) as e:
+        _recv(_FakeRequest([b"x"], declared="101"), tmp)
+    assert e.value.status_code == 413 and not tmp.exists()
+
+
+def test_receive_stops_an_undeclared_oversize_midway_and_cleans_up(tmp_path: Path):
+    from fastapi import HTTPException
+    tmp = tmp_path / "x.part"
+    with pytest.raises(HTTPException) as e:
+        _recv(_FakeRequest([b"a" * 60, b"b" * 60]), tmp)
+    assert e.value.status_code == 413 and not tmp.exists()
+
+
+def test_receive_rejects_an_empty_body(tmp_path: Path):
+    from fastapi import HTTPException
+    tmp = tmp_path / "x.part"
+    with pytest.raises(HTTPException) as e:
+        _recv(_FakeRequest([]), tmp)
+    assert e.value.status_code == 400 and not tmp.exists()
+
