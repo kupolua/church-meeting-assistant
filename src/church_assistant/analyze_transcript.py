@@ -47,6 +47,9 @@ NUM_PREDICT = 8192       # max output tokens — explicit to override Ollama def
 TEMPERATURE = 0.0        # deterministic for protocol generation
 
 
+from church_assistant.shared.style import STYLE_RULES
+
+
 SYSTEM_PROMPT = """Ти професійний аналітик церковних зустрічей.
 
 Твоя задача — створити структурований протокол на основі стенограми зустрічі команди пасторів.
@@ -99,7 +102,7 @@ JSON СХЕМА:
   ]
 }
 
-Структуруй детальні теми у порядку, у якому вони обговорювались. Action items згрупуй за людиною."""
+Структуруй детальні теми у порядку, у якому вони обговорювались. Action items згрупуй за людиною.""" + "\n\n" + STYLE_RULES
 
 
 USER_PROMPT_TEMPLATE = """Ось приклад протоколу хорошої якості (для зразка структури і стилю):

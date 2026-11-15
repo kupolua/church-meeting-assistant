@@ -199,6 +199,70 @@ def _parse_topics_from_polished(text: str) -> list[Topic]:
     return topics
 
 
+class NoSuchTopic(LookupError):
+    """The polished.md has no ### section at that position."""
+
+
+def replace_topic(text: str, order: int, *, title: Optional[str] = None, body: Optional[str] = None) -> tuple[str, Topic]:
+    """
+    Rewrite one ### section of polished.md in place and return the new text
+    with the topic AS IT WAS (so the caller can keep the before/after pair).
+
+    Walks the file with the same rules as _parse_topics_from_polished — the
+    same ## boundaries, the same skip of «Наступні кроки» — so the Nth topic
+    here is the Nth topic the app shows. The heading line is replaced whole;
+    the body is replaced between the heading and the next heading, keeping
+    the HTML comments the analysis left (`<!-- continued in chunk 01 -->`)
+    and ending with one blank line so the next heading stays separated.
+    Everything outside the section is byte-for-byte what it was.
+    """
+    lines = text.split("\n")
+    # (start, end) of each topic's lines: start = heading line, end = index of
+    # the line after the last body line (exclusive).
+    spans: list[tuple[int, int]] = []
+    start: Optional[int] = None
+    in_actions = False
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            if start is not None:
+                spans.append((start, i)); start = None
+            in_actions = line[3:].strip() in ("Наступні кроки", "Дії")
+        elif in_actions:
+            continue
+        elif line.startswith("### "):
+            if start is not None:
+                spans.append((start, i))
+            start = i
+    if start is not None:
+        spans.append((start, len(lines)))
+    if not 0 <= order < len(spans):
+        raise NoSuchTopic(order)
+
+    a, b = spans[order]
+    old_title = lines[a][4:].strip()
+    body_lines = lines[a + 1:b]
+    comments = [l for l in body_lines if l.strip().startswith("<!--") and l.strip().endswith("-->")]
+    old_body = "\n".join(l for l in body_lines if l not in comments).strip()
+    old = Topic(title=old_title, body=old_body, order=order)
+
+    new_title = old_title if title is None else " ".join(title.split())
+    new_body = old_body if body is None else body.strip()
+    if not new_title:
+        raise ValueError("empty title")
+    out = lines[:a] + [f"### {new_title}"]
+    if new_body:
+        out += new_body.split("\n")
+    if comments:
+        out += [""] + comments
+    out.append("")
+    # Keep exactly one blank line before whatever follows.
+    rest = lines[b:]
+    while rest and rest[0].strip() == "":
+        rest = rest[1:]
+    out += rest
+    return "\n".join(out), old
+
+
 # A parenthetical made up PURELY of timestamps: "(01:51)", "(24:11, 28:16)",
 # "(31:30; 33:52; 34:42)". The "purely" is what makes this safe to delete — a
 # Bible reference like "Псалом 84:6" is not parenthesised like this and survives.

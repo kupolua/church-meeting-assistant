@@ -583,6 +583,12 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
                 if (canEdit || t.inProtocol) Padding(padding: const EdgeInsets.only(top: 2), child: _topicMark(t, edit)),
               ])),
               Expanded(child: Text(t.title, style: T.itemTitle)),
+              // Anyone may reword what the model wrote; the server keeps the pair.
+              if (!(m?.sealed ?? true))
+                InkWell(
+                  onTap: _writing ? null : () => _editTopic(t),
+                  child: Padding(padding: const EdgeInsets.fromLTRB(8, 0, 0, 4), child: Icon(Icons.edit_outlined, size: 18, color: _writing ? C.faint : C.label)),
+                ),
             ]),
             if (t.lead.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(28, 4, 0, 0), child: Text(t.lead, style: T.meta)),
             for (final l in t.lines)
@@ -613,6 +619,19 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
         );
       }),
     );
+  }
+
+  /// «✎» on a topic: the title and the text as the council would say it.
+  Future<void> _editTopic(TopicData t) async {
+    final data = await showModalBottomSheet<MeetingData>(
+      context: context, isScrollControlled: true, backgroundColor: C.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
+      builder: (_) => _TopicEditSheet(session: widget.session, date: widget.date, topic: t),
+    );
+    if (data != null && mounted) {
+      setState(() { m = data; _writeError = null; });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Збережено. Правку записано — з таких модель навчиться вашої мови.')));
+    }
   }
 
   Future<void> _openItem(TopicData t) async {
@@ -689,6 +708,86 @@ class _MeetingDetailScreenState extends State<MeetingDetailScreen> with SingleTi
             ]),
           );
         },
+      ),
+    );
+  }
+}
+
+/// The topic as the person would have written it. Two fields: the title and
+/// the section text (markdown as it is in the file — bullets, timecodes). The
+/// server records what changed as a «model wrote → people say» pair.
+class _TopicEditSheet extends StatefulWidget {
+  const _TopicEditSheet({required this.session, required this.date, required this.topic});
+  final Session session;
+  final String date;
+  final TopicData topic;
+  @override
+  State<_TopicEditSheet> createState() => _TopicEditSheetState();
+}
+
+class _TopicEditSheetState extends State<_TopicEditSheet> {
+  late final TextEditingController _title = TextEditingController(text: widget.topic.title);
+  late final TextEditingController _body = TextEditingController(text: widget.topic.body);
+  String? error;
+  bool busy = false;
+
+  @override
+  void dispose() { _title.dispose(); _body.dispose(); super.dispose(); }
+
+  bool get _changed => _title.text.trim() != widget.topic.title.trim() || _body.text.trim() != widget.topic.body.trim();
+
+  Future<void> _save() async {
+    final title = _title.text.trim(), body = _body.text.trim();
+    if (title.isEmpty) { setState(() => error = 'Назва теми не може бути порожньою.'); return; }
+    if (!_changed) { Navigator.of(context).pop(); return; }
+    setState(() { busy = true; error = null; });
+    try {
+      final data = await widget.session.api.editTopic(widget.date, widget.topic.order,
+          title: title != widget.topic.title.trim() ? title : null,
+          body: body != widget.topic.body.trim() ? body : null);
+      if (mounted) Navigator.of(context).pop(data);
+    } catch (e) {
+      if (mounted) setState(() { error = e is ApiException ? e.message : '$e'; busy = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final insets = MediaQuery.of(context).viewInsets.bottom;
+    final maxH = MediaQuery.of(context).size.height * 0.9;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + insets + MediaQuery.of(context).padding.bottom),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxH - insets),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Тема ${widget.topic.order + 1}: як сказали б ви', style: T.h2),
+          const SizedBox(height: 4),
+          Text('Модель пише офіційно; виправте назву й текст живою мовою. Кожна правка зберігається парою «було → стало» — так модель навчиться вашої лексики.', style: T.meta),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _title, enabled: !busy, textCapitalization: TextCapitalization.sentences, maxLines: 2, minLines: 1,
+            style: T.itemTitle,
+            decoration: const InputDecoration(labelText: 'Назва теми', border: OutlineInputBorder(), isDense: true),
+            onChanged: (_) => setState(() => error = null),
+          ),
+          const SizedBox(height: 10),
+          Flexible(
+            child: TextField(
+              controller: _body, enabled: !busy, maxLines: null, minLines: 4, expands: false,
+              keyboardType: TextInputType.multiline, textCapitalization: TextCapitalization.sentences,
+              style: T.body.copyWith(fontSize: 14, height: 1.35),
+              decoration: const InputDecoration(labelText: 'Текст теми', helperText: 'Рядки з «-» — тези; час у дужках (12:30) лишіть як є.', border: OutlineInputBorder(), alignLabelWithHint: true),
+              onChanged: (_) => setState(() => error = null),
+            ),
+          ),
+          if (error != null) ...[const SizedBox(height: 10), Text(error!, style: T.meta.copyWith(color: C.recText))],
+          const SizedBox(height: 14),
+          Row(children: [
+            Expanded(child: SecondaryButton('Назад', onPressed: busy ? null : () => Navigator.of(context).pop())),
+            const SizedBox(width: 10),
+            Expanded(child: PrimaryButton(busy ? 'Зберігаю…' : 'Зберегти', icon: Icons.check, onPressed: busy ? null : _save)),
+          ]),
+        ]),
       ),
     );
   }

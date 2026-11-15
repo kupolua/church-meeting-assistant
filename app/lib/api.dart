@@ -95,6 +95,7 @@ class Api {
       r = switch (method) {
         'GET' => await http.get(uri, headers: _headers).timeout(const Duration(seconds: 20)),
         'DELETE' => await http.delete(uri, headers: _headers).timeout(const Duration(seconds: 20)),
+        'PATCH' => await http.patch(uri, headers: _headers, body: jsonEncode(body ?? {})).timeout(const Duration(seconds: 20)),
         _ => await http.post(uri, headers: _headers, body: jsonEncode(body ?? {})).timeout(const Duration(seconds: 20)),
       };
     } on SocketException {
@@ -203,6 +204,11 @@ class Api {
   }
 
   Future<MeetingData> meeting(String date) async => MeetingData.fromJson(Map<String, dynamic>.from(await _send('GET', '/meetings/$date') as Map));
+
+  /// Reword a topic the model wrote: the title, the text, or both. The server
+  /// keeps the before/after pair and answers with the whole meeting.
+  Future<MeetingData> editTopic(String date, int order, {String? title, String? body}) async =>
+      MeetingData.fromJson(Map<String, dynamic>.from(await _send('PATCH', '/meetings/$date/topics/$order', body: {'title': ?title, 'body': ?body}) as Map));
 
   Future<List<SearchHitData>> search(String q) async {
     final r = await _send('GET', '/search?q=${Uri.encodeQueryComponent(q)}') as Map;

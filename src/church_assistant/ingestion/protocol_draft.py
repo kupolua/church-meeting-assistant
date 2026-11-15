@@ -32,6 +32,7 @@ import httpx
 from church_assistant.db import protocols_repo
 from church_assistant.shared import meetings_index, rag
 from church_assistant.shared.logger import Logger
+from church_assistant.shared.style import STYLE_RULES
 
 
 _log = Logger(process="worker")
@@ -135,7 +136,8 @@ _DECIDE_SYSTEM = (
     "4. Відповідай ЛИШЕ у форматі JSON, без пояснень:\n"
     '{"vyrishyly": "текст", "postanovy": '
     '[{"text": "дія", "responsible": "імʼя або порожньо", '
-    '"due": "термін або порожньо"}]}'
+    '"due": "термін або порожньо"}]}\n'
+    + STYLE_RULES
 )
 
 

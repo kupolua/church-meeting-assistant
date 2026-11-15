@@ -71,16 +71,18 @@ class Hint {
 }
 
 class TopicData {
-  const TopicData({required this.order, required this.title, required this.lead, required this.lines, this.itemId, this.hints = const []});
+  const TopicData({required this.order, required this.title, required this.lead, required this.lines, this.body = '', this.itemId, this.hints = const []});
   final int order;
   final String title, lead;
+  /// The section as written in polished.md (markdown, timecodes and all) — what the editor changes.
+  final String body;
   final List<TopicLine> lines;
   /// The protocol item this topic already became, if any.
   final int? itemId;
   final List<Hint> hints;
   bool get inProtocol => itemId != null;
   factory TopicData.fromJson(Map<String, dynamic> j) => TopicData(
-        order: (j['order'] as num?)?.toInt() ?? 0, title: j['title'] as String? ?? '', lead: j['lead'] as String? ?? '',
+        order: (j['order'] as num?)?.toInt() ?? 0, title: j['title'] as String? ?? '', lead: j['lead'] as String? ?? '', body: j['body'] as String? ?? '',
         lines: [for (final l in j['lines'] as List? ?? []) TopicLine(text: l['text'] as String? ?? '', tc: l['tc'] as String?, level: (l['level'] as num?)?.toInt() ?? 0, taken: l['taken'] == true)],
         itemId: (j['item_id'] as num?)?.toInt(),
         hints: [for (final h in j['hints'] as List? ?? []) Hint.fromJson(Map<String, dynamic>.from(h as Map))],

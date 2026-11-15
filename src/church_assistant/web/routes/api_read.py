@@ -117,6 +117,9 @@ def _topic(
         )
     return {
         "order": t.order, "title": t.title, "lead": " ".join(lead), "lines": lines,
+        # The section as written, for the editor (api_topics): what the person
+        # changes is the markdown itself, timecodes and all.
+        "body": t.body,
         "item_id": int(item["id"]) if item else None,
         "hints": [{**h.as_json(), "accepted": bool(h.tc in taken_tc or _norm_text(h.text) in taken_text)}
                   for h in (hints or [])],
@@ -257,7 +260,13 @@ async def meeting(request: Request, date: str):
     user = await api_user(request)
     if not _DATE_RE.match(date):
         raise HTTPException(status_code=404, detail="Немає такої зустрічі.")
-    pool = await get_pool()
+    return await meeting_payload(await get_pool(), user, date)
+
+
+async def meeting_payload(pool: Any, user: ApiUser, date: str) -> dict[str, Any]:
+    """The whole meeting as the app draws it. Every route that changes a
+    meeting (api_topics, api_minutes) answers with this, so the screen is
+    always what the server holds."""
     mdir = _meetings_dir(user)
 
     detail = meetings_index.load_detail(mdir, date)

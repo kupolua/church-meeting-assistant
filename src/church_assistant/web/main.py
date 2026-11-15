@@ -92,6 +92,7 @@ from church_assistant.web.routes import (  # noqa: E402
     api_read,
     api_record,
     api_review,
+    api_topics,
     auth,
     home,
     invite,
@@ -111,6 +112,7 @@ app.include_router(api_protocol.router)
 app.include_router(api_read.router)
 app.include_router(api_record.router)
 app.include_router(api_review.router)
+app.include_router(api_topics.router)
 app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(admin.router)
