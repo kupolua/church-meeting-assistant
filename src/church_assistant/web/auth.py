@@ -48,11 +48,17 @@ PUBLIC_PATHS = frozenset({LOGIN_PATH, "/logout", "/healthz", "/favicon.ico"})
 # as a hash, and the route can do exactly one thing — set the first password on
 # an account that has none. It cannot reach any other church's data, because the
 # tenant it may touch is the one the token names.
-# "/api/" is public TO THIS MIDDLEWARE only: it has no cookie to read there. The
-# app sends a bearer token instead, and web/api.py resolves it against the same
-# sessions table through its own dependency — every handler under /api/ that
-# touches a church goes through api_user(), which refuses without one.
-PUBLIC_PREFIXES = ("/static/", "/invite/", "/api/")
+# "/api/v1/" is public TO THIS MIDDLEWARE only: it has no cookie to read there.
+# The app sends a bearer token instead, and web/api.py resolves it against the
+# same sessions table through its own dependency — every handler under /api/v1/
+# that touches a church goes through api_user(), which refuses without one.
+# NOT "/api/": the site's own HTMX endpoints live at /api/query and /api/search
+# (routes/query.py, routes/search.py) and are cookie-authenticated. From
+# 23.10.2026 (57f1997) to 18.11.2026 the broader prefix skipped the cookie for
+# them too, so the dashboard's question form answered 401 to a signed-in person
+# and the question was never queued — found when Pavlo asked Gemma twice and
+# saw nothing in the monitor.
+PUBLIC_PREFIXES = ("/static/", "/invite/", "/api/v1/")
 
 # Two panels that do not intersect, decided in ONE place. A platform account
 # runs the fleet and belongs to no church; a church account runs its own
