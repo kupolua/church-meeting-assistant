@@ -39,7 +39,23 @@
                 {% for date in q.sources %}<a href="/meetings/{{ date }}">{{ date }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
                 </small>
             </div>
-            {% elif q.status == 'failed' and q.error_message %}
+            {% endif %}
+            {# The answer itself lives in the row too; until 18.11.2026 this page
+               showed only the dates and the text was reachable nowhere once the
+               dashboard was left — a five-minute answer looked like a list of
+               four dates. The same partial the dashboard renders is loaded on
+               demand; for a question still in the queue it keeps polling. #}
+            {% if q.status in ('completed', 'failed', 'pending', 'processing') %}
+            <div class="history-answer" id="history-answer-{{ q.id }}">
+                <button type="button" class="history-answer-toggle"
+                        hx-get="/api/query/{{ q.id }}"
+                        hx-target="#history-answer-{{ q.id }}"
+                        hx-swap="innerHTML">
+                    {% if q.status == 'completed' %}📝 Показати відповідь{% elif q.status == 'failed' %}⚠ Показати помилку{% else %}🕒 Стежити за відповіддю{% endif %}
+                </button>
+            </div>
+            {% endif %}
+            {% if q.status == 'failed' and q.error_message %}
             <div class="history-error">
                 <small>⚠ {{ q.error_message[:200] }}</small>
             </div>

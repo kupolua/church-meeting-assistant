@@ -172,10 +172,14 @@ class Hit:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Hit":
         """Deserialize from JSONB (used when re-showing cached queries)."""
+        # Rows written before `collection` was stored per hit (and any hand-made
+        # test row) must still render: an old answer in /history is not worth
+        # a 500. The payload carries the collection too, when it is there.
+        payload = d.get("payload") or {}
         return cls(
-            score=float(d["score"]),
-            payload=d["payload"],
-            collection=d["collection"],
+            score=float(d.get("score", 0.0)),
+            payload=payload,
+            collection=d.get("collection") or payload.get("collection") or "protocols",
             vector_score=float(d.get("vector_score", 0.0)),
             reranked=bool(d.get("reranked", False)),
         )

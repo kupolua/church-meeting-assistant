@@ -227,6 +227,16 @@ async def query_poll(request: Request, query_id: int):
     if row is None:
         return _error(request, "Запит не знайдено", f"Немає запиту #{query_id}.", 404)
 
+    return render_card(request, row)
+
+
+def render_card(request: Request, row: dict[str, Any]) -> HTMLResponse:
+    """The card for a query in whatever state it is: the pending partial
+    (which keeps polling) while it is queued or in flight, a terminal partial
+    once it is not. The poll uses it; so does the «Зустрічі» page, which
+    puts the last question back under the form after a reload — until
+    18.11.2026 a reload lost the card, and a five-minute answer arrived to a
+    page that no longer showed anything."""
     if row.get("status") in ("pending", "processing"):
         return _render_pending(request, row)
     return _render_finished(request, row)

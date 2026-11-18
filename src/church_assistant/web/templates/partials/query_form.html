@@ -32,5 +32,7 @@
         </div>
     </form>
 
-    <div id="query-output" class="query-output"></div>
+    {# Filled on load with the last question of the day (routes/home.py),
+       so leaving the page and coming back does not lose a running query. #}
+    <div id="query-output" class="query-output">{{ last_query_html | default('') | safe }}</div>
 </section>

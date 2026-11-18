@@ -1696,3 +1696,16 @@ tr.sp-add-row td { border-top: 2px dashed #b9d9c4; }
     font-size: 0.85rem;
     color: var(--pico-muted-color);
 }
+
+/* ─── History: the answer on demand (18.11.2026) ─── */
+.history-answer { margin-top: 0.4rem; }
+.history-answer-toggle {
+    font-size: 0.85rem;
+    padding: 0.25rem 0.6rem;
+    background: #f5f7fb;
+    border: 1px solid #d6dbe6;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.history-answer-toggle:hover { background: #e9eef8; }
+.history-answer .query-result { margin-top: 0.6rem; }

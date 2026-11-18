@@ -9,7 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from church_assistant.db import web_users_repo
+from datetime import datetime, timedelta, timezone
+
+from church_assistant.db import queries_repo, web_users_repo
 from church_assistant.db.connection import get_pool
 from church_assistant.shared import tenant_paths
 from church_assistant.web.main import templates
@@ -47,6 +49,7 @@ async def meetings_home(request: Request):
         "home.html",
         {
             "meetings": summaries,
+            "last_query_html": await _last_query_card(request, pool, tenant_id),
             # Only an admin opens a meeting, and only they need the list of
             # people who could chair it.
             "chair_choices": (
@@ -55,3 +58,23 @@ async def meetings_home(request: Request):
             ),
         },
     )
+
+
+async def _last_query_card(request: Request, pool, tenant_id: int) -> str:
+    """The card of the church's newest web question, if it was asked in the
+    last day — rendered by routes/query.render_card so a reload of this page
+    shows the same thing the form showed: still in the queue (and polling),
+    or the answer. Older than a day it is history, and /history has it."""
+    recent = await queries_repo.list_recent(pool, tenant_id, limit=1)
+    if not recent or recent[0].get("source") != "web":
+        return ""
+    row = recent[0]
+    asked = row.get("asked_at")
+    if not isinstance(asked, datetime):
+        return ""
+    if asked.tzinfo is None:
+        asked = asked.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - asked > timedelta(hours=24):
+        return ""
+    from church_assistant.web.routes.query import render_card
+    return render_card(request, row).body.decode("utf-8")
